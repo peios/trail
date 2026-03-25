@@ -67,6 +67,11 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 		return fmt.Errorf("building homepage: %w", err)
 	}
 
+	// Build pathways page
+	if err := buildPathwaysPage(tmpl, site, cfg, outDir); err != nil {
+		return fmt.Errorf("building pathways page: %w", err)
+	}
+
 	// Build 404 page
 	if err := build404(tmpl, site, cfg, outDir); err != nil {
 		return fmt.Errorf("building 404: %w", err)
@@ -252,6 +257,26 @@ func buildCategoryIndex(tmpl *theme.Templates, site *content.Site, cfg *config.C
 	}
 
 	return tmpl.Category.ExecuteTemplate(f, "base", data)
+}
+
+func buildPathwaysPage(tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
+	pathwaysDir := filepath.Join(outDir, "pathways")
+	if err := os.MkdirAll(pathwaysDir, 0o755); err != nil {
+		return err
+	}
+
+	outPath := filepath.Join(pathwaysDir, "index.html")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	data := homepageData{
+		Site: newSiteData(site, cfg),
+	}
+
+	return tmpl.PathwaysPage.ExecuteTemplate(f, "base", data)
 }
 
 func build404(tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {

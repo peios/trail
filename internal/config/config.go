@@ -32,6 +32,8 @@ type Pathway struct {
 	Name        string   `toml:"name"`
 	Slug        string   // derived from filename
 	Description string   `toml:"description"`
+	Featured    bool     `toml:"featured"`
+	Order       int      `toml:"order"`
 	Pages       []string `toml:"pages"` // slugs like "identity/how-tokens-work"
 }
 
@@ -78,6 +80,17 @@ func loadPathways(dir string) ([]Pathway, error) {
 	}
 
 	sort.Slice(pathways, func(i, j int) bool {
+		oi, oj := pathways[i].Order, pathways[j].Order
+		if oi != oj {
+			// 0 means unset — sort after ordered items
+			if oi == 0 {
+				return false
+			}
+			if oj == 0 {
+				return true
+			}
+			return oi < oj
+		}
 		return pathways[i].Name < pathways[j].Name
 	})
 

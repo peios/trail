@@ -7,18 +7,38 @@ import (
 	"path/filepath"
 
 	"github.com/peios/trail/internal/config"
+	"github.com/peios/trail/internal/content"
 )
 
 type Templates struct {
-	Page     *template.Template
-	Homepage *template.Template
-	Category *template.Template
-	NotFound *template.Template
-	Print    *template.Template
+	Page         *template.Template
+	Homepage     *template.Template
+	Category     *template.Template
+	NotFound     *template.Template
+	Print        *template.Template
+	PathwaysPage *template.Template
 }
 
 func LoadTemplates(cfg *config.Config) (*Templates, error) {
 	funcMap := template.FuncMap{
+		"firstN": func(n int, pages []*content.Page) []*content.Page {
+			if len(pages) <= n {
+				return pages
+			}
+			return pages[:n]
+		},
+		"gt": func(a, b int) bool {
+			return a > b
+		},
+		"featuredPathways": func(pathways []config.Pathway) []config.Pathway {
+			var out []config.Pathway
+			for _, p := range pathways {
+				if p.Featured {
+					out = append(out, p)
+				}
+			}
+			return out
+		},
 		"typeLabel": func(t string) string {
 			switch t {
 			case "concept":
@@ -74,12 +94,18 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 		return nil, fmt.Errorf("parsing print template: %w", err)
 	}
 
+	pathwaysPageTmpl, err := template.Must(base.Clone()).Parse(pathwaysPageTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing pathways page template: %w", err)
+	}
+
 	return &Templates{
-		Page:     pageTmpl,
-		Homepage: homepageTmpl,
-		Category: categoryTmpl,
-		NotFound: notFoundTmpl,
-		Print:    printTmpl,
+		Page:         pageTmpl,
+		Homepage:     homepageTmpl,
+		Category:     categoryTmpl,
+		NotFound:     notFoundTmpl,
+		Print:        printTmpl,
+		PathwaysPage: pathwaysPageTmpl,
 	}, nil
 }
 

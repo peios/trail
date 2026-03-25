@@ -45,12 +45,15 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose table { @apply w-full mb-6 border-collapse; }
     .prose th { @apply text-left p-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 font-semibold text-sm; }
     .prose td { @apply p-3 border border-gray-200 dark:border-gray-700 text-sm; }
-    .prose code { @apply bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-sm font-mono; }
-    .prose pre { @apply bg-gray-900 dark:bg-gray-950 text-gray-100 p-4 rounded-lg mb-4 overflow-x-auto relative; }
-    .prose pre code { @apply bg-transparent p-0 text-inherit; }
+    .prose code:not(pre code) { @apply bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-sm font-mono; }
+    .prose pre { @apply text-gray-100 p-4 rounded-lg mb-4 overflow-x-auto relative text-sm leading-relaxed; background: #282a36 !important; }
+    .prose pre code { background: transparent !important; @apply p-0 text-inherit font-mono; }
+    .prose pre code * { background: transparent !important; display: inline !important; }
     .prose a { @apply text-brand-500 dark:text-brand-400 underline hover:text-brand-700 dark:hover:text-brand-200; }
     .prose blockquote { @apply border-l-4 border-brand-200 dark:border-brand-700 pl-4 italic text-gray-600 dark:text-gray-400 my-4; }
     .prose strong { @apply font-semibold text-gray-900 dark:text-gray-100; }
+    mark.search-highlight { all: unset; color: inherit; background: rgba(51, 102, 204, 0.15); border-bottom: 2px solid rgba(51, 102, 204, 0.5); border-radius: 2px; }
+    :is(.dark mark.search-highlight) { color: inherit; background: rgba(102, 153, 255, 0.15); border-bottom-color: rgba(102, 153, 255, 0.4); }
     .tab-active { @apply border-brand-500 text-brand-600 dark:text-brand-400; }
     [data-tab-group] button:not(.tab-active) { @apply border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200; }
     .prose details { @apply my-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden; }
@@ -252,14 +255,18 @@ const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
   </div>
 </div>
 
-{{if .Site.Pathways}}
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-  <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">Learning Pathways</h2>
-  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-16">
-    {{range .Site.Pathways}}
-    <a href="/{{index .Pages 0}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
-      <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
-      <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
+{{$featured := featuredPathways .Site.Pathways}}
+{{if $featured}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-6">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Learning Pathways</h2>
+    <a href="/pathways/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">View all &rarr;</a>
+  </div>
+  <div class="flex gap-4 overflow-x-auto pb-2">
+    {{range $featured}}
+    <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="flex-shrink-0 w-72 p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      <h3 class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">{{.Name}}</h3>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{{.Description}}</p>
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
     </a>
     {{end}}
@@ -274,10 +281,11 @@ const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
     <div class="p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">{{.Title}}</h3>
       <ul class="space-y-1">
-        {{range .Pages}}
+        {{range firstN 3 .Pages}}
         <li><a href="/{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
         {{end}}
       </ul>
+      {{if gt (len .Pages) 3}}<a href="/{{.Name}}/" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
     </div>
     {{end}}
   </div>
@@ -324,6 +332,27 @@ const printTemplate = `{{define "title"}}{{.Site.Title}} — Complete Reference{
     </div>
   </article>
   {{end}}
+</div>
+{{end}}`
+
+const pathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.Site.Title}}{{end}}
+{{define "content"}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+  <nav class="text-sm mb-6">
+    <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+    <span class="text-gray-900 dark:text-gray-100">Learning Pathways</span>
+  </nav>
+  <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">Learning Pathways</h1>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    {{range .Site.Pathways}}
+    <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
+      <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
+      <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
+    </a>
+    {{end}}
+  </div>
 </div>
 {{end}}`
 

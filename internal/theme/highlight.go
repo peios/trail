@@ -18,11 +18,18 @@ const highlightJS = `(function() {
     }
   }
 
+  var count = 0;
   var regex = new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
   nodes.forEach(function(node) {
     if (!regex.test(node.textContent)) return;
     var span = document.createElement('span');
-    span.innerHTML = node.textContent.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-800 rounded px-0.5">$1</mark>');
+    span.innerHTML = node.textContent.replace(regex, '<mark class="search-highlight">$1</mark>');
     node.parentNode.replaceChild(span, node);
+    count++;
   });
+
+  if (count > 0) {
+    var first = document.querySelector('.search-highlight');
+    if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 })();`
