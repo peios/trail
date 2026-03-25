@@ -127,7 +127,12 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
   </footer>
   <script src="/assets/livereload.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-  <script>mermaid.initialize({ startOnLoad: true, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default' });</script>
+  <script>
+    document.querySelectorAll('.mermaid').forEach(function(el) {
+      el.setAttribute('data-mermaid-src', el.textContent);
+    });
+    mermaid.initialize({ startOnLoad: true, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default' });
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
   <script src="/assets/pathway.js"></script>
   <script src="/assets/theme.js"></script>

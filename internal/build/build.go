@@ -108,6 +108,9 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 		return fmt.Errorf("writing assets: %w", err)
 	}
 
+	// Validate internal links
+	validateLinks(site, outDir)
+
 	return nil
 }
 
@@ -613,6 +616,64 @@ func newBytesWriter(buf *[]byte) *bytesWriter {
 func (w *bytesWriter) Write(p []byte) (int, error) {
 	*w.buf = append(*w.buf, p...)
 	return len(p), nil
+}
+
+var internalLinkRe = regexp.MustCompile(`href="(/[^"]*?)"`)
+
+func validateLinks(site *content.Site, outDir string) {
+	var broken []string
+
+	filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || filepath.Ext(path) != ".html" {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		rel, _ := filepath.Rel(outDir, path)
+		matches := internalLinkRe.FindAllStringSubmatch(string(data), -1)
+		for _, m := range matches {
+			href := m[1]
+
+			// Skip asset/special paths
+			if strings.HasPrefix(href, "/assets/") || href == "/" {
+				continue
+			}
+
+			// Strip query params and hash
+			clean := strings.SplitN(href, "?", 2)[0]
+			clean = strings.SplitN(clean, "#", 2)[0]
+
+			// Check if the target exists
+			target := filepath.Join(outDir, clean)
+			if _, err := os.Stat(target); err == nil {
+				continue
+			}
+			// Try as directory with index.html
+			if _, err := os.Stat(filepath.Join(target, "index.html")); err == nil {
+				continue
+			}
+			// Try without trailing slash
+			trimmed := strings.TrimRight(target, "/")
+			if _, err := os.Stat(filepath.Join(trimmed, "index.html")); err == nil {
+				continue
+			}
+
+			broken = append(broken, fmt.Sprintf("  %s → %s", rel, href))
+		}
+		return nil
+	})
+
+	if len(broken) > 0 {
+		fmt.Printf("\nWarning: %d broken internal link(s):\n", len(broken))
+		for _, b := range broken {
+			fmt.Println(b)
+		}
+		fmt.Println()
+	}
 }
 
 func copyStatic(srcDir, outDir string) error {

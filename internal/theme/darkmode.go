@@ -19,5 +19,18 @@ const themeJS = `(function() {
     var isDark = document.documentElement.classList.contains('dark');
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
     updateIcons();
+
+    // Re-render mermaid diagrams with new theme
+    if (typeof mermaid !== 'undefined') {
+      document.querySelectorAll('.mermaid').forEach(function(el) {
+        // Restore original source from data attribute
+        if (el.getAttribute('data-mermaid-src')) {
+          el.removeAttribute('data-processed');
+          el.innerHTML = el.getAttribute('data-mermaid-src');
+        }
+      });
+      mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default' });
+      mermaid.run();
+    }
   });
 })();`
