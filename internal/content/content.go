@@ -20,13 +20,16 @@ type Site struct {
 }
 
 type Page struct {
-	Title       string `yaml:"title"`
-	Type        string `yaml:"type"` // "concept" or "how-to"
-	Order       int    `yaml:"order"`
-	Description string `yaml:"description"`
-	Slug        string // e.g. "identity/how-tokens-work"
-	Category    string // e.g. "identity"
-	Body        []byte // raw markdown body (after frontmatter)
+	Title       string   `yaml:"title"`
+	Type        string   `yaml:"type"` // "concept" or "how-to"
+	Order       int      `yaml:"order"`
+	Description string   `yaml:"description"`
+	Updated     string   `yaml:"updated"`
+	Draft       bool     `yaml:"draft"`
+	Related     []string `yaml:"related"`
+	Slug        string   // e.g. "identity/how-tokens-work"
+	Category    string   // e.g. "identity"
+	Body        []byte   // raw markdown body (after frontmatter)
 }
 
 type Category struct {
@@ -62,6 +65,10 @@ func Load(dir string, cfg *config.Config) (*Site, error) {
 		page, err := loadPage(path, rel)
 		if err != nil {
 			return fmt.Errorf("loading %s: %w", rel, err)
+		}
+
+		if page.Draft {
+			return nil
 		}
 
 		site.Pages = append(site.Pages, page)

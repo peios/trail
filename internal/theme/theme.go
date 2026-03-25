@@ -14,6 +14,7 @@ type Templates struct {
 	Homepage *template.Template
 	Category *template.Template
 	NotFound *template.Template
+	Print    *template.Template
 }
 
 func LoadTemplates(cfg *config.Config) (*Templates, error) {
@@ -26,6 +27,16 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 				return "How-to"
 			default:
 				return t
+			}
+		},
+		"typeIcon": func(t string) template.HTML {
+			switch t {
+			case "concept":
+				return `<svg class="w-3.5 h-3.5 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>`
+			case "how-to":
+				return `<svg class="w-3.5 h-3.5 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17l-5.384-3.107A2 2 0 005 13.894V20a2 2 0 002.828 0l2.586-2.586m5.006-5.844l5.384-3.107A2 2 0 0019 6.106V4a2 2 0 00-2.828 0L13.586 6.586m-5.172 5.172a2 2 0 112.828 2.828 2 2 0 01-2.828-2.828z"/></svg>`
+			default:
+				return ""
 			}
 		},
 	}
@@ -58,11 +69,17 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 		return nil, fmt.Errorf("parsing 404 template: %w", err)
 	}
 
+	printTmpl, err := template.Must(base.Clone()).Parse(printTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing print template: %w", err)
+	}
+
 	return &Templates{
 		Page:     pageTmpl,
 		Homepage: homepageTmpl,
 		Category: categoryTmpl,
 		NotFound: notFoundTmpl,
+		Print:    printTmpl,
 	}, nil
 }
 
@@ -88,5 +105,25 @@ func WriteAssets(outDir string) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(assetsDir, "copycode.js"), []byte(copyCodeJS), 0o644)
+	if err := os.WriteFile(filepath.Join(assetsDir, "copycode.js"), []byte(copyCodeJS), 0o644); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(assetsDir, "tabs.js"), []byte(tabsJS), 0o644); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(assetsDir, "scrollspy.js"), []byte(scrollSpyJS), 0o644); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(assetsDir, "backtotop.js"), []byte(backToTopJS), 0o644); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(assetsDir, "highlight.js"), []byte(highlightJS), 0o644); err != nil {
+		return err
+	}
+
+	return os.WriteFile(filepath.Join(assetsDir, "fontsize.js"), []byte(fontSizeJS), 0o644)
 }

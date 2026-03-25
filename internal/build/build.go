@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,7 +22,7 @@ import (
 	"github.com/peios/trail/internal/theme"
 )
 
-func Build(site *content.Site, cfg *config.Config, outDir string) error {
+func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error {
 	md := goldmark.New(
 		goldmark.WithExtensions(
 			extension.Table,
@@ -71,6 +72,11 @@ func Build(site *content.Site, cfg *config.Config, outDir string) error {
 		return fmt.Errorf("building 404: %w", err)
 	}
 
+	// Build print-all page
+	if err := buildPrintAll(md, tmpl, site, cfg, outDir); err != nil {
+		return fmt.Errorf("building print page: %w", err)
+	}
+
 	// Build pathway manifest for JS navigation
 	if err := buildPathwayManifest(site, cfg, outDir); err != nil {
 		return fmt.Errorf("building pathway manifest: %w", err)
@@ -92,6 +98,11 @@ func Build(site *content.Site, cfg *config.Config, outDir string) error {
 		return fmt.Errorf("writing robots.txt: %w", err)
 	}
 
+	// Copy static directory if it exists
+	if err := copyStatic(srcDir, outDir); err != nil {
+		return fmt.Errorf("copying static assets: %w", err)
+	}
+
 	// Write static assets (JS, CSS)
 	if err := theme.WriteAssets(outDir); err != nil {
 		return fmt.Errorf("writing assets: %w", err)
@@ -111,8 +122,16 @@ type pageContent struct {
 	Type        string
 	Slug        string
 	Description string
+	Updated     string
+	ReadingTime int // minutes
 	HTML        template.HTML
 	Headings    []heading
+	Related     []relatedPage
+}
+
+type relatedPage struct {
+	Title string
+	Slug  string
 }
 
 type heading struct {
@@ -122,13 +141,16 @@ type heading struct {
 }
 
 type siteData struct {
-	Title       string
-	Description string
-	BaseURL     string
-	RepoURL     string
-	Nav         []config.NavItem
-	Categories  []*content.Category
-	Pathways    []config.Pathway
+	Title        string
+	Description  string
+	BaseURL      string
+	RepoURL      string
+	Favicon      string
+	HeadExtra    template.HTML
+	Announcement string
+	Nav          []config.NavItem
+	Categories   []*content.Category
+	Pathways     []config.Pathway
 }
 
 type homepageData struct {
@@ -137,13 +159,16 @@ type homepageData struct {
 
 func newSiteData(site *content.Site, cfg *config.Config) siteData {
 	return siteData{
-		Title:       cfg.Title,
-		Description: cfg.Description,
-		BaseURL:     cfg.BaseURL,
-		RepoURL:     cfg.RepoURL,
-		Nav:         cfg.Nav,
-		Categories:  site.Categories,
-		Pathways:    cfg.Pathways,
+		Title:        cfg.Title,
+		Description:  cfg.Description,
+		BaseURL:      cfg.BaseURL,
+		RepoURL:      cfg.RepoURL,
+		Favicon:      cfg.Favicon,
+		HeadExtra:    template.HTML(cfg.HeadExtra),
+		Announcement: cfg.Announcement,
+		Nav:          cfg.Nav,
+		Categories:   site.Categories,
+		Pathways:     cfg.Pathways,
 	}
 }
 
@@ -177,6 +202,9 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 	renderedHTML := string(buf)
 	renderedHTML = resolvePageLinks(renderedHTML, site)
 	renderedHTML = transformAdmonitions(renderedHTML)
+	renderedHTML = transformTabGroups(renderedHTML)
+	renderedHTML = transformMermaid(renderedHTML)
+	headings := extractHeadings(renderedHTML)
 	renderedHTML = injectAnchorLinks(renderedHTML)
 	data := pageData{
 		Site: newSiteData(site, cfg),
@@ -185,8 +213,11 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 			Type:        page.Type,
 			Slug:        page.Slug,
 			Description: page.Description,
+			Updated:     page.Updated,
+			ReadingTime: wordCount(page.Body) / 200,
 			HTML:        template.HTML(renderedHTML),
-			Headings:    extractHeadings(renderedHTML),
+			Headings:    headings,
+			Related:     resolveRelated(page.Related, site),
 		},
 		Category: cat,
 	}
@@ -233,6 +264,54 @@ func build404(tmpl *theme.Templates, site *content.Site, cfg *config.Config, out
 	}
 
 	return tmpl.NotFound.ExecuteTemplate(f, "base", data)
+}
+
+type printPageEntry struct {
+	Title    string
+	Type     string
+	Category string
+	HTML     template.HTML
+}
+
+type printData struct {
+	Site  siteData
+	Pages []printPageEntry
+}
+
+func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
+	printDir := filepath.Join(outDir, "print")
+	if err := os.MkdirAll(printDir, 0o755); err != nil {
+		return err
+	}
+
+	outPath := filepath.Join(printDir, "index.html")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var pages []printPageEntry
+	for _, page := range site.Pages {
+		var buf []byte
+		w := newBytesWriter(&buf)
+		if err := md.Convert(page.Body, w); err != nil {
+			continue
+		}
+		pages = append(pages, printPageEntry{
+			Title:    page.Title,
+			Type:     page.Type,
+			Category: page.Category,
+			HTML:     template.HTML(buf),
+		})
+	}
+
+	data := printData{
+		Site:  newSiteData(site, cfg),
+		Pages: pages,
+	}
+
+	return tmpl.Print.ExecuteTemplate(f, "base", data)
 }
 
 func buildHomepage(tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
@@ -348,6 +427,25 @@ func buildSitemap(site *content.Site, cfg *config.Config, outDir string) error {
 	return os.WriteFile(filepath.Join(outDir, "sitemap.xml"), []byte(b.String()), 0o644)
 }
 
+func wordCount(body []byte) int {
+	return len(strings.Fields(string(body)))
+}
+
+func resolveRelated(slugs []string, site *content.Site) []relatedPage {
+	if len(slugs) == 0 {
+		return nil
+	}
+	pages := make([]relatedPage, 0, len(slugs))
+	for _, slug := range slugs {
+		title := slug
+		if p, ok := site.PageMap[slug]; ok {
+			title = p.Title
+		}
+		pages = append(pages, relatedPage{Title: title, Slug: slug})
+	}
+	return pages
+}
+
 var pageLinkRe = regexp.MustCompile(`href="~([^"]+)"`)
 
 func resolvePageLinks(html string, site *content.Site) string {
@@ -393,6 +491,88 @@ func transformAdmonitions(html string) string {
 	})
 }
 
+var tabGroupRe = regexp.MustCompile(`(?s)<!-- tabs -->(.*?)<!-- /tabs -->`)
+var tabMarkerRe = regexp.MustCompile(`<!-- tab:(.+?) -->`)
+
+var tabGroupCounter int
+
+func transformTabGroups(html string) string {
+	return tabGroupRe.ReplaceAllStringFunc(html, func(match string) string {
+		// Extract inner content (between <!-- tabs --> and <!-- /tabs -->)
+		inner := tabGroupRe.FindStringSubmatch(match)
+		if len(inner) < 2 {
+			return match
+		}
+		body := inner[1]
+
+		// Split on tab markers
+		markers := tabMarkerRe.FindAllStringSubmatchIndex(body, -1)
+		if len(markers) == 0 {
+			return match
+		}
+
+		type tab struct {
+			name    string
+			content string
+		}
+		var tabs []tab
+		for i, m := range markers {
+			name := body[m[2]:m[3]]
+			contentStart := m[1]
+			var contentEnd int
+			if i+1 < len(markers) {
+				contentEnd = markers[i+1][0]
+			} else {
+				contentEnd = len(body)
+			}
+			tabs = append(tabs, tab{
+				name:    strings.TrimSpace(name),
+				content: strings.TrimSpace(body[contentStart:contentEnd]),
+			})
+		}
+
+		tabGroupCounter++
+		groupID := fmt.Sprintf("tabgroup-%d", tabGroupCounter)
+
+		var b strings.Builder
+		b.WriteString(`<div class="not-prose my-6 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden" data-tab-group="` + groupID + `">`)
+		b.WriteString(`<div class="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">`)
+
+		for i, t := range tabs {
+			active := ""
+			if i == 0 {
+				active = " tab-active"
+			}
+			b.WriteString(`<button class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors` + active + `" data-tab="` + groupID + `-` + fmt.Sprint(i) + `">` + t.name + `</button>`)
+		}
+		b.WriteString(`</div>`)
+
+		for i, t := range tabs {
+			hidden := ""
+			if i > 0 {
+				hidden = " hidden"
+			}
+			b.WriteString(`<div class="` + hidden + `" data-tab-panel="` + groupID + `-` + fmt.Sprint(i) + `">` + t.content + `</div>`)
+		}
+		b.WriteString(`</div>`)
+		return b.String()
+	})
+}
+
+var mermaidRe = regexp.MustCompile(`(?s)<pre[^>]*><code class="language-mermaid">(.*?)</code></pre>`)
+
+func transformMermaid(html string) string {
+	return mermaidRe.ReplaceAllStringFunc(html, func(match string) string {
+		sub := mermaidRe.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		// The content may have HTML entities from goldmark
+		content := sub[1]
+		return `<div class="mermaid my-4">` + content + `</div>`
+	})
+}
+
 var anchorRe = regexp.MustCompile(`(<h[23]\s+id="([^"]+)"[^>]*>)(.*?)(</h[23]>)`)
 
 func injectAnchorLinks(html string) string {
@@ -433,4 +613,49 @@ func newBytesWriter(buf *[]byte) *bytesWriter {
 func (w *bytesWriter) Write(p []byte) (int, error) {
 	*w.buf = append(*w.buf, p...)
 	return len(p), nil
+}
+
+func copyStatic(srcDir, outDir string) error {
+	staticDir := filepath.Join(srcDir, "static")
+	info, err := os.Stat(staticDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+
+	return filepath.Walk(staticDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(staticDir, path)
+		if err != nil {
+			return err
+		}
+
+		dest := filepath.Join(outDir, rel)
+		if info.IsDir() {
+			return os.MkdirAll(dest, 0o755)
+		}
+
+		src, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+
+		dst, err := os.Create(dest)
+		if err != nil {
+			return err
+		}
+		defer dst.Close()
+
+		_, err = io.Copy(dst, src)
+		return err
+	})
 }

@@ -69,7 +69,7 @@ const searchJS = `(function() {
     results.innerHTML = matches.map(function(m) {
       var item = m.item;
       var typeLabel = item.type === 'how-to' ? 'How-to' : item.type === 'concept' ? 'Concept' : '';
-      return '<a href="/' + item.slug + '/" data-search-item class="block px-4 py-3 border-b border-gray-100 dark:border-gray-800 last:border-0 outline-none">' +
+      return '<a href="/' + item.slug + '/?highlight=' + encodeURIComponent(query) + '" data-search-item class="block px-4 py-3 border-b border-gray-100 dark:border-gray-800 last:border-0 outline-none">' +
         '<div class="text-sm font-medium text-gray-900 dark:text-gray-100">' + escapeHtml(item.title) + '</div>' +
         (item.description ? '<div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">' + escapeHtml(item.description) + '</div>' : '') +
         '<div class="flex gap-2 mt-0.5">' +

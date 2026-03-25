@@ -14,6 +14,9 @@ type Config struct {
 	Description   string    `toml:"description"`
 	BaseURL       string    `toml:"base_url"`
 	RepoURL       string    `toml:"repo_url"`
+	Favicon       string    `toml:"favicon"`
+	HeadExtra     string    `toml:"head_extra"`
+	Announcement  string    `toml:"announcement"`
 	Nav           []NavItem `toml:"nav"`
 	CategoryOrder []string  `toml:"category_order"`
 

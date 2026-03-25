@@ -11,7 +11,10 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
   {{block "meta_description" .}}{{if .Site.Description}}<meta property="og:description" content="{{.Site.Description}}">
   <meta name="description" content="{{.Site.Description}}">{{end}}{{end}}
   {{if .Site.BaseURL}}<meta property="og:url" content="{{.Site.BaseURL}}">{{end}}
+  {{block "canonical" .}}{{end}}
   <meta property="og:type" content="article">
+  {{if .Site.Favicon}}<link rel="icon" href="{{.Site.Favicon}}">{{end}}
+  {{.Site.HeadExtra}}
   <script>
     // Apply dark mode immediately to prevent flash
     if (localStorage.getItem('theme') === 'dark' || (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -48,6 +51,14 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose a { @apply text-brand-500 dark:text-brand-400 underline hover:text-brand-700 dark:hover:text-brand-200; }
     .prose blockquote { @apply border-l-4 border-brand-200 dark:border-brand-700 pl-4 italic text-gray-600 dark:text-gray-400 my-4; }
     .prose strong { @apply font-semibold text-gray-900 dark:text-gray-100; }
+    .tab-active { @apply border-brand-500 text-brand-600 dark:text-brand-400; }
+    [data-tab-group] button:not(.tab-active) { @apply border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200; }
+    .prose details { @apply my-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden; }
+    .prose details summary { @apply cursor-pointer px-4 py-3 text-sm font-medium text-gray-900 dark:text-gray-100 bg-gray-50 dark:bg-gray-800 select-none; }
+    .prose details[open] summary { @apply border-b border-gray-200 dark:border-gray-700; }
+    .prose details > p { @apply px-4 pt-3 mb-0; }
+    .prose details > p:last-child { @apply pb-3; }
+    [data-tab-panel] > pre { @apply m-0 rounded-none; }
     .prose h2 .anchor, .prose h3 .anchor { @apply invisible ml-2 text-gray-300 dark:text-gray-600 no-underline; }
     .prose h2:hover .anchor, .prose h3:hover .anchor { @apply visible; }
 
@@ -61,6 +72,12 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
   </style>
 </head>
 <body class="bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 antialiased">
+  {{if .Site.Announcement}}<div id="announcement-bar" class="bg-brand-600 text-white text-sm text-center py-2 px-4">
+    <span>{{.Site.Announcement}}</span>
+    <button onclick="this.parentElement.remove();localStorage.setItem('announcement-dismissed','{{.Site.Announcement}}')" class="ml-3 text-brand-200 hover:text-white">&times;</button>
+  </div>
+  <script>if(localStorage.getItem('announcement-dismissed')==='{{.Site.Announcement}}')document.getElementById('announcement-bar').remove();</script>
+  {{end}}
   <header class="border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-14">
@@ -97,6 +114,9 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
   <main>
     {{template "content" .}}
   </main>
+  <button id="back-to-top" class="hidden fixed bottom-6 right-6 p-2.5 rounded-full bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-700 shadow-lg transition-opacity z-40" aria-label="Back to top">
+    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+  </button>
   <footer class="border-t border-gray-200 dark:border-gray-800 mt-16">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div class="flex flex-col sm:flex-row justify-between items-center gap-4 text-sm text-gray-400 dark:text-gray-500">
@@ -106,12 +126,19 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     </div>
   </footer>
   <script src="/assets/livereload.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default' });</script>
   <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
   <script src="/assets/pathway.js"></script>
   <script src="/assets/theme.js"></script>
   <script src="/assets/search.js"></script>
   <script src="/assets/mobile.js"></script>
   <script src="/assets/copycode.js"></script>
+  <script src="/assets/tabs.js"></script>
+  <script src="/assets/scrollspy.js"></script>
+  <script src="/assets/backtotop.js"></script>
+  <script src="/assets/highlight.js"></script>
+  <script src="/assets/fontsize.js"></script>
 </body>
 </html>{{end}}`
 
@@ -119,6 +146,7 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
 {{define "meta_description"}}{{if .Page.Description}}<meta property="og:description" content="{{.Page.Description}}">
   <meta name="description" content="{{.Page.Description}}">{{else if .Site.Description}}<meta property="og:description" content="{{.Site.Description}}">
   <meta name="description" content="{{.Site.Description}}">{{end}}{{end}}
+{{define "canonical"}}{{if .Site.BaseURL}}<link rel="canonical" href="{{.Site.BaseURL}}/{{.Page.Slug}}/">{{end}}{{end}}
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
   <div class="flex gap-8">
@@ -132,7 +160,7 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
           <li>
             <a href="/{{.Slug}}/"
                class="block py-1.5 px-3 rounded text-sm {{if eq .Slug $currentSlug}}bg-brand-50 dark:bg-brand-900 text-brand-700 dark:text-brand-400 font-medium{{else}}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800{{end}}">
-              {{.Title}}
+              {{typeIcon .Type}} {{.Title}}
             </a>
           </li>
           {{end}}
@@ -148,13 +176,37 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
         <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
         <span class="text-gray-900 dark:text-gray-100">{{.Page.Title}}</span>
       </nav>
+      {{if .Page.Headings}}
+      <details class="xl:hidden mb-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden not-prose">
+        <summary class="cursor-pointer px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 select-none">On this page</summary>
+        <ul class="px-4 py-2 space-y-1">
+          {{range .Page.Headings}}
+          <li><a href="#{{.ID}}" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{if eq .Level 3}} pl-3{{end}}">{{.Text}}</a></li>
+          {{end}}
+        </ul>
+      </details>
+      {{end}}
       <div class="mb-6">
-        {{if .Page.Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-1 rounded">{{typeLabel .Page.Type}}</span>{{end}}
+        <div class="flex items-center gap-3 flex-wrap">
+          {{if .Page.Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-1 rounded">{{typeLabel .Page.Type}}</span>{{end}}
+          {{if .Page.ReadingTime}}<span class="text-xs text-gray-400 dark:text-gray-500">{{.Page.ReadingTime}} min read</span>{{end}}
+          {{if .Page.Updated}}<span class="text-xs text-gray-400 dark:text-gray-500">Updated {{.Page.Updated}}</span>{{end}}
+        </div>
         <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mt-2">{{.Page.Title}}</h1>
       </div>
       <div class="prose">
         {{.Page.HTML}}
       </div>
+      {{if .Page.Related}}
+      <div class="mt-10 pt-6 border-t border-gray-200 dark:border-gray-800">
+        <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">See also</h3>
+        <ul class="space-y-1">
+          {{range .Page.Related}}
+          <li><a href="/{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
+          {{end}}
+        </ul>
+      </div>
+      {{end}}
       {{if .Site.RepoURL}}<div class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-800">
         <a href="{{.Site.RepoURL}}/edit/main/content/{{.Page.Slug}}.md" class="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">Edit this page on GitHub</a>
       </div>{{end}}
@@ -167,7 +219,9 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
     </article>
     {{if .Page.Headings}}
     <aside class="hidden xl:block w-56 flex-shrink-0">
-      <nav class="sticky top-8">
+      <div class="sticky top-8">
+        <div id="font-size-controls" class="flex items-center gap-2 mb-4 pb-4 border-b border-gray-200 dark:border-gray-800"></div>
+      <nav>
         <h3 class="font-semibold text-sm text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">On this page</h3>
         <ul class="space-y-1 text-sm">
           {{range .Page.Headings}}
@@ -177,6 +231,7 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
           {{end}}
         </ul>
       </nav>
+      </div>
     </aside>
     {{end}}
   </div>
@@ -237,13 +292,33 @@ const categoryTemplate = `{{define "title"}}{{.Category.Title}} — {{.Site.Titl
     {{range .Category.Pages}}
     <a href="/{{.Slug}}/" class="block p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-sm transition-all">
       <div class="flex items-center gap-3">
-        {{if .Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-0.5 rounded">{{typeLabel .Type}}</span>{{end}}
+        {{if .Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-0.5 rounded">{{typeIcon .Type}} {{typeLabel .Type}}</span>{{end}}
         <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{{.Title}}</span>
       </div>
       {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{.Description}}</p>{{end}}
     </a>
     {{end}}
   </div>
+</div>
+{{end}}`
+
+const printTemplate = `{{define "title"}}{{.Site.Title}} — Complete Reference{{end}}
+{{define "content"}}
+<div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+  <h1 class="text-4xl font-bold text-gray-900 dark:text-gray-100 mb-2">{{.Site.Title}}</h1>
+  <p class="text-gray-500 dark:text-gray-400 mb-12">Complete reference — all pages in one document</p>
+  {{range .Pages}}
+  <article class="mb-16 pb-16 border-b border-gray-200 dark:border-gray-800 last:border-0">
+    <div class="flex items-center gap-3 mb-2">
+      {{if .Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-0.5 rounded">{{typeLabel .Type}}</span>{{end}}
+      <span class="text-xs text-gray-400 dark:text-gray-500">{{.Category}}</span>
+    </div>
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">{{.Title}}</h2>
+    <div class="prose">
+      {{.HTML}}
+    </div>
+  </article>
+  {{end}}
 </div>
 {{end}}`
 

@@ -30,7 +30,7 @@ func runBuild(f flags) error {
 		return fmt.Errorf("loading content: %w", err)
 	}
 
-	if err := build.Build(site, cfg, outDir); err != nil {
+	if err := build.Build(site, cfg, dir, outDir); err != nil {
 		return fmt.Errorf("building site: %w", err)
 	}
 
