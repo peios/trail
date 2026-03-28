@@ -13,6 +13,7 @@ import (
 
 type Templates struct {
 	Page                *template.Template
+	SpecPage            *template.Template
 	Homepage            *template.Template
 	Category            *template.Template
 	NotFound            *template.Template
@@ -21,6 +22,7 @@ type Templates struct {
 	PathwaysPage        *template.Template
 	ProductPage         *template.Template
 	ProductPathwaysPage *template.Template
+	SpecProductPage     *template.Template
 }
 
 func LoadTemplates(cfg *config.Config) (*Templates, error) {
@@ -45,6 +47,36 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 			}
 			p += page + "/?pathway=" + pathwaySlug
 			return template.URL(p)
+		},
+		"firstPageSlug": func(prod *content.Product) string {
+			if len(prod.Categories) > 0 && len(prod.Categories[0].Pages) > 0 {
+				return prod.Categories[0].Pages[0].Slug
+			}
+			return prod.Slug
+		},
+		"docsProducts": func(products []*content.Product) []*content.Product {
+			var out []*content.Product
+			for _, p := range products {
+				if p.Kind != "spec" {
+					out = append(out, p)
+				}
+			}
+			return out
+		},
+		"specProducts": func(products []*content.Product) []*content.Product {
+			var out []*content.Product
+			seen := make(map[string]bool)
+			for _, p := range products {
+				if p.Kind == "spec" {
+					// Deduplicate versioned specs — show only once using base name
+					baseName := p.Name
+					if !seen[baseName] {
+						seen[baseName] = true
+						out = append(out, p)
+					}
+				}
+			}
+			return out
 		},
 		"firstN": func(n int, pages []*content.Page) []*content.Page {
 			if len(pages) <= n {
@@ -139,6 +171,16 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 		return nil, fmt.Errorf("parsing product pathways page template: %w", err)
 	}
 
+	specPageTmpl, err := template.Must(base.Clone()).Parse(specPageTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing spec page template: %w", err)
+	}
+
+	specProductPageTmpl, err := template.Must(base.Clone()).Parse(specProductPageTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing spec product page template: %w", err)
+	}
+
 	return &Templates{
 		Page:                pageTmpl,
 		Homepage:            homepageTmpl,
@@ -149,6 +191,8 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 		PathwaysPage:        pathwaysPageTmpl,
 		ProductPage:         productPageTmpl,
 		ProductPathwaysPage: productPathwaysPageTmpl,
+		SpecPage:            specPageTmpl,
+		SpecProductPage:     specProductPageTmpl,
 	}, nil
 }
 

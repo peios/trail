@@ -62,6 +62,11 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 		}
 	}
 
+	// Build spec version redirects (e.g. /kacs/ → /kacs/v0.20/)
+	if err := buildSpecRedirects(cfg, outDir); err != nil {
+		return fmt.Errorf("building spec redirects: %w", err)
+	}
+
 	// Build category index pages
 	for _, cat := range site.Categories {
 		if err := buildCategoryIndex(tmpl, site, cfg, cat, outDir); err != nil {
@@ -157,15 +162,17 @@ type pageData struct {
 }
 
 type pageContent struct {
-	Title       string
-	Type        string
-	Slug        string
-	Description string
-	Updated     string
-	ReadingTime int // minutes
-	HTML        template.HTML
-	Headings    []heading
-	Related     []relatedPage
+	Title        string
+	Type         string
+	Slug         string
+	Description  string
+	Updated      string
+	SectionNum   string
+	IsSpecCover  bool // first page of a spec product
+	ReadingTime  int  // minutes
+	HTML         template.HTML
+	Headings     []heading
+	Related      []relatedPage
 }
 
 type relatedPage struct {
@@ -174,9 +181,10 @@ type relatedPage struct {
 }
 
 type heading struct {
-	ID    string
-	Text  string
-	Level int // 2 or 3
+	ID         string
+	Text       string
+	Level      int // 2 or 3
+	SectionNum string // e.g. "2.1.1" — set for spec pages
 }
 
 type siteData struct {
@@ -250,14 +258,26 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 		}
 	}
 
+	isSpec := prod != nil && prod.Kind == "spec"
+
 	renderedHTML := string(buf)
 	renderedHTML = resolvePageLinks(renderedHTML, site, cfg.BasePath())
 	renderedHTML = transformAdmonitions(renderedHTML)
+	if isSpec {
+		renderedHTML = highlightRFCKeywords(renderedHTML)
+	}
 	renderedHTML = wrapTables(renderedHTML)
 	renderedHTML = transformTabGroups(renderedHTML)
 	renderedHTML = transformMermaid(renderedHTML)
 	headings := extractHeadings(renderedHTML)
+	if isSpec && page.SectionNum != "" {
+		headings = assignHeadingSectionNums(headings, page.SectionNum)
+		renderedHTML = injectSectionNumbers(renderedHTML, headings)
+	}
 	renderedHTML = injectAnchorLinks(renderedHTML)
+	isSpecCover := isSpec && prod != nil && len(prod.Categories) > 0 &&
+		len(prod.Categories[0].Pages) > 0 && prod.Categories[0].Pages[0].Slug == page.Slug
+
 	data := pageData{
 		Site: newSiteData(site, cfg),
 		Page: pageContent{
@@ -266,6 +286,8 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 			Slug:        page.Slug,
 			Description: page.Description,
 			Updated:     page.Updated,
+			SectionNum:  page.SectionNum,
+			IsSpecCover: isSpecCover,
 			ReadingTime: wordCount(page.Body) / 200,
 			HTML:        template.HTML(renderedHTML),
 			Headings:    headings,
@@ -275,7 +297,11 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 		Product:  prod,
 	}
 
-	return tmpl.Page.ExecuteTemplate(f, "base", data)
+	t := tmpl.Page
+	if isSpec {
+		t = tmpl.SpecPage
+	}
+	return t.ExecuteTemplate(f, "base", data)
 }
 
 type categoryData struct {
@@ -293,6 +319,14 @@ func buildProductIndex(tmpl *theme.Templates, site *content.Site, cfg *config.Co
 	prodDir := filepath.Join(outDir, prod.Slug)
 	if err := os.MkdirAll(prodDir, 0o755); err != nil {
 		return err
+	}
+
+	// Spec products redirect to first page instead of rendering an index
+	if prod.Kind == "spec" && len(prod.Categories) > 0 && len(prod.Categories[0].Pages) > 0 {
+		firstPage := prod.Categories[0].Pages[0]
+		target := cfg.BasePath() + firstPage.Slug + "/"
+		redirectHTML := `<!DOCTYPE html><html><head><script>location.replace('` + target + `')</script><link rel="canonical" href="` + target + `"><noscript><meta http-equiv="refresh" content="0;url=` + target + `"></noscript></head><body><a href="` + target + `">` + firstPage.Title + `</a></body></html>`
+		return os.WriteFile(filepath.Join(prodDir, "index.html"), []byte(redirectHTML), 0o644)
 	}
 
 	outPath := filepath.Join(prodDir, "index.html")
@@ -691,14 +725,133 @@ func resolvePageLinks(html string, site *content.Site, basePath string) string {
 	})
 }
 
-var admonitionRe = regexp.MustCompile(`(?s)<blockquote>\s*<p>\[!(NOTE|WARNING|IMPORTANT|TIP|CAUTION)\]\s*\n?(.*?)</p>\s*</blockquote>`)
+func assignHeadingSectionNums(headings []heading, pageBase string) []heading {
+	h2count := 0
+	h3count := 0
+	for i := range headings {
+		if headings[i].Level == 2 {
+			h2count++
+			h3count = 0
+			headings[i].SectionNum = fmt.Sprintf("%s.%d", pageBase, h2count)
+		} else if headings[i].Level == 3 {
+			h3count++
+			headings[i].SectionNum = fmt.Sprintf("%s.%d.%d", pageBase, h2count, h3count)
+		}
+	}
+	return headings
+}
+
+var sectionHeadingRe = regexp.MustCompile(`(<h([23])\s+id="([^"]*)"[^>]*>)`)
+
+func injectSectionNumbers(html string, headings []heading) string {
+	headingIdx := 0
+	return sectionHeadingRe.ReplaceAllStringFunc(html, func(match string) string {
+		if headingIdx >= len(headings) {
+			return match
+		}
+		h := headings[headingIdx]
+		headingIdx++
+		// Replace the id with the section number and add a section number span
+		sub := sectionHeadingRe.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		level := sub[2]
+		// Rewrite the tag with section number id and visible prefix
+		return `<h` + level + ` id="` + h.SectionNum + `">` +
+			`<span class="section-num">§` + h.SectionNum + `</span> `
+	})
+}
+
+func buildSpecRedirects(cfg *config.Config, outDir string) error {
+	basePath := cfg.BasePath()
+	for _, prod := range cfg.Products {
+		if !prod.IsSpec() || len(prod.Versions) == 0 {
+			continue
+		}
+		// Find current version (latest non-superseded)
+		var current string
+		for i := len(prod.Versions) - 1; i >= 0; i-- {
+			if prod.Versions[i].Status != "superseded" {
+				current = prod.Versions[i].Name
+				break
+			}
+		}
+		if current == "" {
+			current = prod.Versions[len(prod.Versions)-1].Name
+		}
+
+		// Write redirect page at /spec/slug/index.html
+		redirectDir := filepath.Join(outDir, "spec", prod.Slug)
+		if err := os.MkdirAll(redirectDir, 0o755); err != nil {
+			return err
+		}
+		target := basePath + "spec/" + prod.Slug + "/" + current + "/"
+		redirectHTML := `<!DOCTYPE html><html><head><script>location.replace('` + target + `')</script><link rel="canonical" href="` + target + `"><noscript><meta http-equiv="refresh" content="0;url=` + target + `"></noscript></head><body><a href="` + target + `">` + current + `</a></body></html>`
+		if err := os.WriteFile(filepath.Join(redirectDir, "index.html"), []byte(redirectHTML), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var rfcKeywordRe = regexp.MustCompile(`\b(MUST NOT|SHALL NOT|SHOULD NOT|MUST|SHALL|SHOULD|REQUIRED|MAY|OPTIONAL)\b`)
+
+func highlightRFCKeywords(html string) string {
+	// Don't highlight inside HTML tags or code blocks
+	var result strings.Builder
+	inTag := false
+	inCode := false
+	i := 0
+	for i < len(html) {
+		if html[i] == '<' {
+			// Check for code/pre opening/closing
+			rest := html[i:]
+			if strings.HasPrefix(rest, "<code") || strings.HasPrefix(rest, "<pre") {
+				inCode = true
+			} else if strings.HasPrefix(rest, "</code") || strings.HasPrefix(rest, "</pre") {
+				inCode = false
+			}
+			inTag = true
+			result.WriteByte(html[i])
+			i++
+			continue
+		}
+		if html[i] == '>' {
+			inTag = false
+			result.WriteByte(html[i])
+			i++
+			continue
+		}
+		if inTag || inCode {
+			result.WriteByte(html[i])
+			i++
+			continue
+		}
+		// Try to match RFC keyword at current position
+		loc := rfcKeywordRe.FindStringIndex(html[i:])
+		if loc != nil && loc[0] == 0 {
+			keyword := html[i : i+loc[1]]
+			result.WriteString(`<span class="rfc-keyword">` + keyword + `</span>`)
+			i += loc[1]
+		} else {
+			result.WriteByte(html[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+var admonitionRe = regexp.MustCompile(`(?s)<blockquote>\s*<p>\[!(NOTE|WARNING|IMPORTANT|TIP|CAUTION|INFORMATIVE|DEFINITION)\]\s*\n?(.*?)</p>\s*</blockquote>`)
 
 var admonitionStyles = map[string]struct{ icon, border, bg, title string }{
-	"NOTE":      {"&#8505;", "border-brand-400 dark:border-brand-600", "bg-brand-50 dark:bg-brand-900/30", "Note"},
-	"TIP":       {"&#128161;", "border-green-400 dark:border-green-600", "bg-green-50 dark:bg-green-900/30", "Tip"},
-	"IMPORTANT": {"&#10071;", "border-purple-400 dark:border-purple-600", "bg-purple-50 dark:bg-purple-900/30", "Important"},
-	"WARNING":   {"&#9888;", "border-yellow-400 dark:border-yellow-600", "bg-yellow-50 dark:bg-yellow-900/30", "Warning"},
-	"CAUTION":   {"&#9888;", "border-red-400 dark:border-red-600", "bg-red-50 dark:bg-red-900/30", "Caution"},
+	"NOTE":        {"&#8505;", "border-brand-400 dark:border-brand-600", "bg-brand-50 dark:bg-brand-900/30", "Note"},
+	"TIP":         {"&#128161;", "border-green-400 dark:border-green-600", "bg-green-50 dark:bg-green-900/30", "Tip"},
+	"IMPORTANT":   {"&#10071;", "border-purple-400 dark:border-purple-600", "bg-purple-50 dark:bg-purple-900/30", "Important"},
+	"WARNING":     {"&#9888;", "border-yellow-400 dark:border-yellow-600", "bg-yellow-50 dark:bg-yellow-900/30", "Warning"},
+	"CAUTION":     {"&#9888;", "border-red-400 dark:border-red-600", "bg-red-50 dark:bg-red-900/30", "Caution"},
+	"INFORMATIVE": {"&#9432;", "border-gray-300 dark:border-gray-600", "bg-gray-50 dark:bg-gray-900/30", "Informative"},
+	"DEFINITION":  {"&#8801;", "border-brand-300 dark:border-brand-700", "bg-white dark:bg-gray-900", "Definition"},
 }
 
 func transformAdmonitions(html string) string {

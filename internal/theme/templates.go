@@ -67,6 +67,10 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose h2 .anchor, .prose h3 .anchor { @apply invisible ml-2 text-gray-300 dark:text-gray-600 no-underline; }
     .prose h2:hover .anchor, .prose h3:hover .anchor { @apply visible; }
 
+    .section-num { @apply text-gray-400 dark:text-gray-500 font-normal mr-2; }
+    h3 .section-num { @apply text-base; }
+    .rfc-keyword { @apply font-semibold text-brand-700 dark:text-brand-400; }
+
     @media print {
       header, footer, aside, #mobile-menu, #pathway-nav, #search-input, #search-results, #theme-toggle, #mobile-menu-toggle, #back-to-top, .anchor { display: none !important; }
       body { background: white !important; color: black !important; }
@@ -268,10 +272,13 @@ const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
 </div>
 
 {{if .Site.Products}}
+{{$docs := docsProducts .Site.Products}}
+{{$specs := specProducts .Site.Products}}
+{{if $docs}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
-  <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6">Products</h2>
+  <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6">Documentation</h2>
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-    {{range .Site.Products}}
+    {{range $docs}}
     <a href="{{$.Site.BasePath}}{{.Slug}}/" class="block p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1 sm:mb-2">{{.Name}}</h3>
       {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mb-2 sm:mb-3">{{.Description}}</p>{{end}}
@@ -280,6 +287,22 @@ const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
     {{end}}
   </div>
 </div>
+{{end}}
+{{if $specs}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12{{if $docs}} border-t border-gray-200 dark:border-gray-800{{end}}">
+  <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6">Specifications</h2>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+    {{range $specs}}
+    <a href="{{$.Site.BasePath}}{{firstPageSlug .}}/" class="block p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1 sm:mb-2">{{.Name}}</h3>
+      {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mb-2 sm:mb-3">{{.Description}}</p>{{end}}
+      {{if .VersionSlug}}<span class="text-xs text-brand-600 dark:text-brand-400">{{.VersionSlug}}</span>{{end}}
+      <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} sections</span>
+    </a>
+    {{end}}
+  </div>
+</div>
+{{end}}
 {{else}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
   <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6">Browse by Topic</h2>
@@ -459,6 +482,166 @@ const productPathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
     </a>
+    {{end}}
+  </div>
+</div>
+{{end}}`
+
+const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Product.Name}} Specification — {{.Site.Title}}{{end}}
+{{define "meta_description"}}{{if .Page.Description}}<meta property="og:description" content="{{.Page.Description}}">
+  <meta name="description" content="{{.Page.Description}}">{{else if .Site.Description}}<meta property="og:description" content="{{.Site.Description}}">
+  <meta name="description" content="{{.Site.Description}}">{{end}}{{end}}
+{{define "canonical"}}{{if .Site.BaseURL}}<link rel="canonical" href="{{.Site.BaseURL}}/{{.Page.Slug}}/">{{end}}{{end}}
+{{define "content"}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+  <div class="flex gap-8">
+    {{if .Product}}
+    <aside class="hidden lg:block w-64 flex-shrink-0">
+      <nav class="sticky top-8 max-h-[calc(100vh-4rem)] overflow-y-auto">
+        {{if .Product.VersionSlug}}<div class="mb-4 pb-3 border-b border-gray-200 dark:border-gray-800">
+          <span class="text-xs font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">Version</span>
+          <div class="mt-1">
+            <select id="version-switcher" class="w-full text-sm bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-gray-700 dark:text-gray-300" onchange="var v=this.value,c='{{.Product.VersionSlug}}';window.location.pathname=window.location.pathname.replace('/'+c+'/','/'+v+'/');">
+              {{range .Product.Versions}}
+              <option value="{{.Name}}"{{if eq .Name $.Product.VersionSlug}} selected{{end}}>{{.Name}}{{if eq .Status "draft"}} (draft){{else if eq .Status "superseded"}} (superseded){{end}}</option>
+              {{end}}
+            </select>
+          </div>
+        </div>{{end}}
+        {{$currentSlug := .Page.Slug}}
+        {{range .Product.Categories}}
+        <div class="mb-4">
+          <h3 class="font-semibold text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+            <span class="text-gray-400 dark:text-gray-500 font-normal">{{.SectionNum}}</span> {{.Title}}
+          </h3>
+          <ul class="space-y-0.5">
+            {{range .Pages}}
+            <li>
+              <a href="{{$.Site.BasePath}}{{.Slug}}/"
+                 class="block py-1 px-3 rounded text-sm {{if eq .Slug $currentSlug}}bg-brand-50 dark:bg-brand-900 text-brand-700 dark:text-brand-400 font-medium{{else}}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800{{end}}">
+                <span class="text-gray-400 dark:text-gray-500 text-xs mr-1">{{.SectionNum}}</span> {{.Title}}
+              </a>
+            </li>
+            {{end}}
+          </ul>
+        </div>
+        {{end}}
+      </nav>
+    </aside>
+    {{end}}
+    <article class="flex-1 min-w-0 max-w-3xl">
+      <nav class="text-sm mb-4 flex flex-wrap items-center">
+        <a href="{{.Site.BasePath}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+        {{if .Product}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+        <a href="{{$.Site.BasePath}}{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>{{end}}
+        {{if .Category}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+        <span class="text-gray-500 dark:text-gray-400">{{.Category.Title}}</span>{{end}}
+      </nav>
+      {{if .Page.Headings}}
+      <details class="xl:hidden mb-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden not-prose">
+        <summary class="cursor-pointer px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 select-none">On this page</summary>
+        <ul class="px-4 py-2 space-y-1">
+          {{range .Page.Headings}}
+          <li><a href="#{{.ID}}" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{if eq .Level 3}} pl-3{{end}}">{{if .SectionNum}}<span class="text-gray-400 dark:text-gray-500 text-xs">§{{.SectionNum}}</span> {{end}}{{.Text}}</a></li>
+          {{end}}
+        </ul>
+      </details>
+      {{end}}
+      {{if .Page.IsSpecCover}}
+      <div class="border border-gray-200 dark:border-gray-800 rounded-lg p-6 mb-8 bg-gray-50 dark:bg-gray-900 relative">
+        <p class="text-xs font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">Specification</p>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 m-0">{{.Product.Name}}</h1>
+        {{if .Product.Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mt-2 pr-28">{{.Product.Description}}</p>{{end}}
+        {{if .Product.VersionSlug}}
+        <div class="absolute top-6 right-6 text-right">
+          <span class="text-sm font-mono text-gray-700 dark:text-gray-300">{{.Product.VersionSlug}}</span>
+          {{range .Product.Versions}}{{if eq .Name $.Product.VersionSlug}}
+          <div class="mt-1">
+            {{if eq .Status "draft"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">Draft</span>
+            {{else if eq .Status "final"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300">Final</span>
+            {{else if eq .Status "superseded"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400">Superseded</span>
+            {{end}}
+          </div>
+          {{if .Date}}<div class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{.Date}}</div>{{end}}
+          {{end}}{{end}}
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+      <div class="mb-6">
+        {{if .Page.SectionNum}}<span class="text-sm text-gray-400 dark:text-gray-500 font-mono">§{{.Page.SectionNum}}</span>{{end}}
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">{{.Page.Title}}</h1>
+      </div>
+      <div class="prose spec-prose">
+        {{.Page.HTML}}
+      </div>
+      {{if .Site.RepoURL}}<div class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-800">
+        <a href="{{.Site.RepoURL}}/edit/main/content/{{.Page.Slug}}.md" class="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">Edit this page on GitHub</a>
+      </div>{{end}}
+    </article>
+    {{if .Page.Headings}}
+    <aside class="hidden xl:block w-56 flex-shrink-0">
+      <div class="sticky top-8">
+      <nav>
+        <h3 class="font-semibold text-sm text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">On this page</h3>
+        <ul class="space-y-1 text-sm">
+          {{range .Page.Headings}}
+          <li>
+            <a href="#{{.ID}}" class="block py-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{if eq .Level 3}} pl-3{{end}}">{{if .SectionNum}}<span class="text-gray-400 dark:text-gray-500 text-xs">§{{.SectionNum}}</span> {{end}}{{.Text}}</a>
+          </li>
+          {{end}}
+        </ul>
+      </nav>
+      </div>
+    </aside>
+    {{end}}
+  </div>
+</div>
+{{end}}`
+
+const specProductPageTemplate = `{{define "title"}}{{.Product.Name}} Specification — {{.Site.Title}}{{end}}
+{{define "content"}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+  <nav class="text-sm mb-4 sm:mb-6 flex flex-wrap items-center">
+    <a href="{{.Site.BasePath}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+    <span class="text-gray-900 dark:text-gray-100">{{.Product.Name}}</span>
+  </nav>
+  <div class="border border-gray-200 dark:border-gray-800 rounded-lg p-6 sm:p-10 mb-8 sm:mb-12 bg-gray-50 dark:bg-gray-900">
+    <div class="flex items-start justify-between flex-wrap gap-4">
+      <div>
+        <p class="text-xs font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">Specification</p>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100">{{.Product.Name}}</h1>
+        {{if .Product.Description}}<p class="text-sm sm:text-base text-gray-500 dark:text-gray-400 mt-2 max-w-2xl">{{.Product.Description}}</p>{{end}}
+      </div>
+      {{if .Product.VersionSlug}}
+      <div class="text-right">
+        <span class="text-sm font-mono text-gray-700 dark:text-gray-300">{{.Product.VersionSlug}}</span>
+        {{range .Product.Versions}}{{if eq .Name $.Product.VersionSlug}}
+        <div class="mt-1">
+          {{if eq .Status "draft"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">Draft</span>
+          {{else if eq .Status "final"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300">Final</span>
+          {{else if eq .Status "superseded"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400">Superseded</span>
+          {{end}}
+        </div>
+        {{if .Date}}<div class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{.Date}}</div>{{end}}
+        {{end}}{{end}}
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  <h2 class="text-lg sm:text-xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Table of Contents</h2>
+  <div class="space-y-3">
+    {{range .Product.Categories}}
+    <div class="p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg">
+      <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3"><span class="text-gray-400 dark:text-gray-500 font-normal mr-2">{{.SectionNum}}</span>{{.Title}}</h3>
+      <ul class="space-y-1">
+        {{range .Pages}}
+        <li><a href="{{$.Site.BasePath}}{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200"><span class="text-gray-400 dark:text-gray-500 text-xs mr-1">{{.SectionNum}}</span> {{.Title}}</a></li>
+        {{end}}
+      </ul>
+    </div>
     {{end}}
   </div>
 </div>

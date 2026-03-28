@@ -37,9 +37,34 @@ type Product struct {
 	Slug          string   `toml:"slug"`
 	Description   string   `toml:"description"`
 	Order         int      `toml:"order"`
+	Kind          string   `toml:"kind"` // "docs" (default) or "spec"
 	CategoryOrder []string `toml:"category_order"`
 
+	Versions []Version `toml:"versions"` // spec products only
 	Pathways []Pathway
+}
+
+type Version struct {
+	Name   string `toml:"name"`   // e.g. "v0.20"
+	Status string `toml:"status"` // "draft", "final", "superseded"
+	Date   string `toml:"date"`   // e.g. "2026-03-28"
+}
+
+func (p *Product) IsSpec() bool {
+	return p.Kind == "spec"
+}
+
+func (p *Product) CurrentVersion() *Version {
+	// Latest non-superseded version; fall back to latest overall
+	for i := len(p.Versions) - 1; i >= 0; i-- {
+		if p.Versions[i].Status != "superseded" {
+			return &p.Versions[i]
+		}
+	}
+	if len(p.Versions) > 0 {
+		return &p.Versions[len(p.Versions)-1]
+	}
+	return nil
 }
 
 type Pathway struct {

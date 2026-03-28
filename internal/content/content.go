@@ -24,9 +24,12 @@ type Product struct {
 	Name        string
 	Slug        string
 	Description string
+	Kind        string // "docs" or "spec"
 	Pages       []*Page
 	Categories  []*Category
 	Pathways    []config.Pathway
+	Versions    []config.Version   // spec products only
+	VersionSlug string             // current version being rendered (e.g. "v0.20")
 }
 
 type Page struct {
@@ -41,6 +44,7 @@ type Page struct {
 	Category    string   // e.g. "identity"
 	ProductSlug string   // e.g. "peios" (empty for single-product)
 	Body        []byte
+	SectionNum  string   // e.g. "1.2" — set for spec products
 }
 
 type Category struct {
@@ -49,6 +53,7 @@ type Category struct {
 	Order       int
 	ProductSlug string
 	Pages       []*Page
+	SectionNum  string // e.g. "1" — set for spec products
 }
 
 func Load(dir string, cfg *config.Config) (*Site, error) {
@@ -58,15 +63,20 @@ func Load(dir string, cfg *config.Config) (*Site, error) {
 
 	if len(cfg.Products) > 0 {
 		for _, prod := range cfg.Products {
-			product, err := loadProduct(dir, cfg, prod)
+			products, err := loadProduct(dir, cfg, prod)
 			if err != nil {
 				return nil, fmt.Errorf("loading product %s: %w", prod.Slug, err)
 			}
-			site.Products = append(site.Products, product)
-			site.Pages = append(site.Pages, product.Pages...)
-			site.Categories = append(site.Categories, product.Categories...)
-			for _, p := range product.Pages {
-				site.PageMap[p.Slug] = p
+			for _, product := range products {
+				if product.Kind == "spec" {
+					AssignSectionNumbers(product)
+				}
+				site.Products = append(site.Products, product)
+				site.Pages = append(site.Pages, product.Pages...)
+				site.Categories = append(site.Categories, product.Categories...)
+				for _, p := range product.Pages {
+					site.PageMap[p.Slug] = p
+				}
 			}
 		}
 	} else {
@@ -85,21 +95,59 @@ func Load(dir string, cfg *config.Config) (*Site, error) {
 	return site, nil
 }
 
-func loadProduct(dir string, cfg *config.Config, prod config.Product) (*Product, error) {
+func loadProduct(dir string, cfg *config.Config, prod config.Product) ([]*Product, error) {
+	kind := prod.Kind
+	if kind == "" {
+		kind = "docs"
+	}
+
+	if prod.IsSpec() && len(prod.Versions) > 0 {
+		return loadSpecProduct(dir, cfg, prod, kind)
+	}
+
 	contentDir := filepath.Join(dir, "content", prod.Slug)
 	pages, categories, err := loadContent(contentDir, prod.Slug, prod.CategoryOrder)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Product{
+	return []*Product{{
 		Name:        prod.Name,
 		Slug:        prod.Slug,
 		Description: prod.Description,
+		Kind:        kind,
 		Pages:       pages,
 		Categories:  categories,
 		Pathways:    prod.Pathways,
-	}, nil
+		Versions:    prod.Versions,
+	}}, nil
+}
+
+func loadSpecProduct(dir string, cfg *config.Config, prod config.Product, kind string) ([]*Product, error) {
+	var products []*Product
+
+	for _, ver := range prod.Versions {
+		contentDir := filepath.Join(dir, "content", prod.Slug, ver.Name)
+		versionSlug := "spec/" + prod.Slug + "/" + ver.Name
+
+		pages, categories, err := loadContent(contentDir, versionSlug, prod.CategoryOrder)
+		if err != nil {
+			return nil, fmt.Errorf("loading version %s: %w", ver.Name, err)
+		}
+
+		products = append(products, &Product{
+			Name:        prod.Name,
+			Slug:        versionSlug,
+			Description: prod.Description,
+			Kind:        kind,
+			Pages:       pages,
+			Categories:  categories,
+			Versions:    prod.Versions,
+			VersionSlug: ver.Name,
+		})
+	}
+
+	return products, nil
 }
 
 func loadContent(contentDir, productSlug string, categoryOrder []string) ([]*Page, []*Category, error) {
@@ -247,6 +295,15 @@ func parseFrontmatter(data []byte, v any) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+func AssignSectionNumbers(prod *Product) {
+	for ci, cat := range prod.Categories {
+		cat.SectionNum = fmt.Sprintf("%d", ci+1)
+		for pi, page := range cat.Pages {
+			page.SectionNum = fmt.Sprintf("%d.%d", ci+1, pi+1)
+		}
+	}
 }
 
 func humanize(s string) string {
