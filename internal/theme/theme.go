@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/peios/trail/internal/config"
 	"github.com/peios/trail/internal/content"
@@ -23,7 +24,20 @@ type Templates struct {
 }
 
 func LoadTemplates(cfg *config.Config) (*Templates, error) {
+	basePath := cfg.BasePath()
 	funcMap := template.FuncMap{
+		"bp": func(path string) string {
+			if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+				return path
+			}
+			return basePath + strings.TrimPrefix(path, "/")
+		},
+		"catPath": func(productSlug, name string) template.URL {
+			if productSlug != "" {
+				return template.URL(basePath + productSlug + "/" + name + "/")
+			}
+			return template.URL(basePath + name + "/")
+		},
 		"firstN": func(n int, pages []*content.Page) []*content.Page {
 			if len(pages) <= n {
 				return pages

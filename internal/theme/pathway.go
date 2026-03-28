@@ -5,9 +5,14 @@ const pathwayJS = `(function() {
   var pathwaySlug = params.get('pathway');
   if (!pathwaySlug) return;
 
-  var path = window.location.pathname.replace(/^\/|\/$/g, '');
+  var basePath = window.__basePath || '/';
+  var path = window.location.pathname;
+  if (basePath !== '/' && path.indexOf(basePath) === 0) {
+    path = path.slice(basePath.length);
+  }
+  path = path.replace(/^\/|\/$/g, '');
 
-  fetch('/pathways.json')
+  fetch(basePath + 'pathways.json')
     .then(function(r) { return r.json(); })
     .then(function(pathways) {
       var pathway = pathways.find(function(p) { return p.slug === pathwaySlug; });
@@ -32,7 +37,7 @@ const pathwayJS = `(function() {
             var cls = isCurrent
               ? 'bg-brand-50 dark:bg-brand-900 text-brand-700 dark:text-brand-400 font-medium'
               : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800';
-            return '<li><a href="/' + p.slug + '/?pathway=' + pathwaySlug + '" class="block py-1.5 px-3 rounded text-sm ' + cls + '">' +
+            return '<li><a href="' + basePath + p.slug + '/?pathway=' + pathwaySlug + '" class="block py-1.5 px-3 rounded text-sm ' + cls + '">' +
               escapeHtml(p.title) + '</a></li>';
           }).join('');
         }
@@ -48,7 +53,7 @@ const pathwayJS = `(function() {
 
       if (idx > 0) {
         var prev = pathway.pages[idx - 1];
-        prevLink.href = '/' + prev.slug + '/?pathway=' + pathwaySlug;
+        prevLink.href = basePath + prev.slug + '/?pathway=' + pathwaySlug;
         prevTitle.textContent = prev.title;
         prevLink.classList.remove('invisible');
       } else {
@@ -57,7 +62,7 @@ const pathwayJS = `(function() {
 
       if (idx < pathway.pages.length - 1) {
         var next = pathway.pages[idx + 1];
-        nextLink.href = '/' + next.slug + '/?pathway=' + pathwaySlug;
+        nextLink.href = basePath + next.slug + '/?pathway=' + pathwaySlug;
         nextTitle.textContent = next.title;
         nextLink.classList.remove('invisible');
       } else {

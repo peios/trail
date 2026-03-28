@@ -183,6 +183,7 @@ type siteData struct {
 	Title        string
 	Description  string
 	BaseURL      string
+	BasePath     string
 	RepoURL      string
 	Favicon      string
 	HeadExtra    template.HTML
@@ -202,6 +203,7 @@ func newSiteData(site *content.Site, cfg *config.Config) siteData {
 		Title:        cfg.Title,
 		Description:  cfg.Description,
 		BaseURL:      cfg.BaseURL,
+		BasePath:     cfg.BasePath(),
 		RepoURL:      cfg.RepoURL,
 		Favicon:      cfg.Favicon,
 		HeadExtra:    template.HTML(cfg.HeadExtra),
@@ -249,7 +251,7 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 	}
 
 	renderedHTML := string(buf)
-	renderedHTML = resolvePageLinks(renderedHTML, site)
+	renderedHTML = resolvePageLinks(renderedHTML, site, cfg.BasePath())
 	renderedHTML = transformAdmonitions(renderedHTML)
 	renderedHTML = wrapTables(renderedHTML)
 	renderedHTML = transformTabGroups(renderedHTML)
@@ -678,18 +680,14 @@ func resolveRelated(slugs []string, site *content.Site) []relatedPage {
 
 var pageLinkRe = regexp.MustCompile(`href="~([^"]+)"`)
 
-func resolvePageLinks(html string, site *content.Site) string {
+func resolvePageLinks(html string, site *content.Site, basePath string) string {
 	return pageLinkRe.ReplaceAllStringFunc(html, func(match string) string {
 		sub := pageLinkRe.FindStringSubmatch(match)
 		if len(sub) < 2 {
 			return match
 		}
 		slug := sub[1]
-		if _, ok := site.PageMap[slug]; ok {
-			return `href="/` + slug + `/"`
-		}
-		// Leave unresolved links as-is (will 404, author can fix)
-		return `href="/` + slug + `/"`
+		return `href="` + basePath + slug + `/"`
 	})
 }
 

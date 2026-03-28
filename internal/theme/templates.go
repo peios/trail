@@ -87,11 +87,11 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
   <header class="border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-14">
-        <a href="/" class="text-lg font-semibold text-gray-900 dark:text-gray-100 hover:text-brand-600 dark:hover:text-brand-400">{{.Site.Title}}</a>
+        <a href="{{.Site.BasePath}}" class="text-lg font-semibold text-gray-900 dark:text-gray-100 hover:text-brand-600 dark:hover:text-brand-400">{{.Site.Title}}</a>
         <div class="flex items-center gap-4">
           <nav class="hidden md:flex items-center gap-6 text-sm">
             {{range .Site.Nav}}
-            <a href="{{.URL}}" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">{{.Label}}</a>
+            <a href="{{bp .URL}}" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">{{.Label}}</a>
             {{end}}
           </nav>
           <div class="relative hidden sm:block">
@@ -118,7 +118,7 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
       </div>
       <nav class="space-y-1">
         {{range .Site.Nav}}
-        <a href="{{.URL}}" class="block py-2 px-3 rounded text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800">{{.Label}}</a>
+        <a href="{{bp .URL}}" class="block py-2 px-3 rounded text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800">{{.Label}}</a>
         {{end}}
       </nav>
     </div>
@@ -137,7 +137,8 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
       </div>
     </div>
   </footer>
-  <script src="/assets/livereload.js"></script>
+  <script>window.__basePath='{{.Site.BasePath}}';</script>
+  <script src="{{.Site.BasePath}}assets/livereload.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script>
     document.querySelectorAll('.mermaid').forEach(function(el) {
@@ -146,16 +147,16 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     mermaid.initialize({ startOnLoad: true, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default' });
   </script>
   <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
-  <script src="/assets/pathway.js"></script>
-  <script src="/assets/theme.js"></script>
-  <script src="/assets/search.js"></script>
-  <script src="/assets/mobile.js"></script>
-  <script src="/assets/copycode.js"></script>
-  <script src="/assets/tabs.js"></script>
-  <script src="/assets/scrollspy.js"></script>
-  <script src="/assets/backtotop.js"></script>
-  <script src="/assets/highlight.js"></script>
-  <script src="/assets/fontsize.js"></script>
+  <script src="{{.Site.BasePath}}assets/pathway.js"></script>
+  <script src="{{.Site.BasePath}}assets/theme.js"></script>
+  <script src="{{.Site.BasePath}}assets/search.js"></script>
+  <script src="{{.Site.BasePath}}assets/mobile.js"></script>
+  <script src="{{.Site.BasePath}}assets/copycode.js"></script>
+  <script src="{{.Site.BasePath}}assets/tabs.js"></script>
+  <script src="{{.Site.BasePath}}assets/scrollspy.js"></script>
+  <script src="{{.Site.BasePath}}assets/backtotop.js"></script>
+  <script src="{{.Site.BasePath}}assets/highlight.js"></script>
+  <script src="{{.Site.BasePath}}assets/fontsize.js"></script>
 </body>
 </html>{{end}}`
 
@@ -175,7 +176,7 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
           {{$currentSlug := .Page.Slug}}
           {{range .Category.Pages}}
           <li>
-            <a href="/{{.Slug}}/"
+            <a href="{{$.Site.BasePath}}{{.Slug}}/"
                class="block py-1.5 px-3 rounded text-sm {{if eq .Slug $currentSlug}}bg-brand-50 dark:bg-brand-900 text-brand-700 dark:text-brand-400 font-medium{{else}}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800{{end}}">
               {{typeIcon .Type}} {{.Title}}
             </a>
@@ -187,11 +188,11 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
     {{end}}
     <article class="flex-1 min-w-0 max-w-3xl">
       <nav class="text-sm mb-4 flex flex-wrap items-center">
-        <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+        <a href="{{.Site.BasePath}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
         {{if .Product}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
-        <a href="/{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>{{end}}
+        <a href="{{$.Site.BasePath}}{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>{{end}}
         {{if .Category}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
-        <a href="/{{if .Category.ProductSlug}}{{.Category.ProductSlug}}/{{end}}{{.Category.Name}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Category.Title}}</a>{{end}}
+        <a href="{{catPath .Category.ProductSlug .Category.Name}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Category.Title}}</a>{{end}}
         <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
         <span class="text-gray-900 dark:text-gray-100">{{.Page.Title}}</span>
       </nav>
@@ -221,7 +222,7 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
         <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">See also</h3>
         <ul class="space-y-1">
           {{range .Page.Related}}
-          <li><a href="/{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
+          <li><a href="{{$.Site.BasePath}}{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
           {{end}}
         </ul>
       </div>
@@ -271,7 +272,7 @@ const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
   <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6">Products</h2>
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
     {{range .Site.Products}}
-    <a href="/{{.Slug}}/" class="block p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+    <a href="{{$.Site.BasePath}}{{.Slug}}/" class="block p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1 sm:mb-2">{{.Name}}</h3>
       {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mb-2 sm:mb-3">{{.Description}}</p>{{end}}
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
@@ -288,10 +289,10 @@ const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">{{.Title}}</h3>
       <ul class="space-y-1">
         {{range firstN 3 .Pages}}
-        <li><a href="/{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
+        <li><a href="{{$.Site.BasePath}}{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
         {{end}}
       </ul>
-      {{if gt (len .Pages) 3}}<a href="/{{if .ProductSlug}}{{.ProductSlug}}/{{end}}{{.Name}}/" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
+      {{if gt (len .Pages) 3}}<a href="{{catPath .ProductSlug .Name}}" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
     </div>
     {{end}}
   </div>
@@ -303,16 +304,16 @@ const categoryTemplate = `{{define "title"}}{{.Category.Title}} — {{.Site.Titl
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
   <nav class="text-sm mb-6 flex flex-wrap items-center">
-    <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <a href="{{.Site.BasePath}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
     {{if .Product}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
-    <a href="/{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>{{end}}
+    <a href="{{$.Site.BasePath}}{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>{{end}}
     <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
     <span class="text-gray-900 dark:text-gray-100">{{.Category.Title}}</span>
   </nav>
   <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">{{.Category.Title}}</h1>
   <div class="space-y-3">
     {{range .Category.Pages}}
-    <a href="/{{.Slug}}/" class="block p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-sm transition-all">
+    <a href="{{$.Site.BasePath}}{{.Slug}}/" class="block p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-sm transition-all">
       {{if .Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-0.5 rounded mb-1.5">{{typeLabel .Type}}</span>{{end}}
       <div class="text-sm font-medium text-gray-900 dark:text-gray-100">{{.Title}}</div>
       {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{.Description}}</p>{{end}}
@@ -376,7 +377,7 @@ const productPageTemplate = `{{define "title"}}{{.Product.Name}} — {{.Site.Tit
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
   <nav class="text-sm mb-4 sm:mb-6 flex flex-wrap items-center">
-    <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <a href="{{.Site.BasePath}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
     <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
     <span class="text-gray-900 dark:text-gray-100">{{.Product.Name}}</span>
   </nav>
@@ -388,11 +389,11 @@ const productPageTemplate = `{{define "title"}}{{.Product.Name}} — {{.Site.Tit
   <div class="mb-8 sm:mb-12">
     <div class="flex items-center justify-between mb-3 sm:mb-4">
       <h2 class="text-lg sm:text-xl font-bold text-gray-900 dark:text-gray-100">Learning Pathways</h2>
-      {{if gt (len .Product.Pathways) (len $featured)}}<a href="/{{.Product.Slug}}/pathways/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">View all &rarr;</a>{{end}}
+      {{if gt (len .Product.Pathways) (len $featured)}}<a href="{{$.Site.BasePath}}{{.Product.Slug}}/pathways/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">View all &rarr;</a>{{end}}
     </div>
     <div class="flex gap-3 sm:gap-4 overflow-x-auto pb-2 -mx-4 px-4 sm:mx-0 sm:px-0">
       {{range $featured}}
-      <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="flex-shrink-0 w-64 sm:w-72 p-3 sm:p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      <a href="{{$.Site.BasePath}}{{(index .Pages 0)}}/?pathway={{.Slug}}" class="flex-shrink-0 w-64 sm:w-72 p-3 sm:p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
         <h3 class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">{{.Name}}</h3>
         <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{{.Description}}</p>
         <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
@@ -409,10 +410,10 @@ const productPageTemplate = `{{define "title"}}{{.Product.Name}} — {{.Site.Tit
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">{{.Title}}</h3>
       <ul class="space-y-1">
         {{range firstN 3 .Pages}}
-        <li><a href="/{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
+        <li><a href="{{$.Site.BasePath}}{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
         {{end}}
       </ul>
-      {{if gt (len .Pages) 3}}<a href="/{{if .ProductSlug}}{{.ProductSlug}}/{{end}}{{.Name}}/" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
+      {{if gt (len .Pages) 3}}<a href="{{catPath .ProductSlug .Name}}" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
     </div>
     {{end}}
   </div>
@@ -423,14 +424,14 @@ const pathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.Site.Ti
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
   <nav class="text-sm mb-6">
-    <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <a href="{{.Site.BasePath}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
     <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
     <span class="text-gray-900 dark:text-gray-100">Learning Pathways</span>
   </nav>
   <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">Learning Pathways</h1>
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {{range .Site.Pathways}}
-    <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+    <a href="{{$.Site.BasePath}}{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
@@ -444,16 +445,16 @@ const productPathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
   <nav class="text-sm mb-6">
-    <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <a href="{{.Site.BasePath}}" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
     <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
-    <a href="/{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>
+    <a href="{{$.Site.BasePath}}{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>
     <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
     <span class="text-gray-900 dark:text-gray-100">Learning Pathways</span>
   </nav>
   <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">Learning Pathways</h1>
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {{range .Product.Pathways}}
-    <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+    <a href="{{$.Site.BasePath}}{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
@@ -468,6 +469,6 @@ const notFoundTemplate = `{{define "title"}}Page Not Found — {{.Site.Title}}{{
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 text-center">
   <h1 class="text-6xl font-bold text-gray-300 dark:text-gray-700 mb-4">404</h1>
   <p class="text-xl text-gray-600 dark:text-gray-400 mb-8">This page doesn't exist.</p>
-  <a href="/" class="text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200 font-medium">Back to home</a>
+  <a href="{{.Site.BasePath}}" class="text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200 font-medium">Back to home</a>
 </div>
 {{end}}`

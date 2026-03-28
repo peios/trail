@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -117,6 +119,27 @@ func (c *Config) CategoryOrderFor(product string) []string {
 		}
 	}
 	return nil
+}
+
+func (c *Config) BasePath() string {
+	if c.BaseURL == "" {
+		return "/"
+	}
+	u, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return "/"
+	}
+	p := u.Path
+	if p == "" || p == "/" {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	if !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	return p
 }
 
 func loadPathways(dir string) ([]Pathway, error) {
