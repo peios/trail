@@ -38,6 +38,14 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 			}
 			return template.URL(basePath + name + "/")
 		},
+		"pathwayURL": func(product, page, pathwaySlug string) template.URL {
+			p := basePath
+			if product != "" {
+				p += product + "/"
+			}
+			p += page + "/?pathway=" + pathwaySlug
+			return template.URL(p)
+		},
 		"firstN": func(n int, pages []*content.Page) []*content.Page {
 			if len(pages) <= n {
 				return pages

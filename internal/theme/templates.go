@@ -393,7 +393,7 @@ const productPageTemplate = `{{define "title"}}{{.Product.Name}} — {{.Site.Tit
     </div>
     <div class="flex gap-3 sm:gap-4 overflow-x-auto pb-2 -mx-4 px-4 sm:mx-0 sm:px-0">
       {{range $featured}}
-      <a href="{{$.Site.BasePath}}{{(index .Pages 0)}}/?pathway={{.Slug}}" class="flex-shrink-0 w-64 sm:w-72 p-3 sm:p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      <a href="{{pathwayURL .Product (index .Pages 0) .Slug}}" class="flex-shrink-0 w-64 sm:w-72 p-3 sm:p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
         <h3 class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">{{.Name}}</h3>
         <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{{.Description}}</p>
         <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
@@ -431,7 +431,7 @@ const pathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.Site.Ti
   <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">Learning Pathways</h1>
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {{range .Site.Pathways}}
-    <a href="{{$.Site.BasePath}}{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+    <a href="{{pathwayURL .Product (index .Pages 0) .Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
@@ -454,7 +454,7 @@ const productPathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.
   <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">Learning Pathways</h1>
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {{range .Product.Pathways}}
-    <a href="{{$.Site.BasePath}}{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+    <a href="{{pathwayURL .Product (index .Pages 0) .Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
