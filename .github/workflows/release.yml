@@ -29,5 +29,4 @@ jobs:
           git push -f origin latest
           gh release create latest trail-linux-amd64 \
             --title "Latest Build" \
-            --notes "Built from $(git rev-parse --short HEAD) on $(date -u +%Y-%m-%d)" \
-            --prerelease
+            --notes "Built from $(git rev-parse --short HEAD) on $(date -u +%Y-%m-%d)"
