@@ -55,6 +55,13 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 		}
 	}
 
+	// Build product index pages
+	for _, prod := range site.Products {
+		if err := buildProductIndex(tmpl, site, cfg, prod, outDir); err != nil {
+			return fmt.Errorf("building product %s: %w", prod.Slug, err)
+		}
+	}
+
 	// Build category index pages
 	for _, cat := range site.Categories {
 		if err := buildCategoryIndex(tmpl, site, cfg, cat, outDir); err != nil {
@@ -67,9 +74,19 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 		return fmt.Errorf("building homepage: %w", err)
 	}
 
-	// Build pathways page
-	if err := buildPathwaysPage(tmpl, site, cfg, outDir); err != nil {
-		return fmt.Errorf("building pathways page: %w", err)
+	// Build pathways pages (per-product or global)
+	if len(site.Products) > 0 {
+		for _, prod := range site.Products {
+			if len(prod.Pathways) > 0 {
+				if err := buildProductPathwaysPage(tmpl, site, cfg, prod, outDir); err != nil {
+					return fmt.Errorf("building pathways for %s: %w", prod.Slug, err)
+				}
+			}
+		}
+	} else {
+		if err := buildPathwaysPage(tmpl, site, cfg, outDir); err != nil {
+			return fmt.Errorf("building pathways page: %w", err)
+		}
 	}
 
 	// Build 404 page
@@ -77,9 +94,22 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 		return fmt.Errorf("building 404: %w", err)
 	}
 
-	// Build print-all page
-	if err := buildPrintAll(md, tmpl, site, cfg, outDir); err != nil {
-		return fmt.Errorf("building print page: %w", err)
+	// Build print-all pages
+	if len(site.Products) > 0 {
+		// Per-product print pages
+		for _, prod := range site.Products {
+			if err := buildProductPrintAll(md, tmpl, site, cfg, prod, outDir); err != nil {
+				return fmt.Errorf("building print for %s: %w", prod.Slug, err)
+			}
+		}
+		// Global print page grouped by product
+		if err := buildGlobalPrintAll(md, tmpl, site, cfg, outDir); err != nil {
+			return fmt.Errorf("building global print page: %w", err)
+		}
+	} else {
+		if err := buildPrintAll(md, tmpl, site, cfg, outDir); err != nil {
+			return fmt.Errorf("building print page: %w", err)
+		}
 	}
 
 	// Build pathway manifest for JS navigation
@@ -123,6 +153,7 @@ type pageData struct {
 	Site     siteData
 	Page     pageContent
 	Category *content.Category
+	Product  *content.Product
 }
 
 type pageContent struct {
@@ -157,6 +188,7 @@ type siteData struct {
 	HeadExtra    template.HTML
 	Announcement string
 	Nav          []config.NavItem
+	Products     []*content.Product
 	Categories   []*content.Category
 	Pathways     []config.Pathway
 }
@@ -175,8 +207,9 @@ func newSiteData(site *content.Site, cfg *config.Config) siteData {
 		HeadExtra:    template.HTML(cfg.HeadExtra),
 		Announcement: cfg.Announcement,
 		Nav:          cfg.Nav,
+		Products:     site.Products,
 		Categories:   site.Categories,
-		Pathways:     cfg.Pathways,
+		Pathways:     cfg.AllPathways(),
 	}
 }
 
@@ -201,8 +234,16 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 
 	var cat *content.Category
 	for _, c := range site.Categories {
-		if c.Name == page.Category {
+		if c.Name == page.Category && c.ProductSlug == page.ProductSlug {
 			cat = c
+			break
+		}
+	}
+
+	var prod *content.Product
+	for _, p := range site.Products {
+		if p.Slug == page.ProductSlug {
+			prod = p
 			break
 		}
 	}
@@ -210,6 +251,7 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 	renderedHTML := string(buf)
 	renderedHTML = resolvePageLinks(renderedHTML, site)
 	renderedHTML = transformAdmonitions(renderedHTML)
+	renderedHTML = wrapTables(renderedHTML)
 	renderedHTML = transformTabGroups(renderedHTML)
 	renderedHTML = transformMermaid(renderedHTML)
 	headings := extractHeadings(renderedHTML)
@@ -228,6 +270,7 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 			Related:     resolveRelated(page.Related, site),
 		},
 		Category: cat,
+		Product:  prod,
 	}
 
 	return tmpl.Page.ExecuteTemplate(f, "base", data)
@@ -236,10 +279,42 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 type categoryData struct {
 	Site     siteData
 	Category *content.Category
+	Product  *content.Product
+}
+
+type productData struct {
+	Site    siteData
+	Product *content.Product
+}
+
+func buildProductIndex(tmpl *theme.Templates, site *content.Site, cfg *config.Config, prod *content.Product, outDir string) error {
+	prodDir := filepath.Join(outDir, prod.Slug)
+	if err := os.MkdirAll(prodDir, 0o755); err != nil {
+		return err
+	}
+
+	outPath := filepath.Join(prodDir, "index.html")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	data := productData{
+		Site:    newSiteData(site, cfg),
+		Product: prod,
+	}
+
+	return tmpl.ProductPage.ExecuteTemplate(f, "base", data)
 }
 
 func buildCategoryIndex(tmpl *theme.Templates, site *content.Site, cfg *config.Config, cat *content.Category, outDir string) error {
-	catDir := filepath.Join(outDir, cat.Name)
+	catDir := outDir
+	if cat.ProductSlug != "" {
+		catDir = filepath.Join(outDir, cat.ProductSlug, cat.Name)
+	} else {
+		catDir = filepath.Join(outDir, cat.Name)
+	}
 	if err := os.MkdirAll(catDir, 0o755); err != nil {
 		return err
 	}
@@ -251,9 +326,18 @@ func buildCategoryIndex(tmpl *theme.Templates, site *content.Site, cfg *config.C
 	}
 	defer f.Close()
 
+	var prod *content.Product
+	for _, p := range site.Products {
+		if p.Slug == cat.ProductSlug {
+			prod = p
+			break
+		}
+	}
+
 	data := categoryData{
 		Site:     newSiteData(site, cfg),
 		Category: cat,
+		Product:  prod,
 	}
 
 	return tmpl.Category.ExecuteTemplate(f, "base", data)
@@ -279,6 +363,32 @@ func buildPathwaysPage(tmpl *theme.Templates, site *content.Site, cfg *config.Co
 	return tmpl.PathwaysPage.ExecuteTemplate(f, "base", data)
 }
 
+type productPathwaysData struct {
+	Site    siteData
+	Product *content.Product
+}
+
+func buildProductPathwaysPage(tmpl *theme.Templates, site *content.Site, cfg *config.Config, prod *content.Product, outDir string) error {
+	pathwaysDir := filepath.Join(outDir, prod.Slug, "pathways")
+	if err := os.MkdirAll(pathwaysDir, 0o755); err != nil {
+		return err
+	}
+
+	outPath := filepath.Join(pathwaysDir, "index.html")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	data := productPathwaysData{
+		Site:    newSiteData(site, cfg),
+		Product: prod,
+	}
+
+	return tmpl.ProductPathwaysPage.ExecuteTemplate(f, "base", data)
+}
+
 func build404(tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
 	outPath := filepath.Join(outDir, "404.html")
 	f, err := os.Create(outPath)
@@ -302,7 +412,14 @@ type printPageEntry struct {
 }
 
 type printData struct {
-	Site  siteData
+	Site        siteData
+	ProductName string
+	Pages       []printPageEntry
+	Sections    []printSection // for multi-product global print
+}
+
+type printSection struct {
+	Name  string
 	Pages []printPageEntry
 }
 
@@ -342,6 +459,86 @@ func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Si
 	return tmpl.Print.ExecuteTemplate(f, "base", data)
 }
 
+func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
+	printDir := filepath.Join(outDir, "print")
+	if err := os.MkdirAll(printDir, 0o755); err != nil {
+		return err
+	}
+
+	outPath := filepath.Join(printDir, "index.html")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var sections []printSection
+	for _, prod := range site.Products {
+		var pages []printPageEntry
+		for _, page := range prod.Pages {
+			var buf []byte
+			w := newBytesWriter(&buf)
+			if err := md.Convert(page.Body, w); err != nil {
+				continue
+			}
+			pages = append(pages, printPageEntry{
+				Title:    page.Title,
+				Type:     page.Type,
+				Category: page.Category,
+				HTML:     template.HTML(buf),
+			})
+		}
+		sections = append(sections, printSection{
+			Name:  prod.Name,
+			Pages: pages,
+		})
+	}
+
+	data := printData{
+		Site:     newSiteData(site, cfg),
+		Sections: sections,
+	}
+
+	return tmpl.PrintGlobal.ExecuteTemplate(f, "base", data)
+}
+
+func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, prod *content.Product, outDir string) error {
+	printDir := filepath.Join(outDir, prod.Slug, "print")
+	if err := os.MkdirAll(printDir, 0o755); err != nil {
+		return err
+	}
+
+	outPath := filepath.Join(printDir, "index.html")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var pages []printPageEntry
+	for _, page := range prod.Pages {
+		var buf []byte
+		w := newBytesWriter(&buf)
+		if err := md.Convert(page.Body, w); err != nil {
+			continue
+		}
+		pages = append(pages, printPageEntry{
+			Title:    page.Title,
+			Type:     page.Type,
+			Category: page.Category,
+			HTML:     template.HTML(buf),
+		})
+	}
+
+	data := printData{
+		Site:        newSiteData(site, cfg),
+		ProductName: prod.Name,
+		Pages:       pages,
+	}
+
+	return tmpl.Print.ExecuteTemplate(f, "base", data)
+}
+
 func buildHomepage(tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
 	outPath := filepath.Join(outDir, "index.html")
 	f, err := os.Create(outPath)
@@ -370,14 +567,19 @@ func buildPathwayManifest(site *content.Site, cfg *config.Config, outDir string)
 	}
 
 	var entries []pathwayEntry
-	for _, p := range cfg.Pathways {
+	for _, p := range cfg.AllPathways() {
 		refs := make([]pageRef, 0, len(p.Pages))
 		for _, slug := range p.Pages {
+			// Try the slug as-is, then prefixed with product
+			fullSlug := slug
+			if p.Product != "" {
+				fullSlug = p.Product + "/" + slug
+			}
 			title := slug
-			if page, ok := site.PageMap[slug]; ok {
+			if page, ok := site.PageMap[fullSlug]; ok {
 				title = page.Title
 			}
-			refs = append(refs, pageRef{Slug: slug, Title: title})
+			refs = append(refs, pageRef{Slug: fullSlug, Title: title})
 		}
 		entries = append(entries, pathwayEntry{
 			Name:        p.Name,
@@ -585,6 +787,12 @@ func transformTabGroups(html string) string {
 		b.WriteString(`</div>`)
 		return b.String()
 	})
+}
+
+var tableRe = regexp.MustCompile(`(?s)(<table>.*?</table>)`)
+
+func wrapTables(html string) string {
+	return tableRe.ReplaceAllString(html, `<div class="table-wrapper">$1</div>`)
 }
 
 var mermaidRe = regexp.MustCompile(`(?s)<pre[^>]*><code class="language-mermaid">(.*?)</code></pre>`)

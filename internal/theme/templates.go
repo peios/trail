@@ -38,11 +38,13 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose h1 { @apply text-3xl font-bold mb-6 text-gray-900 dark:text-gray-100; }
     .prose h2 { @apply text-2xl font-semibold mt-10 mb-4 text-gray-900 dark:text-gray-100; }
     .prose h3 { @apply text-xl font-semibold mt-8 mb-3 text-gray-800 dark:text-gray-200; }
+    .prose { overflow-wrap: break-word; word-break: break-word; }
     .prose p { @apply mb-4 leading-relaxed text-gray-700 dark:text-gray-300; }
     .prose ul { @apply mb-4 ml-6 list-disc text-gray-700 dark:text-gray-300; }
     .prose ol { @apply mb-4 ml-6 list-decimal text-gray-700 dark:text-gray-300; }
     .prose li { @apply mb-1; }
-    .prose table { @apply w-full mb-6 border-collapse; }
+    .prose .table-wrapper { @apply overflow-x-auto mb-6 -mx-4 px-4; }
+    .prose table { @apply w-full border-collapse; min-width: 400px; }
     .prose th { @apply text-left p-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 font-semibold text-sm; }
     .prose td { @apply p-3 border border-gray-200 dark:border-gray-700 text-sm; }
     .prose code:not(pre code) { @apply bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-sm font-mono; }
@@ -66,11 +68,12 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose h2:hover .anchor, .prose h3:hover .anchor { @apply visible; }
 
     @media print {
-      header, footer, aside, #mobile-menu, #pathway-nav, #search-input, #search-results, #theme-toggle, #mobile-menu-toggle, .anchor { display: none !important; }
+      header, footer, aside, #mobile-menu, #pathway-nav, #search-input, #search-results, #theme-toggle, #mobile-menu-toggle, #back-to-top, .anchor { display: none !important; }
       body { background: white !important; color: black !important; }
       .prose a { color: inherit !important; text-decoration: underline !important; }
       .prose pre { border: 1px solid #ccc !important; }
       article { max-width: 100% !important; }
+      .print-cover-page, .print-section-page { height: 100vh !important; min-height: auto !important; border: none !important; margin-bottom: 0 !important; }
     }
   </style>
 </head>
@@ -91,9 +94,9 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
             <a href="{{.URL}}" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">{{.Label}}</a>
             {{end}}
           </nav>
-          <div class="relative">
-            <input id="search-input" type="text" placeholder="Search... (/)" class="w-48 lg:w-64 px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent">
-            <div id="search-results" class="hidden absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 max-h-96 overflow-y-auto"></div>
+          <div class="relative hidden sm:block">
+            <input id="search-input" type="text" placeholder="Search... (/)" class="w-40 md:w-48 lg:w-64 px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent">
+            <div id="search-results" class="hidden absolute top-full right-0 mt-1 w-80 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 max-h-96 overflow-y-auto"></div>
           </div>
           <button id="theme-toggle" class="p-1.5 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" aria-label="Toggle dark mode">
             <svg id="theme-icon-light" class="w-5 h-5 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
@@ -108,11 +111,17 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     </div>
   </header>
   <div id="mobile-menu" class="hidden md:hidden border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950">
-    <nav class="max-w-7xl mx-auto px-4 py-3 space-y-1">
-      {{range .Site.Nav}}
-      <a href="{{.URL}}" class="block py-2 px-3 rounded text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800">{{.Label}}</a>
-      {{end}}
-    </nav>
+    <div class="max-w-7xl mx-auto px-4 py-3">
+      <div class="relative sm:hidden mb-3">
+        <input id="mobile-search-input" type="text" placeholder="Search..." class="w-full px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent">
+        <div id="mobile-search-results" class="hidden absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"></div>
+      </div>
+      <nav class="space-y-1">
+        {{range .Site.Nav}}
+        <a href="{{.URL}}" class="block py-2 px-3 rounded text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800">{{.Label}}</a>
+        {{end}}
+      </nav>
+    </div>
   </div>
   <main>
     {{template "content" .}}
@@ -177,10 +186,12 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
     </aside>
     {{end}}
     <article class="flex-1 min-w-0 max-w-3xl">
-      <nav class="text-sm mb-4">
+      <nav class="text-sm mb-4 flex flex-wrap items-center">
         <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+        {{if .Product}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+        <a href="/{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>{{end}}
         {{if .Category}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
-        <a href="/{{.Category.Name}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Category.Title}}</a>{{end}}
+        <a href="/{{if .Category.ProductSlug}}{{.Category.ProductSlug}}/{{end}}{{.Category.Name}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Category.Title}}</a>{{end}}
         <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
         <span class="text-gray-900 dark:text-gray-100">{{.Page.Title}}</span>
       </nav>
@@ -249,54 +260,52 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
 const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
 {{define "content"}}
 <div class="bg-brand-700 dark:bg-brand-900 text-white">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-    <h1 class="text-4xl font-bold mb-4">{{.Site.Title}}</h1>
-    <p class="text-xl text-brand-100 max-w-2xl">{{.Site.Description}}</p>
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-16">
+    <h1 class="text-3xl sm:text-4xl font-bold mb-3 sm:mb-4">{{.Site.Title}}</h1>
+    <p class="text-base sm:text-xl text-brand-100 max-w-2xl">{{.Site.Description}}</p>
   </div>
 </div>
 
-{{$featured := featuredPathways .Site.Pathways}}
-{{if $featured}}
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-6">
-  <div class="flex items-center justify-between mb-4">
-    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Learning Pathways</h2>
-    <a href="/pathways/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">View all &rarr;</a>
-  </div>
-  <div class="flex gap-4 overflow-x-auto pb-2">
-    {{range $featured}}
-    <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="flex-shrink-0 w-72 p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
-      <h3 class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">{{.Name}}</h3>
-      <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{{.Description}}</p>
+{{if .Site.Products}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+  <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6">Products</h2>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+    {{range .Site.Products}}
+    <a href="/{{.Slug}}/" class="block p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1 sm:mb-2">{{.Name}}</h3>
+      {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mb-2 sm:mb-3">{{.Description}}</p>{{end}}
       <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
     </a>
     {{end}}
   </div>
 </div>
-{{end}}
-
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-  <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">Browse by Topic</h2>
-  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+{{else}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+  <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6">Browse by Topic</h2>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
     {{range .Site.Categories}}
-    <div class="p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg">
+    <div class="p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">{{.Title}}</h3>
       <ul class="space-y-1">
         {{range firstN 3 .Pages}}
         <li><a href="/{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
         {{end}}
       </ul>
-      {{if gt (len .Pages) 3}}<a href="/{{.Name}}/" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
+      {{if gt (len .Pages) 3}}<a href="/{{if .ProductSlug}}{{.ProductSlug}}/{{end}}{{.Name}}/" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
     </div>
     {{end}}
   </div>
 </div>
+{{end}}
 {{end}}`
 
 const categoryTemplate = `{{define "title"}}{{.Category.Title}} — {{.Site.Title}}{{end}}
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-  <nav class="text-sm mb-6">
+  <nav class="text-sm mb-6 flex flex-wrap items-center">
     <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    {{if .Product}}<span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+    <a href="/{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>{{end}}
     <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
     <span class="text-gray-900 dark:text-gray-100">{{.Category.Title}}</span>
   </nav>
@@ -304,10 +313,8 @@ const categoryTemplate = `{{define "title"}}{{.Category.Title}} — {{.Site.Titl
   <div class="space-y-3">
     {{range .Category.Pages}}
     <a href="/{{.Slug}}/" class="block p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-sm transition-all">
-      <div class="flex items-center gap-3">
-        {{if .Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-0.5 rounded">{{typeIcon .Type}} {{typeLabel .Type}}</span>{{end}}
-        <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{{.Title}}</span>
-      </div>
+      {{if .Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-0.5 rounded mb-1.5">{{typeLabel .Type}}</span>{{end}}
+      <div class="text-sm font-medium text-gray-900 dark:text-gray-100">{{.Title}}</div>
       {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{.Description}}</p>{{end}}
     </a>
     {{end}}
@@ -315,10 +322,10 @@ const categoryTemplate = `{{define "title"}}{{.Category.Title}} — {{.Site.Titl
 </div>
 {{end}}`
 
-const printTemplate = `{{define "title"}}{{.Site.Title}} — Complete Reference{{end}}
+const printTemplate = `{{define "title"}}{{if .ProductName}}{{.ProductName}} — {{end}}{{.Site.Title}} — Complete Reference{{end}}
 {{define "content"}}
 <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-  <h1 class="text-4xl font-bold text-gray-900 dark:text-gray-100 mb-2">{{.Site.Title}}</h1>
+  <h1 class="text-4xl font-bold text-gray-900 dark:text-gray-100 mb-2">{{if .ProductName}}{{.ProductName}}{{else}}{{.Site.Title}}{{end}}</h1>
   <p class="text-gray-500 dark:text-gray-400 mb-12">Complete reference — all pages in one document</p>
   {{range .Pages}}
   <article class="mb-16 pb-16 border-b border-gray-200 dark:border-gray-800 last:border-0">
@@ -335,6 +342,83 @@ const printTemplate = `{{define "title"}}{{.Site.Title}} — Complete Reference{
 </div>
 {{end}}`
 
+const printGlobalTemplate = `{{define "title"}}{{.Site.Title}} — Complete Reference{{end}}
+{{define "content"}}
+<div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+  <div class="print-cover-page flex flex-col items-center justify-center min-h-screen mb-10">
+    <h1 class="text-6xl font-black text-gray-900 dark:text-gray-100 mb-4 text-center">{{.Site.Title}}</h1>
+    {{if .Site.Description}}<p class="text-xl text-gray-500 dark:text-gray-400 text-center max-w-2xl">{{.Site.Description}}</p>{{end}}
+    <p class="text-sm text-gray-400 dark:text-gray-500 mt-8">Complete reference — all products in one document</p>
+  </div>
+  {{range .Sections}}
+  <div class="mb-20">
+    <div class="print-section-page flex items-center justify-center min-h-screen border-b-4 border-brand-500 mb-10">
+      <h2 class="text-5xl font-black text-brand-700 dark:text-brand-300 m-0 text-center">{{.Name}}</h2>
+    </div>
+    {{range .Pages}}
+    <article class="mb-16 pb-16 border-b border-gray-200 dark:border-gray-800 last:border-0">
+      <div class="flex items-center gap-3 mb-2">
+        {{if .Type}}<span class="inline-block text-xs font-medium uppercase tracking-wide text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900 px-2 py-0.5 rounded">{{typeLabel .Type}}</span>{{end}}
+        <span class="text-xs text-gray-400 dark:text-gray-500">{{.Category}}</span>
+      </div>
+      <h3 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">{{.Title}}</h3>
+      <div class="prose">
+        {{.HTML}}
+      </div>
+    </article>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}`
+
+const productPageTemplate = `{{define "title"}}{{.Product.Name}} — {{.Site.Title}}{{end}}
+{{define "content"}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+  <nav class="text-sm mb-4 sm:mb-6 flex flex-wrap items-center">
+    <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+    <span class="text-gray-900 dark:text-gray-100">{{.Product.Name}}</span>
+  </nav>
+  <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">{{.Product.Name}}</h1>
+  {{if .Product.Description}}<p class="text-sm sm:text-base text-gray-500 dark:text-gray-400 mb-6 sm:mb-8">{{.Product.Description}}</p>{{end}}
+
+  {{$featured := featuredPathways .Product.Pathways}}
+  {{if $featured}}
+  <div class="mb-8 sm:mb-12">
+    <div class="flex items-center justify-between mb-3 sm:mb-4">
+      <h2 class="text-lg sm:text-xl font-bold text-gray-900 dark:text-gray-100">Learning Pathways</h2>
+      {{if gt (len .Product.Pathways) (len $featured)}}<a href="/{{.Product.Slug}}/pathways/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">View all &rarr;</a>{{end}}
+    </div>
+    <div class="flex gap-3 sm:gap-4 overflow-x-auto pb-2 -mx-4 px-4 sm:mx-0 sm:px-0">
+      {{range $featured}}
+      <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="flex-shrink-0 w-64 sm:w-72 p-3 sm:p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+        <h3 class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">{{.Name}}</h3>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{{.Description}}</p>
+        <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
+      </a>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  <h2 class="text-lg sm:text-xl font-bold text-gray-900 dark:text-gray-100 mb-3 sm:mb-4">Browse by Topic</h2>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+    {{range .Product.Categories}}
+    <div class="p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg">
+      <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-3">{{.Title}}</h3>
+      <ul class="space-y-1">
+        {{range firstN 3 .Pages}}
+        <li><a href="/{{.Slug}}/" class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-800 dark:hover:text-brand-200">{{.Title}}</a></li>
+        {{end}}
+      </ul>
+      {{if gt (len .Pages) 3}}<a href="/{{if .ProductSlug}}{{.ProductSlug}}/{{end}}{{.Name}}/" class="inline-block mt-2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">See all {{len .Pages}} articles &rarr;</a>{{end}}
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}`
+
 const pathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.Site.Title}}{{end}}
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -346,6 +430,29 @@ const pathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.Site.Ti
   <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">Learning Pathways</h1>
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {{range .Site.Pathways}}
+    <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
+      <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>
+      <span class="text-xs text-gray-400 dark:text-gray-500">{{len .Pages}} articles</span>
+    </a>
+    {{end}}
+  </div>
+</div>
+{{end}}`
+
+const productPathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.Product.Name}} — {{.Site.Title}}{{end}}
+{{define "content"}}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+  <nav class="text-sm mb-6">
+    <a href="/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">Home</a>
+    <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+    <a href="/{{.Product.Slug}}/" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">{{.Product.Name}}</a>
+    <span class="text-gray-400 dark:text-gray-600 mx-2">/</span>
+    <span class="text-gray-900 dark:text-gray-100">Learning Pathways</span>
+  </nav>
+  <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-8">Learning Pathways</h1>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    {{range .Product.Pathways}}
     <a href="/{{(index .Pages 0)}}/?pathway={{.Slug}}" class="block p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-2">{{.Name}}</h3>
       <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">{{.Description}}</p>

@@ -11,12 +11,15 @@ import (
 )
 
 type Templates struct {
-	Page         *template.Template
-	Homepage     *template.Template
-	Category     *template.Template
-	NotFound     *template.Template
-	Print        *template.Template
-	PathwaysPage *template.Template
+	Page                *template.Template
+	Homepage            *template.Template
+	Category            *template.Template
+	NotFound            *template.Template
+	Print               *template.Template
+	PrintGlobal         *template.Template
+	PathwaysPage        *template.Template
+	ProductPage         *template.Template
+	ProductPathwaysPage *template.Template
 }
 
 func LoadTemplates(cfg *config.Config) (*Templates, error) {
@@ -94,18 +97,36 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 		return nil, fmt.Errorf("parsing print template: %w", err)
 	}
 
+	printGlobalTmpl, err := template.Must(base.Clone()).Parse(printGlobalTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing global print template: %w", err)
+	}
+
 	pathwaysPageTmpl, err := template.Must(base.Clone()).Parse(pathwaysPageTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("parsing pathways page template: %w", err)
 	}
 
+	productPageTmpl, err := template.Must(base.Clone()).Parse(productPageTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing product page template: %w", err)
+	}
+
+	productPathwaysPageTmpl, err := template.Must(base.Clone()).Parse(productPathwaysPageTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing product pathways page template: %w", err)
+	}
+
 	return &Templates{
-		Page:         pageTmpl,
-		Homepage:     homepageTmpl,
-		Category:     categoryTmpl,
-		NotFound:     notFoundTmpl,
-		Print:        printTmpl,
-		PathwaysPage: pathwaysPageTmpl,
+		Page:                pageTmpl,
+		Homepage:            homepageTmpl,
+		Category:            categoryTmpl,
+		NotFound:            notFoundTmpl,
+		Print:               printTmpl,
+		PrintGlobal:         printGlobalTmpl,
+		PathwaysPage:        pathwaysPageTmpl,
+		ProductPage:         productPageTmpl,
+		ProductPathwaysPage: productPathwaysPageTmpl,
 	}, nil
 }
 
