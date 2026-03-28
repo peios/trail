@@ -44,7 +44,7 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose ol { @apply mb-4 ml-6 list-decimal text-gray-700 dark:text-gray-300; }
     .prose li { @apply mb-1; }
     .prose .table-wrapper { @apply overflow-x-auto mb-6 -mx-4 px-4; }
-    .prose table { @apply w-full border-collapse; min-width: 400px; }
+    .prose table { @apply border-collapse; min-width: 100%; }
     .prose th { @apply text-left p-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 font-semibold text-sm; }
     .prose td { @apply p-3 border border-gray-200 dark:border-gray-700 text-sm; }
     .prose code:not(pre code) { @apply bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-sm font-mono; }
