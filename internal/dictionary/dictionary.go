@@ -96,11 +96,12 @@ func Load(dir string) (*Dictionary, error) {
 }
 
 // Resolve looks up a term by any form (name, abbreviation, alias).
-// Product-scoped definitions take precedence over global ones.
+// Resolution order: current product scope → global → any other scope.
+// Product scoping controls which definition wins, not visibility.
 func (d *Dictionary) Resolve(form, productSlug string) *Term {
 	lower := strings.ToLower(form)
 
-	// Try product scope first.
+	// Try current product scope first.
 	if productSlug != "" {
 		if scope, ok := d.index[productSlug]; ok {
 			if t, ok := scope[lower]; ok {
@@ -116,6 +117,16 @@ func (d *Dictionary) Resolve(form, productSlug string) *Term {
 		}
 	}
 
+	// Fall back to any other product scope.
+	for scopeName, scope := range d.index {
+		if scopeName == "" || scopeName == productSlug {
+			continue
+		}
+		if t, ok := scope[lower]; ok {
+			return t
+		}
+	}
+
 	return nil
 }
 
@@ -124,26 +135,16 @@ func (d *Dictionary) IsEmpty() bool {
 	return len(d.Terms) == 0
 }
 
-// VisibleForms returns all unique lowercase forms that are resolvable
-// in the given product context (product-scoped + global, deduplicated).
+// VisibleForms returns all unique lowercase forms across all scopes.
+// Product scoping affects resolution priority, not visibility.
 func (d *Dictionary) VisibleForms(productSlug string) []string {
 	seen := make(map[string]struct{})
 	var forms []string
 
-	// Product-scoped forms take precedence.
-	if productSlug != "" {
-		if scope, ok := d.index[productSlug]; ok {
-			for form := range scope {
-				seen[form] = struct{}{}
-				forms = append(forms, form)
-			}
-		}
-	}
-
-	// Global forms, skipping any shadowed by product scope.
-	if global, ok := d.index[""]; ok {
-		for form := range global {
+	for _, scope := range d.index {
+		for form := range scope {
 			if _, ok := seen[form]; !ok {
+				seen[form] = struct{}{}
 				forms = append(forms, form)
 			}
 		}

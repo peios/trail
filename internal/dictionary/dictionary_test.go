@@ -625,12 +625,12 @@ product = "lcs"
 		t.Error("expected to resolve 'RSI' in lcs scope")
 	}
 
-	// Should NOT resolve in other scopes (no global fallback).
-	if d.Resolve("RSI", "kacs") != nil {
-		t.Error("expected nil for 'RSI' in kacs scope (no global)")
+	// Should also resolve from other scopes via cross-product fallback.
+	if d.Resolve("RSI", "kacs") == nil {
+		t.Error("expected to resolve 'RSI' in kacs scope via fallback")
 	}
-	if d.Resolve("RSI", "") != nil {
-		t.Error("expected nil for 'RSI' with no scope (no global)")
+	if d.Resolve("RSI", "") == nil {
+		t.Error("expected to resolve 'RSI' with no scope via fallback")
 	}
 }
 

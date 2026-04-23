@@ -72,6 +72,9 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     h3 .section-num { @apply text-base; }
     .rfc-keyword { @apply font-semibold text-brand-700 dark:text-brand-400; }
 
+    .dict-term { border-bottom: 1.5px dotted; border-color: rgba(99,102,241,0.5); cursor: help; }
+    :is(.dark .dict-term) { border-color: rgba(129,140,248,0.45); }
+
     @media print {
       html, body { height: auto !important; overflow: visible !important; }
       body { display: block !important; }
@@ -169,6 +172,7 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
   <script src="{{.Site.BasePath}}assets/backtotop.js"></script>
   <script src="{{.Site.BasePath}}assets/highlight.js"></script>
   <script src="{{.Site.BasePath}}assets/fontsize.js"></script>
+  <script src="{{.Site.BasePath}}assets/popover.js"></script>
 </body>
 </html>{{end}}`
 
