@@ -12,6 +12,7 @@ import (
 	"github.com/peios/trail/internal/build"
 	"github.com/peios/trail/internal/config"
 	"github.com/peios/trail/internal/content"
+	"github.com/peios/trail/internal/dictionary"
 )
 
 func Serve(dir, output, port string) error {
@@ -143,7 +144,12 @@ func rebuild(dir, outDir string) error {
 		return fmt.Errorf("loading content: %w", err)
 	}
 
-	if err := build.Build(site, cfg, dir, outDir); err != nil {
+	dict, err := dictionary.Load(cfg.Dictionary.DictDir(dir))
+	if err != nil {
+		return fmt.Errorf("loading dictionary: %w", err)
+	}
+
+	if err := build.Build(site, cfg, dict, dir, outDir); err != nil {
 		return fmt.Errorf("building site: %w", err)
 	}
 

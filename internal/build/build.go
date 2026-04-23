@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -19,10 +22,11 @@ import (
 
 	"github.com/peios/trail/internal/config"
 	"github.com/peios/trail/internal/content"
+	"github.com/peios/trail/internal/dictionary"
 	"github.com/peios/trail/internal/theme"
 )
 
-func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error {
+func Build(site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, srcDir, outDir string) error {
 	md := goldmark.New(
 		goldmark.WithExtensions(
 			extension.Table,
@@ -48,10 +52,25 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
-	// Build each page
-	for _, page := range site.Pages {
-		if err := buildPage(md, tmpl, site, cfg, page, outDir); err != nil {
-			return fmt.Errorf("building %s: %w", page.Slug, err)
+	// Build each page in parallel
+	{
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, runtime.NumCPU())
+		var buildErr atomic.Value
+		for _, page := range site.Pages {
+			wg.Add(1)
+			go func(p *content.Page) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				if err := buildPage(md, tmpl, site, cfg, dict, p, outDir); err != nil {
+					buildErr.CompareAndSwap(nil, fmt.Errorf("building %s: %w", p.Slug, err))
+				}
+			}(page)
+		}
+		wg.Wait()
+		if err, ok := buildErr.Load().(error); ok && err != nil {
+			return err
 		}
 	}
 
@@ -103,16 +122,16 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 	if len(site.Products) > 0 {
 		// Per-product print pages
 		for _, prod := range site.Products {
-			if err := buildProductPrintAll(md, tmpl, site, cfg, prod, outDir); err != nil {
+			if err := buildProductPrintAll(md, tmpl, site, cfg, dict, prod, outDir); err != nil {
 				return fmt.Errorf("building print for %s: %w", prod.Slug, err)
 			}
 		}
 		// Global print page grouped by product
-		if err := buildGlobalPrintAll(md, tmpl, site, cfg, outDir); err != nil {
+		if err := buildGlobalPrintAll(md, tmpl, site, cfg, dict, outDir); err != nil {
 			return fmt.Errorf("building global print page: %w", err)
 		}
 	} else {
-		if err := buildPrintAll(md, tmpl, site, cfg, outDir); err != nil {
+		if err := buildPrintAll(md, tmpl, site, cfg, dict, outDir); err != nil {
 			return fmt.Errorf("building print page: %w", err)
 		}
 	}
@@ -130,6 +149,14 @@ func Build(site *content.Site, cfg *config.Config, srcDir, outDir string) error 
 	// Build search index
 	if err := buildSearchIndex(site, outDir); err != nil {
 		return fmt.Errorf("building search index: %w", err)
+	}
+
+	// Build dictionary page and JSON
+	if err := buildDictionaryPage(tmpl, site, cfg, dict, outDir); err != nil {
+		return fmt.Errorf("building dictionary page: %w", err)
+	}
+	if err := buildDictionaryJSON(dict, site, cfg, outDir); err != nil {
+		return fmt.Errorf("building dictionary JSON: %w", err)
 	}
 
 	// Write robots.txt
@@ -162,17 +189,17 @@ type pageData struct {
 }
 
 type pageContent struct {
-	Title        string
-	Type         string
-	Slug         string
-	Description  string
-	Updated      string
-	SectionNum   string
-	IsSpecCover  bool // first page of a spec product
-	ReadingTime  int  // minutes
-	HTML         template.HTML
-	Headings     []heading
-	Related      []relatedPage
+	Title       string
+	Type        string
+	Slug        string
+	Description string
+	Updated     string
+	SectionNum  string
+	IsSpecCover bool // first page of a spec product
+	ReadingTime int  // minutes
+	HTML        template.HTML
+	Headings    []heading
+	Related     []relatedPage
 }
 
 type relatedPage struct {
@@ -183,7 +210,7 @@ type relatedPage struct {
 type heading struct {
 	ID         string
 	Text       string
-	Level      int // 2 or 3
+	Level      int    // 2 or 3
 	SectionNum string // e.g. "2.1.1" — set for spec pages
 }
 
@@ -223,12 +250,51 @@ func newSiteData(site *content.Site, cfg *config.Config) siteData {
 	}
 }
 
-func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, page *content.Page, outDir string) error {
+func renderPageHTML(md goldmark.Markdown, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, page *content.Page, prod *content.Product, includeAnchors bool, linkResolver func(string) string) (template.HTML, []heading, error) {
 	var buf []byte
 	w := newBytesWriter(&buf)
 	if err := md.Convert(page.Body, w); err != nil {
-		return fmt.Errorf("converting markdown: %w", err)
+		return "", nil, fmt.Errorf("converting markdown: %w", err)
 	}
+
+	isSpec := prod != nil && prod.Kind == "spec"
+
+	renderedHTML := string(buf)
+	if linkResolver != nil {
+		renderedHTML = replacePageLinks(renderedHTML, linkResolver)
+	} else {
+		renderedHTML = resolvePageLinks(renderedHTML, site, cfg.BasePath())
+	}
+	renderedHTML = transformAdmonitions(renderedHTML)
+	if isSpec {
+		renderedHTML = highlightRFCKeywords(renderedHTML)
+	}
+	renderedHTML = wrapTables(renderedHTML)
+	renderedHTML = transformTabGroups(renderedHTML)
+	renderedHTML = transformMermaid(renderedHTML)
+
+	// Dictionary term linking (manual first, then auto if enabled).
+	if dict != nil && !dict.IsEmpty() {
+		productSlug := dictProductSlug(prod)
+		renderedHTML = transformDictManual(renderedHTML, dict, productSlug)
+		if cfg.Dictionary.AutoLinkForProduct(productSlug) {
+			renderedHTML = transformDictAutoLink(renderedHTML, dict, productSlug)
+		}
+	}
+
+	headings := extractHeadings(renderedHTML)
+	if isSpec && page.SectionNum != "" {
+		headings = assignHeadingSectionNums(headings, page.SectionNum)
+		renderedHTML = injectSectionNumbers(renderedHTML, headings)
+	}
+	if includeAnchors {
+		renderedHTML = injectAnchorLinks(renderedHTML)
+	}
+
+	return template.HTML(renderedHTML), headings, nil
+}
+
+func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, page *content.Page, outDir string) error {
 
 	pageDir := filepath.Join(outDir, page.Slug)
 	if err := os.MkdirAll(pageDir, 0o755); err != nil {
@@ -260,21 +326,10 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 
 	isSpec := prod != nil && prod.Kind == "spec"
 
-	renderedHTML := string(buf)
-	renderedHTML = resolvePageLinks(renderedHTML, site, cfg.BasePath())
-	renderedHTML = transformAdmonitions(renderedHTML)
-	if isSpec {
-		renderedHTML = highlightRFCKeywords(renderedHTML)
+	renderedHTML, headings, err := renderPageHTML(md, site, cfg, dict, page, prod, true, nil)
+	if err != nil {
+		return err
 	}
-	renderedHTML = wrapTables(renderedHTML)
-	renderedHTML = transformTabGroups(renderedHTML)
-	renderedHTML = transformMermaid(renderedHTML)
-	headings := extractHeadings(renderedHTML)
-	if isSpec && page.SectionNum != "" {
-		headings = assignHeadingSectionNums(headings, page.SectionNum)
-		renderedHTML = injectSectionNumbers(renderedHTML, headings)
-	}
-	renderedHTML = injectAnchorLinks(renderedHTML)
 	isSpecCover := isSpec && prod != nil && len(prod.Categories) > 0 &&
 		len(prod.Categories[0].Pages) > 0 && prod.Categories[0].Pages[0].Slug == page.Slug
 
@@ -289,7 +344,7 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 			SectionNum:  page.SectionNum,
 			IsSpecCover: isSpecCover,
 			ReadingTime: wordCount(page.Body) / 200,
-			HTML:        template.HTML(renderedHTML),
+			HTML:        renderedHTML,
 			Headings:    headings,
 			Related:     resolveRelated(page.Related, site),
 		},
@@ -441,25 +496,102 @@ func build404(tmpl *theme.Templates, site *content.Site, cfg *config.Config, out
 }
 
 type printPageEntry struct {
-	Title    string
-	Type     string
-	Category string
-	HTML     template.HTML
+	Title              string
+	Type               string
+	Category           string
+	CategoryTitle      string
+	CategorySectionNum string
+	SectionNum         string
+	AnchorID           string
+	HTML               template.HTML
 }
 
 type printData struct {
-	Site        siteData
-	ProductName string
-	Pages       []printPageEntry
-	Sections    []printSection // for multi-product global print
+	Site               siteData
+	ProductName        string
+	ProductDescription string
+	ProductSlug        string
+	ProductKind        string
+	VersionSlug        string
+	VersionStatus      string
+	VersionDate        string
+	Pages              []printPageEntry
+	Sections           []printSection // grouped for spec print and multi-product global print
 }
 
 type printSection struct {
-	Name  string
-	Pages []printPageEntry
+	Name       string
+	SectionNum string
+	Pages      []printPageEntry
 }
 
-func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
+func printAnchorID(page *content.Page) string {
+	if page.SectionNum != "" {
+		return "section-" + strings.ReplaceAll(page.SectionNum, ".", "-")
+	}
+	replacer := strings.NewReplacer("/", "-", ".", "-", " ", "-")
+	return "page-" + replacer.Replace(page.Slug)
+}
+
+func buildPrintEntry(md goldmark.Markdown, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, prod *content.Product, cat *content.Category, page *content.Page, anchorMap map[string]string) (printPageEntry, error) {
+	renderedHTML, _, err := renderPageHTML(md, site, cfg, dict, page, prod, false, func(slug string) string {
+		if anchor, ok := anchorMap[slug]; ok {
+			return "#" + anchor
+		}
+		return cfg.BasePath() + slug + "/"
+	})
+	if err != nil {
+		return printPageEntry{}, err
+	}
+
+	categoryTitle := page.Category
+	categorySectionNum := ""
+	if cat != nil {
+		categoryTitle = cat.Title
+		categorySectionNum = cat.SectionNum
+	}
+
+	return printPageEntry{
+		Title:              page.Title,
+		Type:               page.Type,
+		Category:           page.Category,
+		CategoryTitle:      categoryTitle,
+		CategorySectionNum: categorySectionNum,
+		SectionNum:         page.SectionNum,
+		AnchorID:           printAnchorID(page),
+		HTML:               renderedHTML,
+	}, nil
+}
+
+func pagesFromCategories(categories []*content.Category) []*content.Page {
+	var pages []*content.Page
+	for _, cat := range categories {
+		pages = append(pages, cat.Pages...)
+	}
+	return pages
+}
+
+func buildPrintAnchorMap(pages []*content.Page) map[string]string {
+	anchorMap := make(map[string]string, len(pages))
+	for _, page := range pages {
+		anchorMap[page.Slug] = printAnchorID(page)
+	}
+	return anchorMap
+}
+
+func currentVersionMeta(prod *content.Product) (string, string) {
+	if prod == nil || prod.VersionSlug == "" {
+		return "", ""
+	}
+	for _, version := range prod.Versions {
+		if version.Name == prod.VersionSlug {
+			return version.Status, version.Date
+		}
+	}
+	return "", ""
+}
+
+func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, outDir string) error {
 	printDir := filepath.Join(outDir, "print")
 	if err := os.MkdirAll(printDir, 0o755); err != nil {
 		return err
@@ -472,19 +604,17 @@ func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Si
 	}
 	defer f.Close()
 
+	orderedPages := pagesFromCategories(site.Categories)
+	anchorMap := buildPrintAnchorMap(orderedPages)
 	var pages []printPageEntry
-	for _, page := range site.Pages {
-		var buf []byte
-		w := newBytesWriter(&buf)
-		if err := md.Convert(page.Body, w); err != nil {
-			continue
+	for _, cat := range site.Categories {
+		for _, page := range cat.Pages {
+			entry, err := buildPrintEntry(md, site, cfg, dict, nil, cat, page, anchorMap)
+			if err != nil {
+				return err
+			}
+			pages = append(pages, entry)
 		}
-		pages = append(pages, printPageEntry{
-			Title:    page.Title,
-			Type:     page.Type,
-			Category: page.Category,
-			HTML:     template.HTML(buf),
-		})
 	}
 
 	data := printData{
@@ -495,7 +625,7 @@ func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Si
 	return tmpl.Print.ExecuteTemplate(f, "base", data)
 }
 
-func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, outDir string) error {
+func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, outDir string) error {
 	printDir := filepath.Join(outDir, "print")
 	if err := os.MkdirAll(printDir, 0o755); err != nil {
 		return err
@@ -508,25 +638,23 @@ func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *cont
 	}
 	defer f.Close()
 
+	globalAnchorMap := buildPrintAnchorMap(site.Pages)
 	var sections []printSection
 	for _, prod := range site.Products {
 		var pages []printPageEntry
-		for _, page := range prod.Pages {
-			var buf []byte
-			w := newBytesWriter(&buf)
-			if err := md.Convert(page.Body, w); err != nil {
-				continue
+		for _, cat := range prod.Categories {
+			for _, page := range cat.Pages {
+				entry, err := buildPrintEntry(md, site, cfg, dict, prod, cat, page, globalAnchorMap)
+				if err != nil {
+					return err
+				}
+				pages = append(pages, entry)
 			}
-			pages = append(pages, printPageEntry{
-				Title:    page.Title,
-				Type:     page.Type,
-				Category: page.Category,
-				HTML:     template.HTML(buf),
-			})
 		}
 		sections = append(sections, printSection{
-			Name:  prod.Name,
-			Pages: pages,
+			Name:       prod.Name,
+			SectionNum: prod.VersionSlug,
+			Pages:      pages,
 		})
 	}
 
@@ -538,7 +666,7 @@ func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *cont
 	return tmpl.PrintGlobal.ExecuteTemplate(f, "base", data)
 }
 
-func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, prod *content.Product, outDir string) error {
+func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, prod *content.Product, outDir string) error {
 	printDir := filepath.Join(outDir, prod.Slug, "print")
 	if err := os.MkdirAll(printDir, 0o755); err != nil {
 		return err
@@ -551,25 +679,39 @@ func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *con
 	}
 	defer f.Close()
 
+	orderedPages := pagesFromCategories(prod.Categories)
+	anchorMap := buildPrintAnchorMap(orderedPages)
 	var pages []printPageEntry
-	for _, page := range prod.Pages {
-		var buf []byte
-		w := newBytesWriter(&buf)
-		if err := md.Convert(page.Body, w); err != nil {
-			continue
+	var sections []printSection
+	for _, cat := range prod.Categories {
+		var sectionPages []printPageEntry
+		for _, page := range cat.Pages {
+			entry, err := buildPrintEntry(md, site, cfg, dict, prod, cat, page, anchorMap)
+			if err != nil {
+				return err
+			}
+			pages = append(pages, entry)
+			sectionPages = append(sectionPages, entry)
 		}
-		pages = append(pages, printPageEntry{
-			Title:    page.Title,
-			Type:     page.Type,
-			Category: page.Category,
-			HTML:     template.HTML(buf),
+		sections = append(sections, printSection{
+			Name:       cat.Title,
+			SectionNum: cat.SectionNum,
+			Pages:      sectionPages,
 		})
 	}
+	versionStatus, versionDate := currentVersionMeta(prod)
 
 	data := printData{
-		Site:        newSiteData(site, cfg),
-		ProductName: prod.Name,
-		Pages:       pages,
+		Site:               newSiteData(site, cfg),
+		ProductName:        prod.Name,
+		ProductDescription: prod.Description,
+		ProductSlug:        prod.Slug,
+		ProductKind:        prod.Kind,
+		VersionSlug:        prod.VersionSlug,
+		VersionStatus:      versionStatus,
+		VersionDate:        versionDate,
+		Pages:              pages,
+		Sections:           sections,
 	}
 
 	return tmpl.Print.ExecuteTemplate(f, "base", data)
@@ -714,14 +856,19 @@ func resolveRelated(slugs []string, site *content.Site) []relatedPage {
 
 var pageLinkRe = regexp.MustCompile(`href="~([^"]+)"`)
 
-func resolvePageLinks(html string, site *content.Site, basePath string) string {
+func replacePageLinks(html string, resolver func(string) string) string {
 	return pageLinkRe.ReplaceAllStringFunc(html, func(match string) string {
 		sub := pageLinkRe.FindStringSubmatch(match)
 		if len(sub) < 2 {
 			return match
 		}
-		slug := sub[1]
-		return `href="` + basePath + slug + `/"`
+		return `href="` + resolver(sub[1]) + `"`
+	})
+}
+
+func resolvePageLinks(html string, site *content.Site, basePath string) string {
+	return replacePageLinks(html, func(slug string) string {
+		return basePath + slug + "/"
 	})
 }
 
@@ -797,47 +944,49 @@ func buildSpecRedirects(cfg *config.Config, outDir string) error {
 
 var rfcKeywordRe = regexp.MustCompile(`\b(MUST NOT|SHALL NOT|SHOULD NOT|MUST|SHALL|SHOULD|REQUIRED|MAY|OPTIONAL)\b`)
 
-func highlightRFCKeywords(html string) string {
-	// Don't highlight inside HTML tags or code blocks
+func highlightRFCKeywords(htmlStr string) string {
+	// Process text in segments between HTML tags, skipping code/pre blocks.
 	var result strings.Builder
-	inTag := false
-	inCode := false
+	result.Grow(len(htmlStr) + len(htmlStr)/10)
+
 	i := 0
-	for i < len(html) {
-		if html[i] == '<' {
-			// Check for code/pre opening/closing
-			rest := html[i:]
-			if strings.HasPrefix(rest, "<code") || strings.HasPrefix(rest, "<pre") {
-				inCode = true
-			} else if strings.HasPrefix(rest, "</code") || strings.HasPrefix(rest, "</pre") {
-				inCode = false
+	codeDepth := 0
+	for i < len(htmlStr) {
+		if htmlStr[i] == '<' {
+			// Find end of tag
+			end := strings.IndexByte(htmlStr[i:], '>')
+			if end == -1 {
+				result.WriteString(htmlStr[i:])
+				break
 			}
-			inTag = true
-			result.WriteByte(html[i])
-			i++
+			tag := htmlStr[i : i+end+1]
+
+			if strings.HasPrefix(tag, "<code") || strings.HasPrefix(tag, "<pre") {
+				codeDepth++
+			} else if strings.HasPrefix(tag, "</code") || strings.HasPrefix(tag, "</pre") {
+				if codeDepth > 0 {
+					codeDepth--
+				}
+			}
+
+			result.WriteString(tag)
+			i += end + 1
 			continue
 		}
-		if html[i] == '>' {
-			inTag = false
-			result.WriteByte(html[i])
-			i++
-			continue
+
+		// Grab the text segment up to the next tag
+		nextTag := strings.IndexByte(htmlStr[i:], '<')
+		if nextTag == -1 {
+			nextTag = len(htmlStr) - i
 		}
-		if inTag || inCode {
-			result.WriteByte(html[i])
-			i++
-			continue
-		}
-		// Try to match RFC keyword at current position
-		loc := rfcKeywordRe.FindStringIndex(html[i:])
-		if loc != nil && loc[0] == 0 {
-			keyword := html[i : i+loc[1]]
-			result.WriteString(`<span class="rfc-keyword">` + keyword + `</span>`)
-			i += loc[1]
+		text := htmlStr[i : i+nextTag]
+
+		if codeDepth > 0 {
+			result.WriteString(text)
 		} else {
-			result.WriteByte(html[i])
-			i++
+			result.WriteString(rfcKeywordRe.ReplaceAllString(text, `<span class="rfc-keyword">${0}</span>`))
 		}
+		i += nextTag
 	}
 	return result.String()
 }
@@ -875,7 +1024,7 @@ func transformAdmonitions(html string) string {
 var tabGroupRe = regexp.MustCompile(`(?s)<!-- tabs -->(.*?)<!-- /tabs -->`)
 var tabMarkerRe = regexp.MustCompile(`<!-- tab:(.+?) -->`)
 
-var tabGroupCounter int
+var tabGroupCounter int64
 
 func transformTabGroups(html string) string {
 	return tabGroupRe.ReplaceAllStringFunc(html, func(match string) string {
@@ -912,8 +1061,8 @@ func transformTabGroups(html string) string {
 			})
 		}
 
-		tabGroupCounter++
-		groupID := fmt.Sprintf("tabgroup-%d", tabGroupCounter)
+		id := atomic.AddInt64(&tabGroupCounter, 1)
+		groupID := fmt.Sprintf("tabgroup-%d", id)
 
 		var b strings.Builder
 		b.WriteString(`<div class="not-prose my-6 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden" data-tab-group="` + groupID + `">`)

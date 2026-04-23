@@ -23,6 +23,7 @@ type Templates struct {
 	ProductPage         *template.Template
 	ProductPathwaysPage *template.Template
 	SpecProductPage     *template.Template
+	Dictionary          *template.Template
 }
 
 func LoadTemplates(cfg *config.Config) (*Templates, error) {
@@ -181,6 +182,11 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 		return nil, fmt.Errorf("parsing spec product page template: %w", err)
 	}
 
+	dictionaryTmpl, err := template.Must(base.Clone()).Parse(dictionaryTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing dictionary template: %w", err)
+	}
+
 	return &Templates{
 		Page:                pageTmpl,
 		Homepage:            homepageTmpl,
@@ -193,6 +199,7 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 		ProductPathwaysPage: productPathwaysPageTmpl,
 		SpecPage:            specPageTmpl,
 		SpecProductPage:     specProductPageTmpl,
+		Dictionary:          dictionaryTmpl,
 	}, nil
 }
 
@@ -238,5 +245,9 @@ func WriteAssets(outDir string) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(assetsDir, "fontsize.js"), []byte(fontSizeJS), 0o644)
+	if err := os.WriteFile(filepath.Join(assetsDir, "fontsize.js"), []byte(fontSizeJS), 0o644); err != nil {
+		return err
+	}
+
+	return os.WriteFile(filepath.Join(assetsDir, "dictionary.js"), []byte(dictionaryJS), 0o644)
 }

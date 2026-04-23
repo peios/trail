@@ -1,12 +1,15 @@
 package theme
 
 const scrollSpyJS = `(function() {
-  var outline = document.querySelector('aside:last-of-type nav');
+  var outline = document.querySelector('[data-outline-nav]');
   if (!outline) return;
 
   var links = outline.querySelectorAll('a[href^="#"]');
   if (links.length === 0) return;
 
+  var scrollRoot = document.querySelector('[data-scroll-root]');
+  var media = window.matchMedia('(min-width: 1024px)');
+  var observerRoot = scrollRoot && media.matches ? scrollRoot : null;
   var headingIds = [];
   links.forEach(function(link) {
     headingIds.push(link.getAttribute('href').slice(1));
@@ -15,15 +18,19 @@ const scrollSpyJS = `(function() {
   var activeLink = null;
 
   function setActive(id) {
+    var link = outline.querySelector('a[href="#' + id + '"]');
+    if (!link || link === activeLink) return;
+
     if (activeLink) {
       activeLink.classList.remove('text-brand-600', 'dark:text-brand-400', 'font-medium');
       activeLink.classList.add('text-gray-600', 'dark:text-gray-400');
     }
-    var link = outline.querySelector('a[href="#' + id + '"]');
-    if (link) {
-      link.classList.remove('text-gray-600', 'dark:text-gray-400');
-      link.classList.add('text-brand-600', 'dark:text-brand-400', 'font-medium');
-      activeLink = link;
+    link.classList.remove('text-gray-600', 'dark:text-gray-400');
+    link.classList.add('text-brand-600', 'dark:text-brand-400', 'font-medium');
+    activeLink = link;
+
+    if (typeof link.scrollIntoView === 'function') {
+      link.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
   }
 
@@ -34,6 +41,7 @@ const scrollSpyJS = `(function() {
       }
     });
   }, {
+    root: observerRoot,
     rootMargin: '0px 0px -70% 0px',
     threshold: 0
   });
@@ -47,10 +55,11 @@ const scrollSpyJS = `(function() {
   if (window.location.hash) {
     setActive(window.location.hash.slice(1));
   } else {
+    var rootTop = observerRoot ? observerRoot.getBoundingClientRect().top : 0;
     // Find the first heading above or at the current scroll position
     for (var i = headingIds.length - 1; i >= 0; i--) {
       var el = document.getElementById(headingIds[i]);
-      if (el && el.getBoundingClientRect().top <= 100) {
+      if (el && el.getBoundingClientRect().top - rootTop <= 100) {
         setActive(headingIds[i]);
         break;
       }

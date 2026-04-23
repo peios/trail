@@ -6,25 +6,53 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 )
 
 type Config struct {
-	Title        string    `toml:"title"`
-	Description  string    `toml:"description"`
-	BaseURL      string    `toml:"base_url"`
-	RepoURL      string    `toml:"repo_url"`
-	Favicon      string    `toml:"favicon"`
-	HeadExtra    string    `toml:"head_extra"`
-	Announcement string    `toml:"announcement"`
-	Nav          []NavItem `toml:"nav"`
-	Products     []Product `toml:"products"`
+	Title        string           `toml:"title"`
+	Description  string           `toml:"description"`
+	BaseURL      string           `toml:"base_url"`
+	RepoURL      string           `toml:"repo_url"`
+	Favicon      string           `toml:"favicon"`
+	HeadExtra    string           `toml:"head_extra"`
+	Announcement string           `toml:"announcement"`
+	Nav          []NavItem        `toml:"nav"`
+	Dictionary   DictionaryConfig `toml:"dictionary"`
+	Products     []Product
+}
 
-	// Legacy single-product fields (used when no products defined)
-	CategoryOrder []string `toml:"category_order"`
-	Pathways      []Pathway
+// DictionaryConfig controls the dictionary feature.
+type DictionaryConfig struct {
+	Dir      string                              `toml:"dir"`
+	AutoLink bool                                `toml:"auto_link"`
+	Products map[string]DictionaryProductConfig   `toml:"products"`
+}
+
+// DictionaryProductConfig holds per-product dictionary overrides.
+type DictionaryProductConfig struct {
+	AutoLink *bool `toml:"auto_link"`
+}
+
+// DictDir returns the absolute path to the dictionary directory.
+func (c *DictionaryConfig) DictDir(siteDir string) string {
+	dir := c.Dir
+	if dir == "" {
+		dir = "dict"
+	}
+	return filepath.Join(siteDir, dir)
+}
+
+// AutoLinkForProduct reports whether auto-linking is enabled for a product.
+// Per-product settings override the global default.
+func (c *DictionaryConfig) AutoLinkForProduct(productSlug string) bool {
+	if p, ok := c.Products[productSlug]; ok && p.AutoLink != nil {
+		return *p.AutoLink
+	}
+	return c.AutoLink
 }
 
 type NavItem struct {
@@ -33,21 +61,22 @@ type NavItem struct {
 }
 
 type Product struct {
-	Name          string   `toml:"name"`
-	Slug          string   `toml:"slug"`
-	Description   string   `toml:"description"`
-	Order         int      `toml:"order"`
-	Kind          string   `toml:"kind"` // "docs" (default) or "spec"
-	CategoryOrder []string `toml:"category_order"`
+	Name        string
+	Slug        string
+	Description string
+	Order       int
+	Kind        string // "docs" or "spec"
+	Dir         string // full path to product directory
 
-	Versions []Version `toml:"versions"` // spec products only
+	Versions []Version
 	Pathways []Pathway
 }
 
 type Version struct {
-	Name   string `toml:"name"`   // e.g. "v0.20"
-	Status string `toml:"status"` // "draft", "final", "superseded"
-	Date   string `toml:"date"`   // e.g. "2026-03-28"
+	Name   string
+	Status string
+	Date   string
+	Dir    string // full path to version directory
 }
 
 func (p *Product) IsSpec() bool {
@@ -55,7 +84,6 @@ func (p *Product) IsSpec() bool {
 }
 
 func (p *Product) CurrentVersion() *Version {
-	// Latest non-superseded version; fall back to latest overall
 	for i := len(p.Versions) - 1; i >= 0; i-- {
 		if p.Versions[i].Status != "superseded" {
 			return &p.Versions[i]
@@ -69,12 +97,24 @@ func (p *Product) CurrentVersion() *Version {
 
 type Pathway struct {
 	Name        string   `toml:"name"`
-	Slug        string   // derived from filename
+	Slug        string
 	Description string   `toml:"description"`
 	Featured    bool     `toml:"featured"`
 	Order       int      `toml:"order"`
-	Product     string   // which product this belongs to
+	Product     string
 	Pages       []string `toml:"pages"`
+}
+
+// productConfig is the per-product trail.toml (name + description only).
+type productConfig struct {
+	Name        string `toml:"name"`
+	Description string `toml:"description"`
+}
+
+// versionConfig is the per-version trail.toml (status + date only).
+type versionConfig struct {
+	Status string `toml:"status"`
+	Date   string `toml:"date"`
 }
 
 func Load(dir string) (*Config, error) {
@@ -85,65 +125,130 @@ func Load(dir string) (*Config, error) {
 		return nil, fmt.Errorf("reading %s: %w", cfgPath, err)
 	}
 
-	if len(cfg.Products) > 0 {
-		// Multi-product mode: load pathways per product
-		for i := range cfg.Products {
-			p := &cfg.Products[i]
-			pathways, err := loadPathways(filepath.Join(dir, "pathways", p.Slug))
+	// Discover docs products
+	docsDir := filepath.Join(dir, "docs")
+	if entries, err := os.ReadDir(docsDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			product, err := loadDocsProduct(docsDir, entry.Name())
 			if err != nil {
-				return nil, fmt.Errorf("loading pathways for %s: %w", p.Slug, err)
+				return nil, fmt.Errorf("loading docs product %s: %w", entry.Name(), err)
 			}
-			for j := range pathways {
-				pathways[j].Product = p.Slug
-			}
-			p.Pathways = pathways
+			cfg.Products = append(cfg.Products, product)
 		}
-		sort.Slice(cfg.Products, func(i, j int) bool {
-			oi, oj := cfg.Products[i].Order, cfg.Products[j].Order
-			if oi != oj {
-				if oi == 0 {
-					return false
-				}
-				if oj == 0 {
-					return true
-				}
-				return oi < oj
-			}
-			return cfg.Products[i].Name < cfg.Products[j].Name
-		})
-	} else {
-		// Single-product mode: load pathways from root
-		pathways, err := loadPathways(filepath.Join(dir, "pathways"))
-		if err != nil {
-			return nil, err
-		}
-		cfg.Pathways = pathways
 	}
+
+	// Discover spec products
+	specsDir := filepath.Join(dir, "specs")
+	if entries, err := os.ReadDir(specsDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			product, err := loadSpecProductConfig(specsDir, entry.Name())
+			if err != nil {
+				return nil, fmt.Errorf("loading spec product %s: %w", entry.Name(), err)
+			}
+			cfg.Products = append(cfg.Products, product)
+		}
+	}
+
+	sort.Slice(cfg.Products, func(i, j int) bool {
+		return cfg.Products[i].Order < cfg.Products[j].Order
+	})
 
 	return cfg, nil
 }
 
-func (c *Config) AllPathways() []Pathway {
-	if len(c.Products) == 0 {
-		return c.Pathways
+func loadDocsProduct(docsDir, dirName string) (Product, error) {
+	slug := StripNumericPrefix(dirName)
+	order := NumericPrefix(dirName)
+	productDir := filepath.Join(docsDir, dirName)
+
+	var pc productConfig
+	tomlPath := filepath.Join(productDir, "trail.toml")
+	if _, err := toml.DecodeFile(tomlPath, &pc); err != nil {
+		return Product{}, fmt.Errorf("reading %s: %w", tomlPath, err)
 	}
+
+	pathways, err := loadPathways(filepath.Join(productDir, "pathways"))
+	if err != nil {
+		return Product{}, fmt.Errorf("loading pathways for %s: %w", slug, err)
+	}
+	for i := range pathways {
+		pathways[i].Product = slug
+	}
+
+	return Product{
+		Name:        pc.Name,
+		Slug:        slug,
+		Description: pc.Description,
+		Order:       order,
+		Kind:        "docs",
+		Dir:         productDir,
+		Pathways:    pathways,
+	}, nil
+}
+
+func loadSpecProductConfig(specsDir, dirName string) (Product, error) {
+	slug := StripNumericPrefix(dirName)
+	order := NumericPrefix(dirName)
+	productDir := filepath.Join(specsDir, dirName)
+
+	var pc productConfig
+	tomlPath := filepath.Join(productDir, "trail.toml")
+	if _, err := toml.DecodeFile(tomlPath, &pc); err != nil {
+		return Product{}, fmt.Errorf("reading %s: %w", tomlPath, err)
+	}
+
+	entries, err := os.ReadDir(productDir)
+	if err != nil {
+		return Product{}, fmt.Errorf("reading %s: %w", productDir, err)
+	}
+
+	var versions []Version
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "v") {
+			continue
+		}
+
+		var vc versionConfig
+		vTomlPath := filepath.Join(productDir, entry.Name(), "trail.toml")
+		if _, err := toml.DecodeFile(vTomlPath, &vc); err != nil {
+			return Product{}, fmt.Errorf("reading %s: %w", vTomlPath, err)
+		}
+
+		versions = append(versions, Version{
+			Name:   entry.Name(),
+			Status: vc.Status,
+			Date:   vc.Date,
+			Dir:    filepath.Join(productDir, entry.Name()),
+		})
+	}
+
+	sort.Slice(versions, func(i, j int) bool {
+		return versions[i].Name < versions[j].Name
+	})
+
+	return Product{
+		Name:        pc.Name,
+		Slug:        slug,
+		Description: pc.Description,
+		Order:       order,
+		Kind:        "spec",
+		Dir:         productDir,
+		Versions:    versions,
+	}, nil
+}
+
+func (c *Config) AllPathways() []Pathway {
 	var all []Pathway
 	for _, p := range c.Products {
 		all = append(all, p.Pathways...)
 	}
 	return all
-}
-
-func (c *Config) CategoryOrderFor(product string) []string {
-	if len(c.Products) == 0 {
-		return c.CategoryOrder
-	}
-	for _, p := range c.Products {
-		if p.Slug == product {
-			return p.CategoryOrder
-		}
-	}
-	return nil
 }
 
 func (c *Config) BasePath() string {
@@ -207,4 +312,31 @@ func loadPathways(dir string) ([]Pathway, error) {
 	})
 
 	return pathways, nil
+}
+
+// StripNumericPrefix removes a leading "N-" numeric prefix from a name.
+// "1-introduction" → "introduction", "v0.20" → "v0.20", "foo" → "foo"
+func StripNumericPrefix(name string) string {
+	idx := strings.IndexByte(name, '-')
+	if idx <= 0 {
+		return name
+	}
+	if _, err := strconv.Atoi(name[:idx]); err != nil {
+		return name
+	}
+	return name[idx+1:]
+}
+
+// NumericPrefix extracts the leading numeric prefix from a name.
+// "1-introduction" → 1, "100-architecture" → 100, "v0.20" → 0
+func NumericPrefix(name string) int {
+	idx := strings.IndexByte(name, '-')
+	if idx <= 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(name[:idx])
+	if err != nil {
+		return 0
+	}
+	return n
 }
