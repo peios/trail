@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,9 @@ func Build(site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, 
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
+	// Build spec cross-reference index (read-only during parallel rendering).
+	specRefIdx := BuildRefIndex(site)
+
 	// Build each page in parallel
 	{
 		var wg sync.WaitGroup
@@ -63,7 +67,7 @@ func Build(site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, 
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				if err := buildPage(md, tmpl, site, cfg, dict, p, outDir); err != nil {
+				if err := buildPage(md, tmpl, site, cfg, dict, specRefIdx, p, outDir); err != nil {
 					buildErr.CompareAndSwap(nil, fmt.Errorf("building %s: %w", p.Slug, err))
 				}
 			}(page)
@@ -122,16 +126,16 @@ func Build(site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, 
 	if len(site.Products) > 0 {
 		// Per-product print pages
 		for _, prod := range site.Products {
-			if err := buildProductPrintAll(md, tmpl, site, cfg, dict, prod, outDir); err != nil {
+			if err := buildProductPrintAll(md, tmpl, site, cfg, dict, specRefIdx, prod, outDir); err != nil {
 				return fmt.Errorf("building print for %s: %w", prod.Slug, err)
 			}
 		}
 		// Global print page grouped by product
-		if err := buildGlobalPrintAll(md, tmpl, site, cfg, dict, outDir); err != nil {
+		if err := buildGlobalPrintAll(md, tmpl, site, cfg, dict, specRefIdx, outDir); err != nil {
 			return fmt.Errorf("building global print page: %w", err)
 		}
 	} else {
-		if err := buildPrintAll(md, tmpl, site, cfg, dict, outDir); err != nil {
+		if err := buildPrintAll(md, tmpl, site, cfg, dict, specRefIdx, outDir); err != nil {
 			return fmt.Errorf("building print page: %w", err)
 		}
 	}
@@ -250,7 +254,7 @@ func newSiteData(site *content.Site, cfg *config.Config) siteData {
 	}
 }
 
-func renderPageHTML(md goldmark.Markdown, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, page *content.Page, prod *content.Product, includeAnchors bool, linkResolver func(string) string) (template.HTML, []heading, error) {
+func renderPageHTML(md goldmark.Markdown, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, page *content.Page, prod *content.Product, includeAnchors bool, linkResolver func(string) string) (template.HTML, []heading, error) {
 	var buf []byte
 	w := newBytesWriter(&buf)
 	if err := md.Convert(page.Body, w); err != nil {
@@ -268,6 +272,9 @@ func renderPageHTML(md goldmark.Markdown, site *content.Site, cfg *config.Config
 	renderedHTML = transformAdmonitions(renderedHTML)
 	if isSpec {
 		renderedHTML = highlightRFCKeywords(renderedHTML)
+		if specRefIdx != nil && prod != nil {
+			renderedHTML = transformSpecRefs(renderedHTML, specRefIdx, prod.SpecID, prod.VersionSlug, cfg.BasePath())
+		}
 	}
 	renderedHTML = wrapTables(renderedHTML)
 	renderedHTML = transformTabGroups(renderedHTML)
@@ -294,7 +301,7 @@ func renderPageHTML(md goldmark.Markdown, site *content.Site, cfg *config.Config
 	return template.HTML(renderedHTML), headings, nil
 }
 
-func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, page *content.Page, outDir string) error {
+func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, page *content.Page, outDir string) error {
 
 	pageDir := filepath.Join(outDir, page.Slug)
 	if err := os.MkdirAll(pageDir, 0o755); err != nil {
@@ -326,7 +333,7 @@ func buildPage(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, 
 
 	isSpec := prod != nil && prod.Kind == "spec"
 
-	renderedHTML, headings, err := renderPageHTML(md, site, cfg, dict, page, prod, true, nil)
+	renderedHTML, headings, err := renderPageHTML(md, site, cfg, dict, specRefIdx, page, prod, true, nil)
 	if err != nil {
 		return err
 	}
@@ -512,6 +519,8 @@ type printData struct {
 	ProductDescription string
 	ProductSlug        string
 	ProductKind        string
+	SpecID             string
+	RevisionCount      int
 	VersionSlug        string
 	VersionStatus      string
 	VersionDate        string
@@ -533,8 +542,8 @@ func printAnchorID(page *content.Page) string {
 	return "page-" + replacer.Replace(page.Slug)
 }
 
-func buildPrintEntry(md goldmark.Markdown, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, prod *content.Product, cat *content.Category, page *content.Page, anchorMap map[string]string) (printPageEntry, error) {
-	renderedHTML, _, err := renderPageHTML(md, site, cfg, dict, page, prod, false, func(slug string) string {
+func buildPrintEntry(md goldmark.Markdown, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, prod *content.Product, cat *content.Category, page *content.Page, anchorMap map[string]string) (printPageEntry, error) {
+	renderedHTML, _, err := renderPageHTML(md, site, cfg, dict, specRefIdx, page, prod, false, func(slug string) string {
 		if anchor, ok := anchorMap[slug]; ok {
 			return "#" + anchor
 		}
@@ -591,7 +600,7 @@ func currentVersionMeta(prod *content.Product) (string, string) {
 	return "", ""
 }
 
-func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, outDir string) error {
+func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, outDir string) error {
 	printDir := filepath.Join(outDir, "print")
 	if err := os.MkdirAll(printDir, 0o755); err != nil {
 		return err
@@ -609,7 +618,7 @@ func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Si
 	var pages []printPageEntry
 	for _, cat := range site.Categories {
 		for _, page := range cat.Pages {
-			entry, err := buildPrintEntry(md, site, cfg, dict, nil, cat, page, anchorMap)
+			entry, err := buildPrintEntry(md, site, cfg, dict, specRefIdx, nil, cat, page, anchorMap)
 			if err != nil {
 				return err
 			}
@@ -625,7 +634,7 @@ func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Si
 	return tmpl.Print.ExecuteTemplate(f, "base", data)
 }
 
-func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, outDir string) error {
+func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, outDir string) error {
 	printDir := filepath.Join(outDir, "print")
 	if err := os.MkdirAll(printDir, 0o755); err != nil {
 		return err
@@ -644,7 +653,7 @@ func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *cont
 		var pages []printPageEntry
 		for _, cat := range prod.Categories {
 			for _, page := range cat.Pages {
-				entry, err := buildPrintEntry(md, site, cfg, dict, prod, cat, page, globalAnchorMap)
+				entry, err := buildPrintEntry(md, site, cfg, dict, specRefIdx, prod, cat, page, globalAnchorMap)
 				if err != nil {
 					return err
 				}
@@ -666,7 +675,7 @@ func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *cont
 	return tmpl.PrintGlobal.ExecuteTemplate(f, "base", data)
 }
 
-func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, prod *content.Product, outDir string) error {
+func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, prod *content.Product, outDir string) error {
 	printDir := filepath.Join(outDir, prod.Slug, "print")
 	if err := os.MkdirAll(printDir, 0o755); err != nil {
 		return err
@@ -686,7 +695,7 @@ func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *con
 	for _, cat := range prod.Categories {
 		var sectionPages []printPageEntry
 		for _, page := range cat.Pages {
-			entry, err := buildPrintEntry(md, site, cfg, dict, prod, cat, page, anchorMap)
+			entry, err := buildPrintEntry(md, site, cfg, dict, specRefIdx, prod, cat, page, anchorMap)
 			if err != nil {
 				return err
 			}
@@ -707,6 +716,8 @@ func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *con
 		ProductDescription: prod.Description,
 		ProductSlug:        prod.Slug,
 		ProductKind:        prod.Kind,
+		SpecID:             prod.SpecID,
+		RevisionCount:      len(prod.Versions),
 		VersionSlug:        prod.VersionSlug,
 		VersionStatus:      versionStatus,
 		VersionDate:        versionDate,
@@ -873,22 +884,30 @@ func resolvePageLinks(html string, site *content.Site, basePath string) string {
 }
 
 func assignHeadingSectionNums(headings []heading, pageBase string) []heading {
-	h2count := 0
-	h3count := 0
+	// counters[level] tracks the current count at each heading level.
+	// When we encounter a heading at level N, we increment counters[N]
+	// and reset all deeper levels.
+	counters := make(map[int]int)
 	for i := range headings {
-		if headings[i].Level == 2 {
-			h2count++
-			h3count = 0
-			headings[i].SectionNum = fmt.Sprintf("%s.%d", pageBase, h2count)
-		} else if headings[i].Level == 3 {
-			h3count++
-			headings[i].SectionNum = fmt.Sprintf("%s.%d.%d", pageBase, h2count, h3count)
+		level := headings[i].Level
+		counters[level]++
+		// Reset deeper levels
+		for l := level + 1; l <= 6; l++ {
+			delete(counters, l)
 		}
+		// Build the section number: pageBase.count2.count3...
+		num := pageBase
+		for l := 2; l <= level; l++ {
+			if c, ok := counters[l]; ok {
+				num += fmt.Sprintf(".%d", c)
+			}
+		}
+		headings[i].SectionNum = num
 	}
 	return headings
 }
 
-var sectionHeadingRe = regexp.MustCompile(`(<h([23])\s+id="([^"]*)"[^>]*>)`)
+var sectionHeadingRe = regexp.MustCompile(`(<h([2-6])\s+id="([^"]*)"[^>]*>)`)
 
 func injectSectionNumbers(html string, headings []heading) string {
 	headingIdx := 0
@@ -1109,23 +1128,20 @@ func transformMermaid(html string) string {
 	})
 }
 
-var anchorRe = regexp.MustCompile(`(<h[23]\s+id="([^"]+)"[^>]*>)(.*?)(</h[23]>)`)
+var anchorRe = regexp.MustCompile(`(<h[2-6]\s+id="([^"]+)"[^>]*>)(.*?)(</h[2-6]>)`)
 
 func injectAnchorLinks(html string) string {
 	return anchorRe.ReplaceAllString(html, `${1}${3} <a href="#${2}" class="anchor" aria-hidden="true">#</a>${4}`)
 }
 
-var headingRe = regexp.MustCompile(`<h([23])\s+id="([^"]+)"[^>]*>(.*?)</h[23]>`)
+var headingRe = regexp.MustCompile(`<h([2-6])\s+id="([^"]+)"[^>]*>(.*?)</h[2-6]>`)
 var tagStripRe = regexp.MustCompile(`<[^>]+>`)
 
 func extractHeadings(html string) []heading {
 	matches := headingRe.FindAllStringSubmatch(html, -1)
 	headings := make([]heading, 0, len(matches))
 	for _, m := range matches {
-		level := 2
-		if m[1] == "3" {
-			level = 3
-		}
+		level, _ := strconv.Atoi(m[1])
 		text := tagStripRe.ReplaceAllString(m[3], "")
 		text = strings.TrimSpace(text)
 		headings = append(headings, heading{

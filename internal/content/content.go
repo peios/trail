@@ -25,6 +25,7 @@ type Product struct {
 	Slug        string
 	Description string
 	Kind        string // "docs" or "spec"
+	SpecID      string // e.g. "psd-004" — from "id--name" directory convention
 	Pages       []*Page
 	Categories  []*Category
 	Pathways    []config.Pathway
@@ -118,6 +119,7 @@ func loadSpecProduct(prod config.Product) ([]*Product, error) {
 			Slug:        versionSlug,
 			Description: prod.Description,
 			Kind:        "spec",
+			SpecID:      prod.SpecID,
 			Pages:       pages,
 			Categories:  categories,
 			Versions:    prod.Versions,

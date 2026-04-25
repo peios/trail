@@ -107,6 +107,20 @@ func LoadTemplates(cfg *config.Config) (*Templates, error) {
 				return t
 			}
 		},
+		"headingIndent": func(level int) string {
+			switch level {
+			case 3:
+				return " pl-3"
+			case 4:
+				return " pl-6"
+			case 5:
+				return " pl-9"
+			case 6:
+				return " pl-12"
+			default:
+				return ""
+			}
+		},
 		"typeIcon": func(t string) template.HTML {
 			switch t {
 			case "concept":

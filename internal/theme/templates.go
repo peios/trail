@@ -38,8 +38,11 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose h1 { @apply text-3xl font-bold mb-6 text-gray-900 dark:text-gray-100; }
     .prose h2 { @apply text-2xl font-semibold mt-10 mb-4 text-gray-900 dark:text-gray-100; }
     .prose h3 { @apply text-xl font-semibold mt-8 mb-3 text-gray-800 dark:text-gray-200; }
+    .prose h4 { @apply text-lg font-semibold mt-6 mb-2 text-gray-800 dark:text-gray-200; }
+    .prose h5 { @apply text-base font-semibold mt-4 mb-2 text-gray-800 dark:text-gray-200; }
+    .prose h6 { @apply text-sm font-semibold mt-4 mb-1 text-gray-700 dark:text-gray-300; }
     .prose { overflow-wrap: break-word; word-break: break-word; }
-    .prose h1, .prose h2, .prose h3 { scroll-margin-top: 1.5rem; }
+    .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 { scroll-margin-top: 1.5rem; }
     .prose p { @apply mb-4 leading-relaxed text-gray-700 dark:text-gray-300; }
     .prose ul { @apply mb-4 ml-6 list-disc text-gray-700 dark:text-gray-300; }
     .prose ol { @apply mb-4 ml-6 list-decimal text-gray-700 dark:text-gray-300; }
@@ -65,11 +68,11 @@ const baseTemplate = `{{define "base"}}<!DOCTYPE html>
     .prose details > p { @apply px-4 pt-3 mb-0; }
     .prose details > p:last-child { @apply pb-3; }
     [data-tab-panel] > pre { @apply m-0 rounded-none; }
-    .prose h2 .anchor, .prose h3 .anchor { @apply invisible ml-2 text-gray-300 dark:text-gray-600 no-underline; }
-    .prose h2:hover .anchor, .prose h3:hover .anchor { @apply visible; }
+    .prose h2 .anchor, .prose h3 .anchor, .prose h4 .anchor, .prose h5 .anchor, .prose h6 .anchor { @apply invisible ml-2 text-gray-300 dark:text-gray-600 no-underline; }
+    .prose h2:hover .anchor, .prose h3:hover .anchor, .prose h4:hover .anchor, .prose h5:hover .anchor, .prose h6:hover .anchor { @apply visible; }
 
     .section-num { @apply text-gray-400 dark:text-gray-500 font-normal mr-2; }
-    h3 .section-num { @apply text-base; }
+    h3 .section-num, h4 .section-num, h5 .section-num, h6 .section-num { @apply text-base; }
     .rfc-keyword { @apply font-semibold text-brand-700 dark:text-brand-400; }
 
     .dict-term { border-bottom: 1.5px dotted; border-color: rgba(99,102,241,0.5); cursor: help; }
@@ -218,7 +221,7 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
         <summary class="cursor-pointer px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 select-none">On this page</summary>
         <ul class="px-4 py-2 space-y-1">
           {{range .Page.Headings}}
-          <li><a href="#{{.ID}}" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{if eq .Level 3}} pl-3{{end}}">{{.Text}}</a></li>
+          <li><a href="#{{.ID}}" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{headingIndent .Level}}">{{.Text}}</a></li>
           {{else}}
           <li><a href="#page-top" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">Overview</a></li>
           {{end}}
@@ -268,7 +271,7 @@ const pageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Site.Title}}{{end
         <ul class="space-y-1 text-sm">
           {{range .Page.Headings}}
           <li>
-            <a href="#{{.ID}}" class="block py-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{if eq .Level 3}} pl-3{{end}}">{{.Text}}</a>
+            <a href="#{{.ID}}" class="block py-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{headingIndent .Level}}">{{.Text}}</a>
           </li>
           {{else}}
           <li>
@@ -315,6 +318,7 @@ const homepageTemplate = `{{define "title"}}{{.Site.Title}}{{end}}
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
     {{range $specs}}
     <a href="{{$.Site.BasePath}}{{firstPageSlug .}}/" class="block p-4 sm:p-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg hover:border-brand-300 dark:hover:border-brand-700 hover:shadow-md transition-all">
+      {{if .SpecID}}<span class="text-xs font-mono uppercase text-gray-400 dark:text-gray-500">{{.SpecID}}</span>{{end}}
       <h3 class="font-semibold text-gray-900 dark:text-gray-100 mb-1 sm:mb-2">{{.Name}}</h3>
       {{if .Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mb-2 sm:mb-3">{{.Description}}</p>{{end}}
       {{if .VersionSlug}}<span class="text-xs text-brand-600 dark:text-brand-400">{{.VersionSlug}}</span>{{end}}
@@ -380,14 +384,16 @@ const printTemplate = `{{define "title"}}{{if .ProductName}}{{.ProductName}} —
   </div>
   {{if eq .ProductKind "spec"}}
   <div class="print-cover-page flex flex-col justify-center rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 px-8 py-12 mb-12">
-    <p class="text-xs font-medium uppercase tracking-[0.3em] text-gray-400 dark:text-gray-500 mb-4">Specification</p>
+    <p class="text-xs font-medium uppercase tracking-[0.3em] text-gray-400 dark:text-gray-500 mb-4">{{if .SpecID}}<span class="font-mono">{{.SpecID}}</span> — {{end}}Specification</p>
     <h1 class="text-4xl sm:text-5xl font-black text-gray-900 dark:text-gray-100 mb-4">{{.ProductName}}</h1>
     {{if .ProductDescription}}<p class="max-w-3xl text-base sm:text-lg text-gray-600 dark:text-gray-300 mb-8">{{.ProductDescription}}</p>{{end}}
     <div class="flex flex-wrap items-center gap-3 text-sm">
       {{if .VersionSlug}}<span class="inline-flex items-center rounded-full border border-gray-200 dark:border-gray-700 px-3 py-1 font-mono text-gray-700 dark:text-gray-300">{{.VersionSlug}}</span>{{end}}
+      {{if gt .RevisionCount 1}}<span class="text-sm text-gray-400 dark:text-gray-500">revision {{.RevisionCount}}</span>{{end}}
       {{if eq .VersionStatus "draft"}}<span class="inline-flex items-center rounded-full bg-yellow-100 dark:bg-yellow-900 px-3 py-1 font-medium text-yellow-700 dark:text-yellow-300">Draft</span>{{end}}
       {{if eq .VersionStatus "final"}}<span class="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900 px-3 py-1 font-medium text-green-700 dark:text-green-300">Final</span>{{end}}
       {{if eq .VersionStatus "superseded"}}<span class="inline-flex items-center rounded-full bg-gray-200 dark:bg-gray-700 px-3 py-1 font-medium text-gray-600 dark:text-gray-300">Superseded</span>{{end}}
+      {{if eq .VersionStatus "withdrawn"}}<span class="inline-flex items-center rounded-full bg-red-100 dark:bg-red-900 px-3 py-1 font-medium text-red-700 dark:text-red-300">Withdrawn</span>{{end}}
       {{if .VersionDate}}<span class="text-gray-500 dark:text-gray-400">{{.VersionDate}}</span>{{end}}
     </div>
   </div>
@@ -573,7 +579,7 @@ const productPathwaysPageTemplate = `{{define "title"}}Learning Pathways — {{.
 </div>
 {{end}}`
 
-const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Product.Name}} Specification — {{.Site.Title}}{{end}}
+const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{if .Product.SpecID}}{{.Product.SpecID}} {{end}}{{.Product.Name}} — {{.Site.Title}}{{end}}
 {{define "meta_description"}}{{if .Page.Description}}<meta property="og:description" content="{{.Page.Description}}">
   <meta name="description" content="{{.Page.Description}}">{{else if .Site.Description}}<meta property="og:description" content="{{.Site.Description}}">
   <meta name="description" content="{{.Site.Description}}">{{end}}{{end}}
@@ -585,12 +591,15 @@ const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Product.Name}
     {{if .Product}}
     <aside class="hidden lg:block w-64 flex-shrink-0 lg:min-h-0 lg:py-8">
       <nav class="lg:h-full lg:overflow-y-auto lg:pr-2">
+        {{if .Product.SpecID}}<div class="mb-3 pb-3 border-b border-gray-200 dark:border-gray-800">
+          <span class="text-sm font-mono font-semibold uppercase text-gray-700 dark:text-gray-300">{{.Product.SpecID}}</span>
+        </div>{{end}}
         {{if .Product.VersionSlug}}<div class="mb-4 pb-3 border-b border-gray-200 dark:border-gray-800">
           <span class="text-xs font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">Version</span>
           <div class="mt-1">
             <select id="version-switcher" class="w-full text-sm bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-gray-700 dark:text-gray-300" onchange="var v=this.value,c='{{.Product.VersionSlug}}';window.location.pathname=window.location.pathname.replace('/'+c+'/','/'+v+'/');">
               {{range .Product.Versions}}
-              <option value="{{.Name}}"{{if eq .Name $.Product.VersionSlug}} selected{{end}}>{{.Name}}{{if eq .Status "draft"}} (draft){{else if eq .Status "superseded"}} (superseded){{end}}</option>
+              <option value="{{.Name}}"{{if eq .Name $.Product.VersionSlug}} selected{{end}}>{{.Name}}{{if eq .Status "draft"}} (draft){{else if eq .Status "superseded"}} (superseded){{else if eq .Status "withdrawn"}} (withdrawn){{end}}</option>
               {{end}}
             </select>
           </div>
@@ -634,7 +643,7 @@ const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Product.Name}
         <summary class="cursor-pointer px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 select-none">On this page</summary>
         <ul class="px-4 py-2 space-y-1">
           {{range .Page.Headings}}
-          <li><a href="#{{.ID}}" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{if eq .Level 3}} pl-3{{end}}">{{if .SectionNum}}<span class="text-gray-400 dark:text-gray-500 text-xs">§{{.SectionNum}}</span> {{end}}{{.Text}}</a></li>
+          <li><a href="#{{.ID}}" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{headingIndent .Level}}">{{if .SectionNum}}<span class="text-gray-400 dark:text-gray-500 text-xs">§{{.SectionNum}}</span> {{end}}{{.Text}}</a></li>
           {{else}}
           <li><a href="#page-top" class="block py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100">Overview</a></li>
           {{end}}
@@ -647,17 +656,18 @@ const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Product.Name}
       </div>
       {{if .Page.IsSpecCover}}
       <div class="border border-gray-200 dark:border-gray-800 rounded-lg p-6 mb-8 bg-gray-50 dark:bg-gray-900 relative">
-        <p class="text-xs font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">Specification</p>
+        <p class="text-xs font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">{{if .Product.SpecID}}<span class="font-mono">{{.Product.SpecID}}</span> — {{end}}Specification</p>
         <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 m-0">{{.Product.Name}}</h1>
         {{if .Product.Description}}<p class="text-sm text-gray-500 dark:text-gray-400 mt-2 pr-28">{{.Product.Description}}</p>{{end}}
         {{if .Product.VersionSlug}}
         <div class="absolute top-6 right-6 text-right">
-          <span class="text-sm font-mono text-gray-700 dark:text-gray-300">{{.Product.VersionSlug}}</span>
+          <span class="text-sm font-mono text-gray-700 dark:text-gray-300">{{.Product.VersionSlug}}</span>{{if gt (len .Product.Versions) 1}}<span class="text-xs text-gray-400 dark:text-gray-500 ml-1">(rev {{len .Product.Versions}})</span>{{end}}
           {{range .Product.Versions}}{{if eq .Name $.Product.VersionSlug}}
           <div class="mt-1">
             {{if eq .Status "draft"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">Draft</span>
             {{else if eq .Status "final"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300">Final</span>
             {{else if eq .Status "superseded"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400">Superseded</span>
+            {{else if eq .Status "withdrawn"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-300">Withdrawn</span>
             {{end}}
           </div>
           {{if .Date}}<div class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{.Date}}</div>{{end}}
@@ -689,7 +699,7 @@ const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Product.Name}
         <ul class="space-y-1 text-sm">
           {{range .Page.Headings}}
           <li>
-            <a href="#{{.ID}}" class="block py-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{if eq .Level 3}} pl-3{{end}}">{{if .SectionNum}}<span class="text-gray-400 dark:text-gray-500 text-xs">§{{.SectionNum}}</span> {{end}}{{.Text}}</a>
+            <a href="#{{.ID}}" class="block py-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100{{headingIndent .Level}}">{{if .SectionNum}}<span class="text-gray-400 dark:text-gray-500 text-xs">§{{.SectionNum}}</span> {{end}}{{.Text}}</a>
           </li>
           {{else}}
           <li>
@@ -704,7 +714,7 @@ const specPageTemplate = `{{define "title"}}{{.Page.Title}} — {{.Product.Name}
 </div>
 {{end}}`
 
-const specProductPageTemplate = `{{define "title"}}{{.Product.Name}} Specification — {{.Site.Title}}{{end}}
+const specProductPageTemplate = `{{define "title"}}{{if .Product.SpecID}}{{.Product.SpecID}} {{end}}{{.Product.Name}} — {{.Site.Title}}{{end}}
 {{define "content"}}
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
   <nav class="text-sm mb-4 sm:mb-6 flex flex-wrap items-center">
@@ -715,13 +725,13 @@ const specProductPageTemplate = `{{define "title"}}{{.Product.Name}} Specificati
   <div class="border border-gray-200 dark:border-gray-800 rounded-lg p-6 sm:p-10 mb-8 sm:mb-12 bg-gray-50 dark:bg-gray-900">
     <div class="flex items-start justify-between flex-wrap gap-4">
       <div>
-        <p class="text-xs font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">Specification</p>
+        <p class="text-xs font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">{{if .Product.SpecID}}<span class="font-mono">{{.Product.SpecID}}</span> — {{end}}Specification</p>
         <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100">{{.Product.Name}}</h1>
         {{if .Product.Description}}<p class="text-sm sm:text-base text-gray-500 dark:text-gray-400 mt-2 max-w-2xl">{{.Product.Description}}</p>{{end}}
       </div>
       {{if .Product.VersionSlug}}
       <div class="text-right">
-        <span class="text-sm font-mono text-gray-700 dark:text-gray-300">{{.Product.VersionSlug}}</span>
+        <span class="text-sm font-mono text-gray-700 dark:text-gray-300">{{.Product.VersionSlug}}</span>{{if gt (len .Product.Versions) 1}}<span class="text-xs text-gray-400 dark:text-gray-500 ml-1">(rev {{len .Product.Versions}})</span>{{end}}
         {{range .Product.Versions}}{{if eq .Name $.Product.VersionSlug}}
         <div class="mt-1">
           {{if eq .Status "draft"}}<span class="inline-block text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">Draft</span>

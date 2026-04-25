@@ -67,6 +67,7 @@ type Product struct {
 	Order       int
 	Kind        string // "docs" or "spec"
 	Dir         string // full path to product directory
+	SpecID      string // e.g. "psd-004" — parsed from "id--name" directory convention
 
 	Versions []Version
 	Pathways []Pathway
@@ -85,7 +86,7 @@ func (p *Product) IsSpec() bool {
 
 func (p *Product) CurrentVersion() *Version {
 	for i := len(p.Versions) - 1; i >= 0; i-- {
-		if p.Versions[i].Status != "superseded" {
+		if p.Versions[i].Status != "superseded" && p.Versions[i].Status != "withdrawn" {
 			return &p.Versions[i]
 		}
 	}
@@ -155,8 +156,14 @@ func Load(dir string) (*Config, error) {
 		}
 	}
 
-	sort.Slice(cfg.Products, func(i, j int) bool {
-		return cfg.Products[i].Order < cfg.Products[j].Order
+	sort.SliceStable(cfg.Products, func(i, j int) bool {
+		if cfg.Products[i].Order != cfg.Products[j].Order {
+			return cfg.Products[i].Order < cfg.Products[j].Order
+		}
+		if cfg.Products[i].SpecID != cfg.Products[j].SpecID {
+			return cfg.Products[i].SpecID < cfg.Products[j].SpecID
+		}
+		return cfg.Products[i].Slug < cfg.Products[j].Slug
 	})
 
 	return cfg, nil
@@ -193,8 +200,7 @@ func loadDocsProduct(docsDir, dirName string) (Product, error) {
 }
 
 func loadSpecProductConfig(specsDir, dirName string) (Product, error) {
-	slug := StripNumericPrefix(dirName)
-	order := NumericPrefix(dirName)
+	specID, _ := ParseSpecDirName(dirName)
 	productDir := filepath.Join(specsDir, dirName)
 
 	var pc productConfig
@@ -234,11 +240,11 @@ func loadSpecProductConfig(specsDir, dirName string) (Product, error) {
 
 	return Product{
 		Name:        pc.Name,
-		Slug:        slug,
+		Slug:        specID,
 		Description: pc.Description,
-		Order:       order,
 		Kind:        "spec",
 		Dir:         productDir,
+		SpecID:      specID,
 		Versions:    versions,
 	}, nil
 }
@@ -312,6 +318,16 @@ func loadPathways(dir string) ([]Pathway, error) {
 	})
 
 	return pathways, nil
+}
+
+// ParseSpecDirName splits a spec directory name on "--" into a spec ID and slug.
+// "psd-004--kacs" → ("psd-004", "kacs"). If no "--" is present, the spec ID is
+// empty and the full name is returned as the slug.
+func ParseSpecDirName(dirName string) (specID, slug string) {
+	if id, name, ok := strings.Cut(dirName, "--"); ok {
+		return id, name
+	}
+	return "", dirName
 }
 
 // StripNumericPrefix removes a leading "N-" numeric prefix from a name.
