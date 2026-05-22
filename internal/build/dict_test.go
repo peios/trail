@@ -349,7 +349,7 @@ category = "LCS"
 `)
 
 	outDir := t.TempDir()
-	if err := buildDictionaryJSON(dict, &content.Site{}, &config.Config{}, outDir); err != nil {
+	if err := buildDictionaryJSON(dict, &content.Site{}, &config.Config{}, nil, outDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -408,7 +408,7 @@ definition = "A minimal term."
 `)
 
 	outDir := t.TempDir()
-	if err := buildDictionaryJSON(dict, &content.Site{}, &config.Config{}, outDir); err != nil {
+	if err := buildDictionaryJSON(dict, &content.Site{}, &config.Config{}, nil, outDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -430,7 +430,7 @@ func TestBuildDictionaryJSONEmptyDict(t *testing.T) {
 	dict := loadTestDict(t, ``)
 	outDir := t.TempDir()
 
-	if err := buildDictionaryJSON(dict, &content.Site{}, &config.Config{}, outDir); err != nil {
+	if err := buildDictionaryJSON(dict, &content.Site{}, &config.Config{}, nil, outDir); err != nil {
 		t.Fatal(err)
 	}
 

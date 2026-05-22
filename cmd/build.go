@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime/pprof"
 
 	"github.com/peios/trail/internal/build"
 	"github.com/peios/trail/internal/config"
@@ -11,6 +13,17 @@ import (
 )
 
 func runBuild(f flags) error {
+	if p := os.Getenv("TRAIL_CPUPROFILE"); p != "" {
+		pf, err := os.Create(p)
+		if err != nil {
+			return err
+		}
+		defer pf.Close()
+		if err := pprof.StartCPUProfile(pf); err != nil {
+			return err
+		}
+		defer pprof.StopCPUProfile()
+	}
 	dir, err := filepath.Abs(f.dir)
 	if err != nil {
 		return fmt.Errorf("resolving directory: %w", err)

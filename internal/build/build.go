@@ -155,12 +155,16 @@ func Build(site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, 
 		return fmt.Errorf("building search index: %w", err)
 	}
 
-	// Build dictionary page and JSON
-	if err := buildDictionaryPage(tmpl, site, cfg, dict, outDir); err != nil {
-		return fmt.Errorf("building dictionary page: %w", err)
-	}
-	if err := buildDictionaryJSON(dict, site, cfg, outDir); err != nil {
-		return fmt.Errorf("building dictionary JSON: %w", err)
+	// Build dictionary page and JSON. The term→pages reverse index is the most
+	// expensive phase of a build, so compute it once and share it.
+	if !dict.IsEmpty() {
+		usage := buildReverseIndex(dict, site)
+		if err := buildDictionaryPage(tmpl, site, cfg, dict, usage, outDir); err != nil {
+			return fmt.Errorf("building dictionary page: %w", err)
+		}
+		if err := buildDictionaryJSON(dict, site, cfg, usage, outDir); err != nil {
+			return fmt.Errorf("building dictionary JSON: %w", err)
+		}
 	}
 
 	// Write robots.txt
@@ -600,6 +604,44 @@ func currentVersionMeta(prod *content.Product) (string, string) {
 	return "", ""
 }
 
+// printJob is one page to render into a print page, tagged with its product
+// and category so the result can be regrouped after parallel rendering.
+type printJob struct {
+	prod *content.Product
+	cat  *content.Category
+	page *content.Page
+}
+
+// renderPrintEntries renders print jobs in parallel, returning entries in the
+// same order as jobs. Rendering each page (markdown + every HTML transform) is
+// expensive, so the print pages — which re-render the entire site — are the
+// slowest sequential phase if not parallelized.
+func renderPrintEntries(md goldmark.Markdown, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, jobs []printJob, anchorMap map[string]string) ([]printPageEntry, error) {
+	entries := make([]printPageEntry, len(jobs))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, runtime.NumCPU())
+	var buildErr atomic.Value
+	for i, job := range jobs {
+		wg.Add(1)
+		go func(i int, job printJob) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			entry, err := buildPrintEntry(md, site, cfg, dict, specRefIdx, job.prod, job.cat, job.page, anchorMap)
+			if err != nil {
+				buildErr.CompareAndSwap(nil, err)
+				return
+			}
+			entries[i] = entry
+		}(i, job)
+	}
+	wg.Wait()
+	if err, ok := buildErr.Load().(error); ok && err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, specRefIdx *SpecRefIndex, outDir string) error {
 	printDir := filepath.Join(outDir, "print")
 	if err := os.MkdirAll(printDir, 0o755); err != nil {
@@ -615,15 +657,15 @@ func buildPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *content.Si
 
 	orderedPages := pagesFromCategories(site.Categories)
 	anchorMap := buildPrintAnchorMap(orderedPages)
-	var pages []printPageEntry
+	var jobs []printJob
 	for _, cat := range site.Categories {
 		for _, page := range cat.Pages {
-			entry, err := buildPrintEntry(md, site, cfg, dict, specRefIdx, nil, cat, page, anchorMap)
-			if err != nil {
-				return err
-			}
-			pages = append(pages, entry)
+			jobs = append(jobs, printJob{cat: cat, page: page})
 		}
+	}
+	pages, err := renderPrintEntries(md, site, cfg, dict, specRefIdx, jobs, anchorMap)
+	if err != nil {
+		return err
 	}
 
 	data := printData{
@@ -648,16 +690,28 @@ func buildGlobalPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *cont
 	defer f.Close()
 
 	globalAnchorMap := buildPrintAnchorMap(site.Pages)
+	var jobs []printJob
+	for _, prod := range site.Products {
+		for _, cat := range prod.Categories {
+			for _, page := range cat.Pages {
+				jobs = append(jobs, printJob{prod: prod, cat: cat, page: page})
+			}
+		}
+	}
+	entries, err := renderPrintEntries(md, site, cfg, dict, specRefIdx, jobs, globalAnchorMap)
+	if err != nil {
+		return err
+	}
+
+	// Regroup rendered entries into per-product sections (same iteration order).
 	var sections []printSection
+	idx := 0
 	for _, prod := range site.Products {
 		var pages []printPageEntry
 		for _, cat := range prod.Categories {
-			for _, page := range cat.Pages {
-				entry, err := buildPrintEntry(md, site, cfg, dict, specRefIdx, prod, cat, page, globalAnchorMap)
-				if err != nil {
-					return err
-				}
-				pages = append(pages, entry)
+			for range cat.Pages {
+				pages = append(pages, entries[idx])
+				idx++
 			}
 		}
 		sections = append(sections, printSection{
@@ -690,17 +744,27 @@ func buildProductPrintAll(md goldmark.Markdown, tmpl *theme.Templates, site *con
 
 	orderedPages := pagesFromCategories(prod.Categories)
 	anchorMap := buildPrintAnchorMap(orderedPages)
+	var jobs []printJob
+	for _, cat := range prod.Categories {
+		for _, page := range cat.Pages {
+			jobs = append(jobs, printJob{prod: prod, cat: cat, page: page})
+		}
+	}
+	entries, err := renderPrintEntries(md, site, cfg, dict, specRefIdx, jobs, anchorMap)
+	if err != nil {
+		return err
+	}
+
+	// Regroup rendered entries into per-category sections (same iteration order).
 	var pages []printPageEntry
 	var sections []printSection
+	idx := 0
 	for _, cat := range prod.Categories {
 		var sectionPages []printPageEntry
-		for _, page := range cat.Pages {
-			entry, err := buildPrintEntry(md, site, cfg, dict, specRefIdx, prod, cat, page, anchorMap)
-			if err != nil {
-				return err
-			}
-			pages = append(pages, entry)
-			sectionPages = append(sectionPages, entry)
+		for range cat.Pages {
+			pages = append(pages, entries[idx])
+			sectionPages = append(sectionPages, entries[idx])
+			idx++
 		}
 		sections = append(sections, printSection{
 			Name:       cat.Title,

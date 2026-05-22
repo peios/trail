@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/peios/trail/internal/config"
 	"github.com/peios/trail/internal/content"
@@ -262,7 +264,7 @@ type dictCategoryGroup struct {
 	Terms    []dictBrowseTerm
 }
 
-func buildDictionaryPage(tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, outDir string) error {
+func buildDictionaryPage(tmpl *theme.Templates, site *content.Site, cfg *config.Config, dict *dictionary.Dictionary, usage map[string][]pageHit, outDir string) error {
 	if dict.IsEmpty() {
 		return nil
 	}
@@ -279,7 +281,6 @@ func buildDictionaryPage(tmpl *theme.Templates, site *content.Site, cfg *config.
 	defer f.Close()
 
 	basePath := cfg.BasePath()
-	usage := buildReverseIndex(dict, site, basePath)
 
 	var terms []dictBrowseTerm
 	letterSet := make(map[string]bool)
@@ -303,6 +304,14 @@ func buildDictionaryPage(tmpl *theme.Templates, site *content.Site, cfg *config.
 		slug := strings.ToLower(t.Term)
 		slug = strings.ReplaceAll(slug, " ", "-")
 
+		var appearsOn []dictPageRef
+		for _, hit := range usage[t.Term] {
+			appearsOn = append(appearsOn, dictPageRef{
+				Title: hit.Title,
+				URL:   basePath + hit.Slug + "/",
+			})
+		}
+
 		bt := dictBrowseTerm{
 			Term:       t.Term,
 			Abbr:       t.Abbr,
@@ -315,7 +324,7 @@ func buildDictionaryPage(tmpl *theme.Templates, site *content.Site, cfg *config.
 			AliasText:  strings.Join(t.Aliases, ", "),
 			Refs:       refs,
 			Etymology:  t.Etymology,
-			AppearsOn:  usage[t.Term],
+			AppearsOn:  appearsOn,
 		}
 		terms = append(terms, bt)
 	}
@@ -370,31 +379,55 @@ func buildDictionaryPage(tmpl *theme.Templates, site *content.Site, cfg *config.
 	return tmpl.Dictionary.ExecuteTemplate(f, "base", data)
 }
 
-// buildReverseIndex scans all page bodies for dictionary term occurrences
-// and returns a map of canonical term name → pages where it appears.
-func buildReverseIndex(dict *dictionary.Dictionary, site *content.Site, basePath string) map[string][]dictPageRef {
-	result := make(map[string][]dictPageRef)
+// pageHit records a page where a dictionary term appears.
+type pageHit struct {
+	Title string
+	Slug  string
+}
 
-	for _, t := range dict.Terms {
-		forms := t.AllForms()
-		// Build a regex for this term's forms.
-		parts := make([]string, len(forms))
-		for i, f := range forms {
-			parts[i] = regexp.QuoteMeta(f)
-		}
-		pattern := `(?i)\b(` + strings.Join(parts, "|") + `)\b`
-		re := regexp.MustCompile(pattern)
+// buildReverseIndex scans all page bodies for dictionary term occurrences and
+// returns a map of canonical term name → pages where it appears. The 194-term
+// scan is the single most expensive phase of a build, so it runs in parallel
+// and is computed once per build (callers format URLs from the slug).
+func buildReverseIndex(dict *dictionary.Dictionary, site *content.Site) map[string][]pageHit {
+	result := make(map[string][]pageHit, len(dict.Terms))
+	hits := make([][]pageHit, len(dict.Terms))
 
-		for _, page := range site.Pages {
-			if re.Match(page.Body) {
-				result[t.Term] = append(result[t.Term], dictPageRef{
-					Title: page.Title,
-					URL:   basePath + page.Slug + "/",
-				})
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, runtime.NumCPU())
+	for i, t := range dict.Terms {
+		wg.Add(1)
+		go func(i int, t *dictionary.Term) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			forms := t.AllForms()
+			parts := make([]string, len(forms))
+			for j, f := range forms {
+				parts[j] = regexp.QuoteMeta(f)
 			}
+			re := regexp.MustCompile(`(?i)\b(?:` + strings.Join(parts, "|") + `)\b`)
+
+			var found []pageHit
+			for _, page := range site.Pages {
+				if re.Match(page.Body) {
+					found = append(found, pageHit{Title: page.Title, Slug: page.Slug})
+				}
+			}
+			hits[i] = found
+		}(i, t)
+	}
+	wg.Wait()
+
+	// Append (rather than assign) so that two terms sharing a display name —
+	// e.g. a global and a product-scoped term — accumulate into the same key,
+	// matching the original sequential behaviour exactly.
+	for i, t := range dict.Terms {
+		if len(hits[i]) > 0 {
+			result[t.Term] = append(result[t.Term], hits[i]...)
 		}
 	}
-
 	return result
 }
 
@@ -424,12 +457,10 @@ type dictJSONPageRef struct {
 	Slug  string `json:"slug"`
 }
 
-func buildDictionaryJSON(dict *dictionary.Dictionary, site *content.Site, cfg *config.Config, outDir string) error {
+func buildDictionaryJSON(dict *dictionary.Dictionary, site *content.Site, cfg *config.Config, usage map[string][]pageHit, outDir string) error {
 	if dict.IsEmpty() {
 		return nil
 	}
-
-	usage := buildReverseIndex(dict, site, "")
 
 	entries := make([]dictJSONEntry, len(dict.Terms))
 	for i, t := range dict.Terms {
@@ -441,7 +472,7 @@ func buildDictionaryJSON(dict *dictionary.Dictionary, site *content.Site, cfg *c
 		for _, p := range usage[t.Term] {
 			appearsOn = append(appearsOn, dictJSONPageRef{
 				Title: p.Title,
-				Slug:  strings.TrimSuffix(strings.TrimPrefix(p.URL, "/"), "/"),
+				Slug:  p.Slug,
 			})
 		}
 		entries[i] = dictJSONEntry{
