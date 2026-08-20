@@ -12,6 +12,9 @@
       {%- if count > 4 %}
       <a class="see-all" href="{{ topic.entry | safe }}">See all {{ count }} articles</a>
       {%- endif %}
+      {%- if count %}
+      <p class="card-meta">{{ count }} article{{ "" if count == 1 else "s" }} · {{ topic.reading_minutes | duration }}</p>
+      {%- endif %}
     </li>
 {% endmacro %}
 
@@ -19,6 +22,9 @@
     <li><a class="card" href="{{ anthology.path | safe }}" style="--pc: {{ color }}">
       <h3>{{ anthology.title }}</h3>
       <p>{{ anthology.description }}</p>
+      {%- if anthology.reading_minutes %}
+      <p class="card-meta">{{ anthology.reading_minutes | duration }}</p>
+      {%- endif %}
     </a></li>
 {% endmacro %}
 
@@ -29,5 +35,8 @@
       {%- endif %}
       <h3>{{ book.title }}</h3>
       <p>{{ book.description }}</p>
+      {%- if book.reading_minutes %}
+      <p class="card-meta">{{ book.reading_minutes | duration }}</p>
+      {%- endif %}
     </a></li>
 {% endmacro %}

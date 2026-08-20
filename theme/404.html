@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Page not found — {{ site.sitename }}{% endblock %}
+{% block extra_head %}<meta name="robots" content="noindex">{% endblock %}
+
+{% block content %}
+<section class="not-found">
+  <p class="not-found-code">404</p>
+  <h1>This page doesn't exist.</h1>
+  <p class="not-found-hint">It may have moved, or the link that brought you here is stale.</p>
+  <p><a class="not-found-home" href="/">Back to {{ site.sitename }}</a></p>
+</section>
+{% endblock %}

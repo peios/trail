@@ -20,7 +20,12 @@
   font-display: swap;
 }
 
+/* Theme tokens. Three states: :root is light; data-theme="dark" (the
+   header toggle) wins outright; the system preference applies only when
+   the toggle hasn't pinned light. The two dark blocks below must stay
+   identical — CSS offers no way to share them. */
 :root {
+  color-scheme: light;
   --bg: #f6f7f9;
   --surface: rgba(255, 255, 255, 0.72);
   --text: #15171c;
@@ -28,16 +33,47 @@
   --border: rgba(21, 23, 28, 0.09);
   --border-strong: rgba(21, 23, 28, 0.18);
   --accent: #635bff;
-  --glow: rgba(99, 91, 255, 0.10);
+  --glow-mix: 10%;
+  --glow: color-mix(in srgb, var(--accent) var(--glow-mix), transparent);
   --headline: linear-gradient(180deg, #15171c 55%, #5c6470);
   --tile-mix: 10%;
   --tile-fg-mix: 62%;
   --card-shadow: 0 8px 24px rgba(21, 23, 28, 0.07);
   --menu-bg: #ffffff;
+  --code-comment: #6a737d;
+  --code-keyword: #cf222e;
+  --code-string: #0a3069;
+  --code-constant: #0550ae;
+  --code-function: #8250df;
+  --code-type: #953800;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0c10;
+  --surface: rgba(255, 255, 255, 0.028);
+  --text: #eceef2;
+  --text-muted: #99a3b3;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --accent: #8b7bff;
+  --glow-mix: 13%;
+  --headline: linear-gradient(180deg, #ffffff 55%, #9aa4b4);
+  --tile-mix: 15%;
+  --tile-fg-mix: 80%;
+  --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  --menu-bg: #12151b;
+  --code-comment: #8b949e;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-constant: #79c0ff;
+  --code-function: #d2a8ff;
+  --code-type: #ffa657;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #0a0c10;
     --surface: rgba(255, 255, 255, 0.028);
     --text: #eceef2;
@@ -45,12 +81,18 @@
     --border: rgba(255, 255, 255, 0.08);
     --border-strong: rgba(255, 255, 255, 0.16);
     --accent: #8b7bff;
-    --glow: rgba(139, 123, 255, 0.13);
+    --glow-mix: 13%;
     --headline: linear-gradient(180deg, #ffffff 55%, #9aa4b4);
     --tile-mix: 15%;
     --tile-fg-mix: 80%;
     --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
     --menu-bg: #12151b;
+  --code-comment: #8b949e;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-constant: #79c0ff;
+  --code-function: #d2a8ff;
+  --code-type: #ffa657;
   }
 }
 
@@ -101,6 +143,20 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
   -webkit-backdrop-filter: blur(14px);
 }
 
+.menu-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem;
+  margin: -0.35rem 0;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.menu-toggle:hover { color: var(--text); }
+
 .wordmark {
   font-size: 1.02rem;
   font-weight: 650;
@@ -110,6 +166,10 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 }
 .wordmark span { color: var(--accent); }
 .wordmark:hover { text-decoration: none; }
+
+/* The drawer's own wordmark: only exists visually while the sidebar is
+   a drawer (it covers the header's). */
+.drawer-wordmark { display: none; }
 
 .site-nav {
   display: flex;
@@ -210,6 +270,37 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
   outline: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
+.search-icon {
+  display: none;
+  flex: none;
+  color: var(--text-muted);
+}
+
+/* Theme toggle: cycles system → light → dark; the state attribute picks
+   which icon shows. */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0.42rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.theme-toggle:hover { border-color: var(--border-strong); color: var(--text); }
+.theme-toggle:focus-visible {
+  border-color: var(--accent);
+  outline: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.theme-toggle svg { display: none; }
+.theme-toggle[data-theme-state="system"] svg[data-theme-icon="system"],
+.theme-toggle[data-theme-state="light"] svg[data-theme-icon="light"],
+.theme-toggle[data-theme-state="dark"] svg[data-theme-icon="dark"] { display: block; }
+
 .search-placeholder {
   flex: 1;
   min-width: 0;
@@ -241,6 +332,23 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
   font-size: 1rem;
   box-shadow: var(--card-shadow);
 }
+
+/* The dimmed page behind the open drawer. Inert until opened — and the
+   toggle only shows on small screens, so it never activates on desktop. */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background: rgba(10, 12, 16, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+body.drawer-open .drawer-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+body.drawer-open { overflow: hidden; }
 
 /* ---- Search modal --------------------------------------------------------- */
 
@@ -689,9 +797,17 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 .sidebar-folder details[open] > summary::after {
   transform: translateY(-65%) rotate(45deg);
 }
+/* The label link stops short of the chevron strip: clicking the title
+   navigates, clicking the strip (part of the <summary>) expands the
+   group without leaving the page. */
 .sidebar-chapter summary a,
 .sidebar-folder summary a {
-  padding-right: 1.5rem;
+  margin-right: 2.2rem;
+  padding-right: 0;
+}
+.sidebar-chapter summary:hover::after,
+.sidebar-folder summary:hover::after {
+  border-color: var(--text);
 }
 .sidebar-chapter summary a {
   color: var(--text);
@@ -705,6 +821,17 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
   padding-right: 0.35rem;
 }
 
+/* Appendix rows carry a small "APPENDIX A" eyebrow above the title
+   instead of a number column. */
+.sidebar-list .appendix-number {
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 /* Heading numbers inside book articles are real text (searchable,
    copyable); mute them so titles stay the anchor of the line. */
 .heading-number {
@@ -713,6 +840,31 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 }
 
 .toc .section-number {
+  min-width: 0;
+  padding-right: 0.35rem;
+}
+
+.sidebar-toc {
+  display: none;
+  margin-top: 1.4rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+.sidebar-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+}
+.sidebar-toc a {
+  display: block;
+  padding: 0.28rem 0.85rem;
+  color: var(--text-muted);
+}
+.sidebar-toc a:hover { color: var(--text); text-decoration: none; }
+.sidebar-toc .toc-3 a { padding-left: 1.7rem; }
+.sidebar-toc .section-number {
+  display: inline-block;
   min-width: 0;
   padding-right: 0.35rem;
 }
@@ -758,7 +910,12 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 .crumbs a:hover { color: var(--text); text-decoration: none; }
 
 .article-body,
-.print-article { line-height: 1.65; }
+.print-article {
+  line-height: 1.65;
+  /* The reader's text-size choice scales the prose only, so the chrome
+     never eats the screen the way browser zoom does. */
+  font-size: calc(1rem * var(--reading-scale, 1));
+}
 
 .article-body h1,
 .print-article h1 {
@@ -848,11 +1005,15 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
   border: none;
 }
 
+.table-scroll {
+  overflow-x: auto;
+  margin: 1.1rem 0;
+}
 .article-body table,
 .print-article table {
   border-collapse: collapse;
   width: 100%;
-  margin: 1.1rem 0;
+  margin: 0;
   font-size: 0.92rem;
 }
 .article-body th,
@@ -905,10 +1066,36 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 @media (max-width: 1100px) {
   .article-layout { grid-template-columns: 15rem minmax(0, 1fr); }
   .toc { display: none; }
+  .sidebar-toc { display: block; }
 }
+
+/* ≤800px: the sidebar becomes a slide-in drawer behind the header's
+   menu button — same element, repositioned, so the tree (and its
+   "On this page" section) needs no duplicate markup. */
 @media (max-width: 800px) {
   .article-layout { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { display: none; }
+  .menu-toggle { display: flex; }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(19rem, 85vw);
+    max-height: none;
+    padding: 1.2rem 1.3rem 2.5rem;
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    transform: translateX(-105%);
+    transition: transform 0.2s ease;
+  }
+  body.drawer-open .sidebar { transform: none; }
+  .drawer-wordmark {
+    display: block;
+    margin-bottom: 1rem;
+    padding-bottom: 0.9rem;
+    border-bottom: 1px solid var(--border);
+  }
 }
 
 /* ---- Footer ------------------------------------------------------------- */
@@ -926,6 +1113,351 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 /* ---- Small screens ------------------------------------------------------ */
 
 @media (max-width: 640px) {
-  .site-nav, .search-small { display: none; }
+  .site-header {
+    gap: 0.9rem;
+    padding: 0.6rem 1rem;
+  }
+  /* The search pill collapses to a bare magnifier icon. */
+  .search-small {
+    width: auto;
+    padding: 0.42rem;
+  }
+  .search-small .search-placeholder,
+  .search-small kbd { display: none; }
+  .search-small .search-icon { display: block; }
+  /* The product menu fits the screen as a single column. */
+  .menu {
+    grid-template-columns: 1fr;
+    max-width: calc(100vw - 2rem);
+    max-height: min(24rem, 70vh);
+    overflow-y: auto;
+  }
+  /* Top-anchor the search modal: the on-screen keyboard takes the
+     bottom half of a phone screen. */
+  .search-modal { margin: 0.75rem auto auto; }
   .hero { padding-top: 3.5rem; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .drawer-overlay { transition: none; }
+}
+
+/* ---- Inline references & RFC keywords -------------------------------- */
+
+/* RFC-2119 requirement keywords (MUST, SHOULD NOT, ...) stand out
+   wherever prose states them, tinted by the surrounding product. */
+.rfc-keyword {
+  font-weight: 600;
+  color: var(--pc, var(--accent));
+}
+
+/* ---- 404 ------------------------------------------------------------- */
+
+.not-found {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 6rem 1.5rem 8rem;
+  text-align: center;
+}
+.not-found-code {
+  font-size: 4rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0;
+}
+.not-found h1 {
+  font-size: 1.4rem;
+  margin: 0.5rem 0 1rem;
+}
+.not-found-hint {
+  color: var(--text-muted);
+  margin: 0 0 1.5rem;
+}
+
+/* ---- Header nav links & edit links ----------------------------------- */
+
+/* Configured [[nav]] links sit beside the products menu on wide
+   screens; on phones they fold into the products menu instead. */
+.nav-link {
+  align-self: center;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.nav-link:hover { color: var(--text); }
+
+.menu-links {
+  display: none;
+  border-top: 1px solid var(--border);
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+}
+
+@media (max-width: 640px) {
+  .nav-link { display: none; }
+  .menu-links { display: block; }
+}
+
+.edit-page {
+  margin-top: 2.5rem;
+  font-size: 0.85rem;
+}
+.edit-page a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.edit-page a:hover { color: var(--text); text-decoration: underline; }
+
+/* ---- Code blocks: highlighting, copy button -------------------------- */
+
+/* Highlighting is class-based (see highlight.rs), so code follows the
+   reader's light/dark choice like everything else. Only these scope
+   atoms are painted; the rest inherit, which keeps unknown languages
+   and exotic grammars looking deliberate rather than half-coloured. */
+.hl-comment { color: var(--code-comment); font-style: italic; }
+.hl-string { color: var(--code-string); }
+.hl-constant { color: var(--code-constant); }
+.hl-keyword,
+.hl-storage { color: var(--code-keyword); }
+.hl-entity.hl-name.hl-function { color: var(--code-function); }
+.hl-entity.hl-name.hl-type,
+.hl-entity.hl-name.hl-class,
+.hl-entity.hl-name.hl-struct,
+.hl-entity.hl-name.hl-tag,
+.hl-support.hl-type,
+.hl-support.hl-class,
+.hl-support.hl-function { color: var(--code-type); }
+.hl-invalid { color: #cf222e; }
+
+.code-block {
+  position: relative;
+  margin: 1.1rem 0;
+}
+.code-block pre { margin: 0; }
+
+/* The copy button stays out of the way until the block is hovered or
+   the button itself is focused — visible enough to find, quiet enough
+   not to compete with the code. */
+.copy-code {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 1;
+  padding: 0.25rem 0.55rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+.code-block:hover .copy-code,
+.copy-code:focus-visible { opacity: 1; }
+.copy-code:hover { color: var(--text); }
+.copy-code[data-copied] { opacity: 1; color: var(--accent); }
+
+@media (hover: none) {
+  /* No hover to reveal it on touch devices. */
+  .copy-code { opacity: 1; }
+}
+
+/* ---- Heading permalinks ---------------------------------------------- */
+
+.heading-anchor {
+  margin-left: 0.4em;
+  color: var(--text-muted);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+h1:hover > .heading-anchor,
+h2:hover > .heading-anchor,
+h3:hover > .heading-anchor,
+h4:hover > .heading-anchor,
+h5:hover > .heading-anchor,
+h6:hover > .heading-anchor,
+.heading-anchor:focus-visible { opacity: 1; }
+.heading-anchor:hover { color: var(--accent); }
+
+/* ---- Tab groups ------------------------------------------------------ */
+
+.tabs {
+  margin: 1.2rem 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.tab-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  padding: 0.3rem 0.3rem 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.tab-button {
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+}
+.tab-button:hover { color: var(--text); }
+.tab-button[aria-selected="true"] {
+  color: var(--pc, var(--accent));
+  border-bottom-color: var(--pc, var(--accent));
+}
+.tab-panel { padding: 0.2rem 1rem 0.6rem; }
+/* A code block filling a panel sits flush inside it. */
+.tab-panel > .code-block:only-child { margin: 0.6rem 0; }
+
+@media print {
+  /* Paper can't click: every panel prints, labelled. */
+  .tab-buttons { display: none; }
+  .tab-panel[hidden] { display: block !important; }
+  .tab-panel::before {
+    content: attr(data-tab-label);
+    display: block;
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin: 0.6rem 0 0.2rem;
+  }
+}
+
+/* ---- Back to top ----------------------------------------------------- */
+
+.back-to-top {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  color: var(--text-muted);
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  box-shadow: var(--card-shadow);
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s ease, visibility 0.16s ease, color 0.16s ease;
+}
+.back-to-top[data-visible] { opacity: 1; visibility: visible; }
+.back-to-top:hover { color: var(--text); }
+@media print { .back-to-top { display: none; } }
+
+/* ---- Reading size controls ------------------------------------------- */
+
+.reading-size {
+  display: flex;
+  align-items: baseline;
+  gap: 0.1rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+.reading-size button {
+  padding: 0.1rem 0.4rem;
+  font-family: inherit;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  line-height: 1;
+}
+.reading-size button:hover { color: var(--text); }
+.reading-size button[aria-pressed="true"] { color: var(--pc, var(--accent)); }
+.reading-size button:nth-child(1) { font-size: 0.75rem; }
+.reading-size button:nth-child(2) { font-size: 0.92rem; }
+.reading-size button:nth-child(3) { font-size: 1.1rem; }
+
+/* ---- Search term highlighting ---------------------------------------- */
+
+/* Arriving from a search result marks the terms that brought you here. */
+.article-body mark.search-hit {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 0.1em;
+}
+.article-body mark.search-hit:first-of-type {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* ---- Article meta line & card meta ----------------------------------- */
+
+.article-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: -0.5rem 0 1.6rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+.meta-dot { opacity: 0.5; }
+
+.card-meta {
+  margin: 0.6rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+/* ---- Print-view link & pager ----------------------------------------- */
+
+/* The crumbs row carries the single-page link on the far side. */
+.crumbs { position: relative; }
+.print-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  float: right;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.78rem;
+}
+.print-link:hover { color: var(--pc, var(--accent)); }
+@media (max-width: 640px) {
+  /* The label alone would crowd the crumbs; the icon still reads. */
+  .print-link span { display: none; }
+}
+
+.pager {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+.pager a {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.14s ease;
+}
+.pager a:hover { border-color: var(--pc, var(--accent)); }
+.pager-next { text-align: right; }
+.pager-label {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.pager-title { font-size: 0.9rem; font-weight: 550; }
+@media print { .pager, .print-link { display: none; } }

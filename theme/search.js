@@ -58,7 +58,8 @@
       item.setAttribute("role", "option");
       if (index === selected) item.setAttribute("aria-selected", "true");
       const link = document.createElement("a");
-      link.href = entry.url;
+      // Carry the query to the page so it can mark the matches.
+      link.href = entry.url + "?q=" + encodeURIComponent(input.value.trim());
       const title = document.createElement("p");
       title.className = "result-title";
       title.textContent = entry.meta.title || entry.url;
@@ -121,7 +122,8 @@
       selected = Math.max(selected - 1, 0);
       render();
     } else if (event.key === "Enter" && entries[selected]) {
-      location.href = entries[selected].url;
+      location.href =
+        entries[selected].url + "?q=" + encodeURIComponent(input.value.trim());
     }
   });
 })();

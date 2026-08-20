@@ -18,12 +18,13 @@ const TEMPLATES: &[(&str, &str)] = &[
     ),
     ("book-nav.html", include_str!("../theme/book-nav.html")),
     ("print.html", include_str!("../theme/print.html")),
+    ("404.html", include_str!("../theme/404.html")),
 ];
 
-/// One entry in an article's Related Content list: a resolved
-/// `related:` reference, ready to display.
+/// A link to another page, with its title: Related Content entries and
+/// the previous/next pager both need exactly this.
 #[derive(Debug, serde::Serialize)]
-pub struct RelatedLink {
+pub struct PageLink {
     pub path: String,
     pub title: String,
 }
@@ -35,6 +36,8 @@ pub struct PrintSection {
     pub id: String,
     /// The article's section number inside a book, if any.
     pub number: Option<String>,
+    /// Appendix entries show the full "Appendix A" label.
+    pub appendix: bool,
     pub title: String,
     /// Display crumb segments orienting the article within the unit;
     /// the template joins them (an interpolated "/" would be escaped).
@@ -52,6 +55,14 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(live_reload: bool) -> Result<Renderer> {
         let mut env = Environment::new();
+        // Reading times are stored as minutes; pages say them in words.
+        env.add_filter("duration", |minutes: u32| {
+            match (minutes / 60, minutes % 60) {
+                (0, minutes) => format!("{} min", minutes.max(1)),
+                (hours, 0) => format!("{hours} hr"),
+                (hours, minutes) => format!("{hours} hr {minutes} min"),
+            }
+        });
         for (name, source) in TEMPLATES {
             env.add_template(name, source)
                 .with_context(|| format!("parsing template {name}"))?;
@@ -68,7 +79,16 @@ impl Renderer {
                 site => site.config,
                 products => site.products,
                 featured => site.featured(),
+                meta => page_meta(
+                    site,
+                    &site.config.sitename,
+                    Some(&site.config.description),
+                    "",
+                    "website",
+                ),
                 md_path => "/llms.txt",
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
@@ -86,7 +106,16 @@ impl Renderer {
                 products => site.products,
                 product => product,
                 sections => product.sections(),
+                meta => page_meta(
+                    site,
+                    &product.title,
+                    Some(&product.description),
+                    &product.path,
+                    "website",
+                ),
                 md_path => format!("{}.md", product.path),
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
@@ -112,7 +141,16 @@ impl Renderer {
                 anthology => anthology,
                 anthologies => parents,
                 sections => anthology.sections(),
+                meta => page_meta(
+                    site,
+                    &anthology.title,
+                    Some(&anthology.description),
+                    &anthology.path,
+                    "website",
+                ),
                 md_path => format!("{}.md", anthology.path),
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
@@ -142,7 +180,16 @@ impl Renderer {
                 product => product,
                 anthologies => anthologies,
                 book => book,
+                meta => page_meta(
+                    site,
+                    &book.title,
+                    Some(&book.description),
+                    &book.path,
+                    "website",
+                ),
                 md_path => format!("{}.md", book.path),
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
@@ -160,9 +207,18 @@ impl Renderer {
         chapters: &[&Chapter],
         article: &Article,
         rendered: &markdown::Rendered,
-        related: &[RelatedLink],
+        related: &[PageLink],
+        pager: Pager,
     ) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
+        let meta = page_meta(
+            site,
+            &article.title,
+            article.description.as_deref(),
+            article.original.as_deref().unwrap_or(&article.path),
+            "article",
+        );
+        let edit_url = edit_link(site, article);
         self.env
             .get_template("book-article.html")
             .expect("template registered in new()")
@@ -175,10 +231,17 @@ impl Renderer {
                 chapters => chapters,
                 article => article,
                 related => related,
+                meta => meta,
+                edit_url => edit_url,
+                previous => pager.previous,
+                next => pager.next,
+                print_url => pager.print_url,
                 md_path => format!("{}.md", article.path),
                 content => rendered.html,
                 toc => rendered.toc,
                 has_mermaid => rendered.has_mermaid,
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
@@ -194,6 +257,7 @@ impl Renderer {
         product: &Product,
         title: &str,
         description: Option<&str>,
+        path: &str,
         md_path: &str,
         sections: &[PrintSection],
         has_mermaid: bool,
@@ -208,9 +272,18 @@ impl Renderer {
                 product => product,
                 title => title,
                 description => description,
+                meta => page_meta(
+                    site,
+                    title,
+                    description,
+                    &format!("{path}/print"),
+                    "article",
+                ),
                 md_path => md_path,
                 sections => sections,
                 has_mermaid => has_mermaid,
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
@@ -228,9 +301,18 @@ impl Renderer {
         folder: Option<&TopicFolder>,
         article: &Article,
         rendered: &markdown::Rendered,
-        related: &[RelatedLink],
+        related: &[PageLink],
+        pager: Pager,
     ) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
+        let meta = page_meta(
+            site,
+            &article.title,
+            article.description.as_deref(),
+            article.original.as_deref().unwrap_or(&article.path),
+            "article",
+        );
+        let edit_url = edit_link(site, article);
         self.env
             .get_template("article.html")
             .expect("template registered in new()")
@@ -243,15 +325,106 @@ impl Renderer {
                 folder => folder,
                 article => article,
                 related => related,
+                meta => meta,
+                edit_url => edit_url,
+                previous => pager.previous,
+                next => pager.next,
+                print_url => pager.print_url,
                 md_path => format!("{}.md", article.path),
                 content => rendered.html,
                 toc => rendered.toc,
                 has_mermaid => rendered.has_mermaid,
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
             })
             .with_context(|| format!("rendering article page '{}'", article.path))
+    }
+}
+
+impl Renderer {
+    /// The 404 page: written to /404.html for static hosts and served
+    /// for misses by the dev server. Carries no page meta — a page that
+    /// doesn't exist has nothing to canonicalise or preview.
+    pub fn not_found(&self, site: &Site) -> Result<String> {
+        let (head, tail) = split_sitename(&site.config.sitename);
+        self.env
+            .get_template("404.html")
+            .expect("template registered in new()")
+            .render(context! {
+                site => site.config,
+                products => site.products,
+                favicon => site.favicon_href(),
+                head_html => site.head_html,
+                wordmark_head => head,
+                wordmark_tail => tail,
+                live_reload => self.live_reload,
+            })
+            .context("rendering 404.html")
+    }
+}
+
+/// Where an article page can send the reader next: its neighbours in
+/// reading order, and its slot in the enclosing unit's single-page view.
+#[derive(Debug, Default)]
+pub struct Pager {
+    pub previous: Option<PageLink>,
+    pub next: Option<PageLink>,
+    /// "{unit}/print#{anchor}" — the whole topic or book on one page,
+    /// opened at this article.
+    pub print_url: Option<String>,
+}
+
+/// The "Edit this page" URL for an article, from the site's edit_url
+/// template: "{path}" becomes the article's source path relative to
+/// the site root. An alias keeps its original's file, so editing the
+/// alias edits the real source.
+fn edit_link(site: &Site, article: &Article) -> Option<String> {
+    let template = site.config.edit_url.as_ref()?;
+    let relative = article.source_file.strip_prefix(&site.root).ok()?;
+    Some(template.replace("{path}", &relative.to_string_lossy().replace('\\', "/")))
+}
+
+/// Head metadata for one page: description/OG tags and the canonical
+/// URL. Every page names a canonical — its own URL, or the original's
+/// for alias pages, so search engines credit one URL instead of seeing
+/// duplicates. Canonicals use the trailing-slash form the server
+/// redirects to, absolute when the site has a base `url`.
+#[derive(Debug, serde::Serialize)]
+struct PageMeta {
+    /// og:title — the page's own name, no site suffix.
+    title: String,
+    description: Option<String>,
+    /// og:type — "article" for content, "website" for landings.
+    kind: &'static str,
+    canonical: String,
+    /// og:url — only emitted when the canonical is absolute.
+    og_url: Option<String>,
+}
+
+fn page_meta(
+    site: &Site,
+    title: &str,
+    description: Option<&str>,
+    canonical_path: &str,
+    kind: &'static str,
+) -> PageMeta {
+    let path = format!("{}/", canonical_path.trim_end_matches('/'));
+    let canonical = match &site.config.url {
+        Some(base) => format!("{base}{path}"),
+        None => path,
+    };
+    let og_url = canonical.starts_with("http").then(|| canonical.clone());
+    PageMeta {
+        title: title.to_string(),
+        description: description
+            .filter(|description| !description.is_empty())
+            .map(str::to_string),
+        kind,
+        canonical,
+        og_url,
     }
 }
 
@@ -399,6 +572,7 @@ mod tests {
                 article,
                 &rendered,
                 &[],
+                Pager::default(),
             )
             .unwrap();
 
@@ -411,9 +585,50 @@ mod tests {
         assert!(html.contains("href=\"/alpha/manual/intro\""));
         assert!(html.contains("href=\"/alpha/manual/appendix/tables\""));
         // Chapters on the trail to the current page are expanded; the
-        // appendix stays collapsed.
-        assert_eq!(html.matches("<details open>").count(), 2);
-        assert_eq!(html.matches("<details>").count(), 1);
+        // appendix chapters stay collapsed. Every group carries its path
+        // for the open-state persistence script.
+        assert_eq!(html.matches("<details open data-chapter=").count(), 2);
+        assert_eq!(html.matches("<details data-chapter=").count(), 2);
+        assert!(html.contains("data-book-nav=\"/alpha/manual\""));
+        // Appendix entries carry the full label as an eyebrow in the tree.
+        assert!(html.contains("<span class=\"appendix-number\">Appendix A</span>Article glossary"));
+        assert!(html.contains("<span class=\"appendix-number\">Appendix B</span>History"));
+
+        // An appendix page titles itself with the full label, while its
+        // own headings keep the short lettered numbering.
+        let (glossary_chapters, glossary) = manual
+            .articles()
+            .into_iter()
+            .find(|(_, a)| a.slug == "glossary")
+            .unwrap();
+        let glossary_rendered = crate::markdown::render(
+            &glossary.body,
+            &crate::links::LinkIndex::default(),
+            crate::markdown::RenderOptions {
+                numbering: glossary.number.as_deref(),
+                ..crate::markdown::RenderOptions::default()
+            },
+        )
+        .unwrap();
+        let glossary_html = Renderer::new(false)
+            .unwrap()
+            .book_article(
+                &site,
+                alpha,
+                &[],
+                manual,
+                &glossary_chapters,
+                glossary,
+                &glossary_rendered,
+                &[],
+                Pager::default(),
+            )
+            .unwrap();
+        assert!(
+            glossary_html
+                .contains("<h1><span class=\"heading-number\">Appendix A</span> Article glossary")
+        );
+        assert!(glossary_html.contains("<span class=\"heading-number\">A.1</span>"));
         // Breadcrumbs walk the chapter trail.
         assert!(html.contains("href=\"/alpha/manual/setup/install\">Setup</a>"));
         assert!(html.contains("href=\"/alpha/manual/setup/advanced/tuning\">Advanced</a>"));
@@ -446,7 +661,17 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
+            .article(
+                &site,
+                alpha,
+                &[acorn],
+                wide,
+                None,
+                article,
+                &rendered,
+                &[],
+                Pager::default(),
+            )
             .unwrap();
 
         // Sidebar lists all the topic's articles, marking the current one.
@@ -462,6 +687,31 @@ mod tests {
         assert!(html.contains(">Acorn Docs</a>"));
         // No diagram → no mermaid script.
         assert!(!html.contains("mermaid.min.js"));
+        // The mobile drawer: a menu toggle in the header, the overlay,
+        // the wordmark at the drawer's top, and the ToC's copy at the
+        // foot of the sidebar column.
+        assert!(html.contains("data-drawer-toggle"));
+        assert!(html.contains("class=\"drawer-overlay\" data-drawer-close"));
+        assert!(html.contains("class=\"wordmark drawer-wordmark\" href=\"/\""));
+        assert!(html.contains("class=\"sidebar-toc\""));
+        assert!(html.contains("On this page"));
+    }
+
+    #[test]
+    fn book_covers_carry_the_mobile_drawer_too() {
+        let (_dir, site) = fixture_site();
+        let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
+        let manual = alpha.books().find(|b| b.slug == "manual").unwrap();
+        let html = Renderer::new(false)
+            .unwrap()
+            .book(&site, alpha, &[], manual)
+            .unwrap();
+
+        assert!(html.contains("data-drawer-toggle"));
+        assert!(html.contains("class=\"drawer-overlay\" data-drawer-close"));
+        assert!(html.contains("class=\"wordmark drawer-wordmark\" href=\"/\""));
+        // A cover has no body headings, so no "On this page" section.
+        assert!(!html.contains("sidebar-toc"));
     }
 
     #[test]
@@ -479,7 +729,17 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
+            .article(
+                &site,
+                alpha,
+                &[acorn],
+                wide,
+                None,
+                article,
+                &rendered,
+                &[],
+                Pager::default(),
+            )
             .unwrap();
 
         assert!(html.contains("<pre class=\"mermaid\">"));
@@ -514,6 +774,7 @@ mod tests {
                 article,
                 &rendered,
                 &[],
+                Pager::default(),
             )
             .unwrap();
 
@@ -536,7 +797,17 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], narrow, None, b1, &rendered, &[])
+            .article(
+                &site,
+                alpha,
+                &[acorn],
+                narrow,
+                None,
+                b1,
+                &rendered,
+                &[],
+                Pager::default(),
+            )
             .unwrap();
         assert!(html.contains("<details>"));
         assert!(!html.contains("<details open>"));
@@ -562,7 +833,17 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[], loose, None, article, &rendered, &[])
+            .article(
+                &site,
+                alpha,
+                &[],
+                loose,
+                None,
+                article,
+                &rendered,
+                &[],
+                Pager::default(),
+            )
             .unwrap();
 
         assert!(html.contains(">Loose</a>"));
@@ -585,7 +866,17 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
+            .article(
+                &site,
+                alpha,
+                &[acorn],
+                wide,
+                None,
+                article,
+                &rendered,
+                &[],
+                Pager::default(),
+            )
             .unwrap();
 
         assert!(!html.contains("On this page"));
@@ -624,7 +915,17 @@ mod tests {
         )
         .unwrap();
         let html = renderer
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
+            .article(
+                &site,
+                alpha,
+                &[acorn],
+                wide,
+                None,
+                article,
+                &rendered,
+                &[],
+                Pager::default(),
+            )
             .unwrap();
         assert!(html.contains("data-pagefind-body"));
         assert!(html.contains("data-pagefind-meta=\"crumbs:Alpha / Acorn Docs / Wide Topic\""));
@@ -655,6 +956,7 @@ mod tests {
                 article,
                 &rendered,
                 &[],
+                Pager::default(),
             )
             .unwrap();
         assert!(html.contains("data-pagefind-meta=\"crumbs:Alpha / AM / Setup / Advanced\""));

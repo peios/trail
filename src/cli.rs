@@ -34,6 +34,11 @@ pub struct BuildArgs {
     #[arg(long)]
     pub allow_dangling_links: bool,
 
+    /// Fail the build when an article has no `description:` frontmatter.
+    /// Descriptions feed search-result snippets and social previews.
+    #[arg(long)]
+    pub strict: bool,
+
     /// Also write each unit's print.md as llms-full.txt — a discovery
     /// fallback for agents that probe for that name instead of reading
     /// llms.txt (which always points at print.md).

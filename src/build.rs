@@ -10,7 +10,8 @@ use crate::export;
 use crate::images::{ImageIndex, ImageScope};
 use crate::links::LinkIndex;
 use crate::markdown;
-use crate::render::{RelatedLink, Renderer};
+use crate::refs::InlineRefIndex;
+use crate::render::{PageLink, Pager, Renderer};
 use crate::search::{self, SearchPage};
 use crate::site::{
     Anthology, AnthologyItem, Book, Product, ProductItem, Site, Topic, TopicChild, TopicFolder,
@@ -69,6 +70,8 @@ pub struct BuildOptions {
     pub live_reload: bool,
     /// Downgrade missing ~link targets from errors to warnings.
     pub allow_dangling_links: bool,
+    /// Fail when an article has no `description:` frontmatter.
+    pub strict: bool,
     /// Emit llms-full.txt copies of the print.md bundles.
     pub render_llms_full: bool,
 }
@@ -79,6 +82,7 @@ pub fn run(args: &BuildArgs) -> Result<()> {
     let options = BuildOptions {
         live_reload: false,
         allow_dangling_links: args.allow_dangling_links,
+        strict: args.strict,
         render_llms_full: args.render_llms_full,
     };
     let pages = build_site(&site, &out, options)?;
@@ -97,11 +101,33 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
     let renderer = Renderer::new(options.live_reload)?;
     let links = LinkIndex::new(site);
     let images = ImageIndex::new(&site.images);
+    let refs = InlineRefIndex::new(site)?;
     out.write(
         &out.dir().join("index.html"),
         renderer.index(site)?.as_bytes(),
     )?;
-    let mut pages = 1;
+    if options.strict {
+        let missing: Vec<String> = site
+            .articles()
+            .into_iter()
+            .filter(|article| article.original.is_none())
+            .filter(|article| article.description.as_deref().is_none_or(str::is_empty))
+            .map(|article| format!("  article '{}' has no description", article.path))
+            .collect();
+        if !missing.is_empty() {
+            bail!(
+                "--strict: {} article{} without a description:\n{}",
+                missing.len(),
+                if missing.len() == 1 { "" } else { "s" },
+                missing.join("\n")
+            );
+        }
+    }
+    out.write(
+        &out.dir().join("404.html"),
+        renderer.not_found(site)?.as_bytes(),
+    )?;
+    let mut pages = 2;
     let mut uses_mermaid = false;
     // Every page except the front page is fed to the search indexer; the
     // data-pagefind-* attributes in the templates decide what text counts.
@@ -117,6 +143,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
                         &renderer,
                         &links,
                         &images,
+                        &refs,
                         options,
                         site,
                         product,
@@ -133,6 +160,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
                         &renderer,
                         &links,
                         &images,
+                        &refs,
                         options,
                         site,
                         product,
@@ -149,6 +177,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
                         &renderer,
                         &links,
                         &images,
+                        &refs,
                         options,
                         site,
                         product,
@@ -203,6 +232,16 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
     for (rel, contents) in ASSET_FILES {
         out.write(&out.dir().join(rel), contents)?;
     }
+    if let Some(source) = &site.custom_css {
+        let contents = fs::read(source)
+            .with_context(|| format!("reading custom stylesheet {}", source.display()))?;
+        out.write(&out.dir().join("assets/custom.css"), &contents)?;
+    }
+    if let (Some(source), Some(href)) = (&site.favicon, site.favicon_href()) {
+        let contents =
+            fs::read(source).with_context(|| format!("reading favicon {}", source.display()))?;
+        out.write(&out.dir().join(href.trim_start_matches('/')), &contents)?;
+    }
     if uses_mermaid {
         for (rel, contents) in MERMAID_FILES {
             out.write(&out.dir().join(rel), contents)?;
@@ -217,6 +256,7 @@ fn write_articles(
     renderer: &Renderer,
     links: &LinkIndex,
     images: &ImageIndex,
+    refs: &InlineRefIndex,
     options: BuildOptions,
     site: &Site,
     product: &Product,
@@ -227,6 +267,12 @@ fn write_articles(
 ) -> Result<(usize, bool)> {
     let mut pages = 0;
     let mut uses_mermaid = false;
+    // Reading order for the pager: subfolder contents inline, exactly
+    // as the sidebar presents them.
+    let order: Vec<(&str, &str)> = topic
+        .pages()
+        .map(|article| (article.path.as_str(), article.title.as_str()))
+        .collect();
     let write_one = |folder: Option<&TopicFolder>,
                      article: &crate::site::Article,
                      sink: &mut PageSink|
@@ -239,6 +285,11 @@ fn write_articles(
                 images: Some(ImageScope {
                     index: images,
                     dir: &article.source_dir,
+                }),
+                refs: Some(markdown::RefScope {
+                    index: refs,
+                    page: &article.path,
+                    book: None,
                 }),
                 ..markdown::RenderOptions::default()
             },
@@ -255,6 +306,7 @@ fn write_articles(
             article,
             &rendered,
             &related,
+            pager(&order, article, &topic.path),
         )?;
         if article.original.is_some() {
             // Linked pages render like any other but stay out of the
@@ -289,6 +341,7 @@ fn write_anthology(
     renderer: &Renderer,
     links: &LinkIndex,
     images: &ImageIndex,
+    refs: &InlineRefIndex,
     options: BuildOptions,
     site: &Site,
     product: &Product,
@@ -306,13 +359,13 @@ fn write_anthology(
     for item in anthology.items() {
         let (count, mermaid) = match item {
             AnthologyItem::Topic { topic } => write_articles(
-                renderer, links, images, options, site, product, &trail, topic, out, sink,
+                renderer, links, images, refs, options, site, product, &trail, topic, out, sink,
             )?,
             AnthologyItem::Book { book } => write_book(
-                renderer, links, images, options, site, product, &trail, book, out, sink,
+                renderer, links, images, refs, options, site, product, &trail, book, out, sink,
             )?,
             AnthologyItem::Anthology { anthology } => write_anthology(
-                renderer, links, images, options, site, product, &trail, anthology, out, sink,
+                renderer, links, images, refs, options, site, product, &trail, anthology, out, sink,
             )?,
         };
         pages += count;
@@ -327,6 +380,7 @@ fn write_book(
     renderer: &Renderer,
     links: &LinkIndex,
     images: &ImageIndex,
+    refs: &InlineRefIndex,
     options: BuildOptions,
     site: &Site,
     product: &Product,
@@ -339,7 +393,12 @@ fn write_book(
     write_page(sink, out, &book.path, html)?;
     let mut pages = 1;
     let mut uses_mermaid = false;
-    for (chapters, article) in book.articles() {
+    let entries = book.articles();
+    let order: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|(_, article)| (article.path.as_str(), article.title.as_str()))
+        .collect();
+    for (chapters, article) in &entries {
         let rendered = markdown::render(
             &article.body,
             links,
@@ -349,6 +408,11 @@ fn write_book(
                 images: Some(ImageScope {
                     index: images,
                     dir: &article.source_dir,
+                }),
+                refs: Some(markdown::RefScope {
+                    index: refs,
+                    page: &article.path,
+                    book: Some(&book.path),
                 }),
                 ..markdown::RenderOptions::default()
             },
@@ -362,15 +426,44 @@ fn write_book(
             product,
             anthologies,
             book,
-            &chapters,
+            chapters,
             article,
             &rendered,
             &related,
+            pager(&order, article, &book.path),
         )?;
-        write_page(sink, out, &article.path, html)?;
+        if article.original.is_some() {
+            // Linked pages render like any other but stay out of the
+            // search index — the canonical article covers the content.
+            out.write(&page_path(out.dir(), &article.path), html.as_bytes())?;
+        } else {
+            write_page(sink, out, &article.path, html)?;
+        }
         pages += 1;
     }
     Ok((pages, uses_mermaid))
+}
+
+/// An article's place in its unit: the pages either side of it in
+/// reading order, and where it sits in the unit's single-page view.
+fn pager(order: &[(&str, &str)], article: &crate::site::Article, unit_path: &str) -> Pager {
+    let at = order.iter().position(|(path, _)| *path == article.path);
+    let link = |index: Option<usize>| {
+        index
+            .and_then(|index| order.get(index))
+            .map(|(path, title)| PageLink {
+                path: path.to_string(),
+                title: title.to_string(),
+            })
+    };
+    Pager {
+        previous: link(at.and_then(|at| at.checked_sub(1))),
+        next: link(at.map(|at| at + 1)),
+        print_url: Some(format!(
+            "{unit_path}/print#{}",
+            export::print_anchor(unit_path, article)
+        )),
+    }
 }
 
 /// Resolve an article's `related:` references for its Related Content
@@ -382,11 +475,11 @@ fn resolve_related(
     links: &LinkIndex,
     options: BuildOptions,
     sink: &mut PageSink,
-) -> Vec<RelatedLink> {
+) -> Vec<PageLink> {
     let mut related = Vec::new();
     for reference in &article.related {
         match links.resolve_page(reference) {
-            Ok((path, title)) => related.push(RelatedLink { path, title }),
+            Ok((path, title)) => related.push(PageLink { path, title }),
             Err(error @ crate::links::ResolveError::Ambiguous(_)) => sink.broken.push(format!(
                 "in article '{}' (related): {}",
                 article.path, error
@@ -527,6 +620,7 @@ mod tests {
             BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
+                strict: false,
                 render_llms_full: false,
             },
         )
@@ -568,6 +662,95 @@ mod tests {
     }
 
     #[test]
+    fn inline_refs_and_rfc_keywords_enrich_prose() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                strict: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap();
+
+        // A phrase links to its declarer; a book phrase reaches a
+        // section through its § suffix.
+        let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(x1.contains("<a class=\"inline-ref\" href=\"/alpha/loose/x2\">X-Two</a>"));
+        assert!(x1.contains(
+            "<a class=\"inline-ref\" href=\"/alpha/manual/setup/advanced/tuning\">\
+             Alpha Manual §2.2.1</a>"
+        ));
+
+        // A page never links a phrase to itself; RFC keywords highlight;
+        // code stays plain.
+        let x2 = fs::read_to_string(out.join("alpha/loose/x2/index.html")).unwrap();
+        assert!(!x2.contains("href=\"/alpha/loose/x2\">X-Two"));
+        assert!(x2.contains("<a class=\"inline-ref\" href=\"/alpha/manual\">Alpha Manual</a>"));
+        assert!(x2.contains("<span class=\"rfc-keyword\">MUST NOT</span>"));
+        assert!(x2.contains("<span class=\"rfc-keyword\">MAY</span>"));
+        assert!(x2.contains("<code>Alpha Manual</code>"));
+
+        // Bare § references resolve within the surrounding book.
+        let install =
+            fs::read_to_string(out.join("alpha/manual/setup/install/index.html")).unwrap();
+        assert!(install.contains(
+            "<a class=\"inline-ref\" href=\"/alpha/manual/setup/advanced/tuning\">§2.2.1</a>"
+        ));
+        assert!(install.contains("<a class=\"inline-ref\" href=\"/alpha/manual/glossary\">§A</a>"));
+        // An unresolvable bare § stays plain and silent — prose cites
+        // external documents' section numbers all the time.
+        assert!(install.contains("§9.9"));
+        assert!(!install.contains(">§9.9</a>"));
+    }
+
+    #[test]
+    fn unresolvable_section_references_break_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/1--x1.md"),
+            "---\ntitle: Article x1\ntype: concept\ndescription: about x1\n---\n\n\
+             Alpha Manual §9.9 is fiction.\n",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        let err = build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                strict: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("does not match any section"));
+
+        // Downgradable, like any dangling reference.
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: true,
+                strict: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn referenced_images_ship_and_orphans_stay_home() {
         let dir = tempfile::tempdir().unwrap();
         site::write_fixture(dir.path());
@@ -593,6 +776,7 @@ mod tests {
             BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
+                strict: false,
                 render_llms_full: false,
             },
         )
@@ -646,6 +830,7 @@ mod tests {
             BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
+                strict: false,
                 render_llms_full: false,
             },
         )
@@ -677,6 +862,7 @@ mod tests {
         let options = BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
+            strict: false,
             render_llms_full: false,
         };
 
@@ -705,6 +891,371 @@ mod tests {
     }
 
     #[test]
+    fn theming_flows_into_every_page() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!("accent = \"#112233\"\ncustom_css = \"custom.css\"\n{config}"),
+        )
+        .unwrap();
+        fs::write(dir.path().join("custom.css"), ":root { --bg: #000 }").unwrap();
+        let out = dir.path().join("dist");
+        let options = BuildOptions {
+            live_reload: false,
+            allow_dangling_links: false,
+            strict: false,
+            render_llms_full: false,
+        };
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+
+        let html = fs::read_to_string(out.join("index.html")).unwrap();
+        // The configured accent, with its dark variant derived.
+        assert!(html.contains(":root { --accent: #112233; }"));
+        assert!(html.contains("color-mix(in srgb, #112233 75%, white)"));
+        // The custom stylesheet ships and is linked after the built-in one.
+        assert!(html.contains("href=\"/assets/custom.css\""));
+        assert_eq!(
+            fs::read_to_string(out.join("assets/custom.css")).unwrap(),
+            ":root { --bg: #000 }"
+        );
+        // The theme toggle and its pre-paint boot script ride on every page.
+        assert!(html.contains("data-theme-toggle"));
+        assert!(html.contains("trail-theme"));
+        let article = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(article.contains("data-theme-toggle"));
+        // Product theming is on by default — no collapse rule.
+        assert!(!html.contains("--pc: var(--accent) !important"));
+
+        // Turning it off collapses every per-product tint to the accent.
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!("product_theming = false\n{config}"),
+        )
+        .unwrap();
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+        let html = fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(html.contains("--pc: var(--accent) !important"));
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            config.replace("product_theming = false\n", ""),
+        )
+        .unwrap();
+
+        // An explicit accent_dark overrides the derivation.
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!("accent_dark = \"#445566\"\n{config}"),
+        )
+        .unwrap();
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+        let html = fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(html.contains(":root[data-theme=\"dark\"] { --accent: #445566; }"));
+        assert!(!html.contains("color-mix(in srgb, #112233"));
+    }
+
+    #[test]
+    fn every_page_carries_its_head_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let out = dir.path().join("dist");
+        let options = BuildOptions {
+            live_reload: false,
+            allow_dangling_links: false,
+            strict: false,
+            render_llms_full: false,
+        };
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+
+        // The front page describes the site.
+        let front = fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(front.contains("<meta name=\"description\" content=\"A fixture site.\">"));
+        assert!(front.contains("<meta property=\"og:title\" content=\"Test Learn\">"));
+        assert!(front.contains("<meta property=\"og:type\" content=\"website\">"));
+        assert!(front.contains("<meta name=\"twitter:card\" content=\"summary\">"));
+        assert!(front.contains("<link rel=\"canonical\" href=\"/\">"));
+        // Without a site url there is no absolute og:url to give.
+        assert!(!front.contains("og:url"));
+
+        // Articles describe themselves and are og:type article.
+        let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(x1.contains("<meta name=\"description\" content=\"about x1\">"));
+        assert!(x1.contains("<meta property=\"og:description\" content=\"about x1\">"));
+        assert!(x1.contains("<meta property=\"og:title\" content=\"Article x1\">"));
+        assert!(x1.contains("<meta property=\"og:type\" content=\"article\">"));
+        assert!(x1.contains("<link rel=\"canonical\" href=\"/alpha/loose/x1/\">"));
+
+        // Book articles carry no description by default: the tag is
+        // omitted rather than invented. The cover describes the book.
+        let intro = fs::read_to_string(out.join("alpha/manual/intro/index.html")).unwrap();
+        assert!(!intro.contains("meta name=\"description\""));
+        assert!(intro.contains("<meta property=\"og:type\" content=\"article\">"));
+        let cover = fs::read_to_string(out.join("alpha/manual/index.html")).unwrap();
+        assert!(cover.contains("<meta name=\"description\" content=\"book description\">"));
+
+        // The 404 page ships, asks not to be indexed, and links home.
+        let missing = fs::read_to_string(out.join("404.html")).unwrap();
+        assert!(missing.contains("<meta name=\"robots\" content=\"noindex\">"));
+        assert!(missing.contains("This page doesn't exist."));
+        assert!(!missing.contains("rel=\"canonical\""));
+
+        // With a url, canonicals and og:url go absolute.
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!("url = \"https://docs.example\"\n{config}"),
+        )
+        .unwrap();
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+        let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(
+            x1.contains("<link rel=\"canonical\" href=\"https://docs.example/alpha/loose/x1/\">")
+        );
+        assert!(x1.contains(
+            "<meta property=\"og:url\" content=\"https://docs.example/alpha/loose/x1/\">"
+        ));
+    }
+
+    #[test]
+    fn strict_builds_require_descriptions_everywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        // A book article may carry a description; strict then accepts it.
+        fs::write(
+            dir.path().join("alpha.product/7--manual.book/1--intro.md"),
+            "---\ntitle: Article intro\ndescription: how it starts\n---\n\nBody of intro.\n",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        let strict = BuildOptions {
+            live_reload: false,
+            allow_dangling_links: true,
+            strict: true,
+            render_llms_full: false,
+        };
+        let err = build_site(&site, &out, strict).unwrap_err().to_string();
+        assert!(err.contains("without a description"));
+        // Described articles pass; bare book articles are named.
+        assert!(!err.contains("'/alpha/manual/intro'"));
+        assert!(!err.contains("'/alpha/loose/x1'"));
+        assert!(err.contains("'/alpha/manual/setup/install'"));
+
+        // The default build doesn't care.
+        let lax = BuildOptions {
+            strict: false,
+            ..strict
+        };
+        build_site(&site, &out, lax).unwrap();
+    }
+
+    #[test]
+    fn pages_link_to_their_neighbours_and_single_page_view() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                strict: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap();
+
+        // A book article sits between its neighbours in reading order,
+        // across chapter boundaries.
+        let install =
+            fs::read_to_string(out.join("alpha/manual/setup/install/index.html")).unwrap();
+        assert!(install.contains("<a class=\"pager-previous\" href=\"/alpha/manual/intro\">"));
+        assert!(
+            install
+                .contains("<a class=\"pager-next\" href=\"/alpha/manual/setup/advanced/tuning\">")
+        );
+        // And offers the whole book on one page, opened at itself.
+        assert!(
+            install.contains("class=\"print-link\" href=\"/alpha/manual/print#setup-install\"")
+        );
+
+        // The first page has no previous; the last has no next.
+        let intro = fs::read_to_string(out.join("alpha/manual/intro/index.html")).unwrap();
+        assert!(!intro.contains("pager-previous"));
+        assert!(intro.contains("pager-next"));
+
+        // Topic articles page through the topic, subfolders inline.
+        let c1 = fs::read_to_string(out.join("alpha/acorn/narrow/extra/c1/index.html")).unwrap();
+        assert!(c1.contains("<a class=\"pager-previous\" href=\"/alpha/acorn/narrow/b2\">"));
+        assert!(c1.contains("class=\"print-link\" href=\"/alpha/acorn/narrow/print#extra-c1\""));
+    }
+
+    #[test]
+    fn reading_time_and_updated_show_on_pages_and_cards() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                strict: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap();
+
+        // A dated article says both; an undated one says only the time.
+        let x2 = fs::read_to_string(out.join("alpha/loose/x2/index.html")).unwrap();
+        assert!(x2.contains("1 min read"));
+        assert!(x2.contains("Updated 2026-03-15"));
+        let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(x1.contains("1 min read"));
+        assert!(!x1.contains("Updated"));
+
+        // Long books read in hours, on the cover and the card.
+        let cover = fs::read_to_string(out.join("alpha/manual/index.html")).unwrap();
+        assert!(cover.contains("hr"));
+        assert!(cover.contains("Updated 2026-05-01"));
+        let product = fs::read_to_string(out.join("alpha/index.html")).unwrap();
+        assert!(product.contains("class=\"card-meta\""));
+        assert!(product.contains("articles ·"));
+    }
+
+    #[test]
+    fn config_extras_flow_into_the_output() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        fs::write(dir.path().join("favicon.png"), site::TEST_PNG).unwrap();
+        fs::write(
+            dir.path().join("head.html"),
+            "<meta name=\"marker\" content=\"injected\">",
+        )
+        .unwrap();
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!(
+                "favicon = \"favicon.png\"\nhead_html = \"head.html\"\n\
+                 edit_url = \"https://forge.example/repo/edit/main/{{path}}\"\n\
+                 {config}\n\
+                 [[nav]]\nlabel = \"External\"\nurl = \"https://example.com/\"\n\n\
+                 [[nav]]\nlabel = \"A2\"\nurl = \"~alpha/a2\"\n"
+            ),
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let options = BuildOptions {
+            live_reload: false,
+            allow_dangling_links: false,
+            strict: false,
+            render_llms_full: false,
+        };
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+
+        // The favicon ships at the root under its own name; every page
+        // links it and carries the injected head snippet.
+        assert!(out.join("favicon.png").is_file());
+        let front = fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(front.contains("<link rel=\"icon\" href=\"/favicon.png\">"));
+        assert!(front.contains("<meta name=\"marker\" content=\"injected\">"));
+
+        // Nav links: external kept, ~reference resolved at load.
+        assert!(front.contains("<a class=\"nav-link\" href=\"https://example.com/\">External</a>"));
+        assert!(front.contains("<a class=\"nav-link\" href=\"/alpha/acorn/wide/a2\">A2</a>"));
+        assert!(front.contains("menu-nav-link"));
+
+        // Edit links point at the true source file — topic articles,
+        // book articles, and aliases (which edit their original).
+        let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(x1.contains(
+            "https://forge.example/repo/edit/main/alpha.product/5--loose.topic/1--x1.md"
+        ));
+        let intro = fs::read_to_string(out.join("alpha/manual/intro/index.html")).unwrap();
+        assert!(intro.contains(
+            "https://forge.example/repo/edit/main/alpha.product/7--manual.book/1--intro.md"
+        ));
+        let alias = fs::read_to_string(out.join("alpha/loose/alias/index.html")).unwrap();
+        assert!(alias.contains(
+            "https://forge.example/repo/edit/main/\
+             alpha.product/2--acorn.antho/100--wide.topic/2--a2.md"
+        ));
+
+        // Misconfigurations fail at load.
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!(
+                "favicon = \"favicon.png\"\nhead_html = \"head.html\"\n\
+                 edit_url = \"https://forge.example/edit\"\n{config}"
+            ),
+        )
+        .unwrap();
+        let err = Site::load(dir.path(), &out).unwrap_err().to_string();
+        assert!(err.contains("{path}"));
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!(
+                "favicon = \"favicon.png\"\nhead_html = \"head.html\"\n{config}\n\
+                 [[nav]]\nlabel = \"Gone\"\nurl = \"~alpha/nope\"\n"
+            ),
+        )
+        .unwrap();
+        let err = Site::load(dir.path(), &out).unwrap_err().to_string();
+        assert!(err.contains("resolving nav link 'Gone'"));
+    }
+
+    #[test]
+    fn alias_pages_declare_their_canonical_original() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let out = dir.path().join("dist");
+        let options = BuildOptions {
+            live_reload: false,
+            allow_dangling_links: false,
+            strict: false,
+            render_llms_full: false,
+        };
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+
+        // Without a base url canonicals are root-relative: an alias names
+        // its original, a real page names itself.
+        let alias = fs::read_to_string(out.join("alpha/loose/alias/index.html")).unwrap();
+        assert!(alias.contains("<link rel=\"canonical\" href=\"/alpha/acorn/wide/a2/\">"));
+        let a2 = fs::read_to_string(out.join("alpha/acorn/wide/a2/index.html")).unwrap();
+        assert!(a2.contains("<link rel=\"canonical\" href=\"/alpha/acorn/wide/a2/\">"));
+
+        // A configured base url makes it absolute.
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!("url = \"https://docs.example\"\n{config}"),
+        )
+        .unwrap();
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+        let alias = fs::read_to_string(out.join("alpha/loose/alias/index.html")).unwrap();
+        assert!(alias.contains(
+            "<link rel=\"canonical\" href=\"https://docs.example/alpha/acorn/wide/a2/\">"
+        ));
+    }
+
+    #[test]
     fn missing_images_break_the_build() {
         let dir = tempfile::tempdir().unwrap();
         site::write_fixture(dir.path());
@@ -722,6 +1273,7 @@ mod tests {
             BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
+                strict: false,
                 render_llms_full: false,
             },
         )
@@ -754,6 +1306,7 @@ mod tests {
             BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
+                strict: false,
                 render_llms_full: false,
             },
         )
@@ -774,6 +1327,7 @@ mod tests {
         let options = BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
+            strict: false,
             render_llms_full: false,
         };
         build_site(&site, &out, options).unwrap();
@@ -809,6 +1363,7 @@ mod tests {
             BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
+                strict: false,
                 render_llms_full: false,
             },
         )

@@ -18,7 +18,7 @@
   {%- for section in sections %}
   <section class="print-article">
     <header>
-      <h2 id="{{ section.id }}">{% if section.number %}<span class="heading-number">{{ section.number }}</span> {% endif %}{{ section.title }}</h2>
+      <h2 id="{{ section.id }}">{% if section.number %}<span class="heading-number">{% if section.appendix %}Appendix {% endif %}{{ section.number }}</span> {% endif %}{{ section.title }}</h2>
       <p class="print-crumbs">{% for crumb in section.crumbs %}{% if not loop.first %} / {% endif %}{{ crumb }}{% endfor %}</p>
     </header>
     {{ section.html | safe }}

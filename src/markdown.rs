@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
 use serde::Serialize;
 
+use crate::highlight;
 use crate::images::{ImageInfo, ImageScope};
 use crate::links::{LinkIndex, ResolveError};
+use crate::refs::{InlineRefIndex, PhraseTarget, SectionTarget};
 
 /// One "On this page" entry: an h2 or h3 with its generated anchor id.
 #[derive(Debug, PartialEq, Serialize)]
@@ -53,6 +55,36 @@ pub struct RenderOptions<'a> {
     /// index plus this article's source directory. None (plain-markdown
     /// tests) leaves image events untouched.
     pub images: Option<ImageScope<'a>>,
+    /// Inline-reference context: the phrase index plus this page's own
+    /// identity. None (plain-markdown tests) skips phrase and `§`
+    /// linking — RFC-2119 keywords highlight regardless.
+    pub refs: Option<RefScope<'a>>,
+    /// Set while rendering a `/print` bundle: links to pages inside the
+    /// same bundle become in-document anchors, and everything else goes
+    /// absolute. A printed page's links have to work on paper and away
+    /// from the site.
+    pub print: Option<PrintScope<'a>>,
+}
+
+/// Print-bundle link context; see `RenderOptions::print`.
+#[derive(Debug, Clone, Copy)]
+pub struct PrintScope<'a> {
+    /// Page path → the bundle's anchor id for that page.
+    pub anchors: &'a HashMap<String, String>,
+    /// The site's base URL, for pages outside the bundle. Without one
+    /// they stay root-relative — still correct on the site itself.
+    pub base: Option<&'a str>,
+}
+
+/// Inline-reference context for one page render; see `RenderOptions::refs`.
+#[derive(Debug, Clone, Copy)]
+pub struct RefScope<'a> {
+    pub index: &'a InlineRefIndex,
+    /// The page being rendered — a page never links a phrase to itself.
+    pub page: &'a str,
+    /// The path of the book this page belongs to, enabling bare `§`
+    /// references to the book's own sections.
+    pub book: Option<&'a str>,
 }
 
 /// Render article markdown to HTML. Every heading gets a slugified,
@@ -61,7 +93,8 @@ pub struct RenderOptions<'a> {
 /// client-side mermaid to render. `~` link destinations are resolved
 /// through the link index.
 pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
-    let events: Vec<Event> = Parser::new_ext(markdown, parser_options()).collect();
+    let markdown = expand_tab_groups(markdown)?;
+    let events: Vec<Event> = Parser::new_ext(&markdown, parser_options()).collect();
 
     let mut out = Vec::with_capacity(events.len());
     let mut toc = Vec::new();
@@ -72,7 +105,13 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
     // Tracks open blockquotes: true = admonition we opened as an <aside>.
     let mut blockquotes = Vec::new();
     // Section-number counters, used only when `numbering` is set.
-    let (mut h2_count, mut h3_count) = (0, 0);
+    let mut counter = SectionCounter::default();
+    // Where prose enrichment (inline refs, `§`, RFC keywords) must not
+    // reach: code blocks, headings (ids derive from their text), link
+    // and image interiors.
+    let (mut link_depth, mut image_depth) = (0u32, 0u32);
+    // The open heading's anchor id, emitted as a permalink at its end.
+    let mut heading_id: Option<String> = None;
 
     let mut i = 0;
     while i < events.len() {
@@ -102,19 +141,9 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                 base = format!("{prefix}--{base}");
             }
             let unique = unique_id(&mut used_ids, base);
+            heading_id = Some(unique.clone());
             let level_number = *level as u8;
-            let number = match (options.numbering, level_number) {
-                (Some(prefix), 2) => {
-                    h2_count += 1;
-                    h3_count = 0;
-                    Some(format!("{prefix}.{h2_count}"))
-                }
-                (Some(prefix), 3) => {
-                    h3_count += 1;
-                    Some(format!("{prefix}.{h2_count}.{h3_count}"))
-                }
-                _ => None,
-            };
+            let number = counter.advance(options.numbering, level_number);
             if (2..=3).contains(&level_number) {
                 toc.push(TocEntry {
                     level: level_number,
@@ -152,6 +181,26 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
             out.push(Event::Html(
                 format!("<pre class=\"mermaid\">{}</pre>\n", escape_text(&source)).into(),
             ));
+        } else if let Event::Start(Tag::CodeBlock(kind)) = &events[i] {
+            let language = match kind {
+                CodeBlockKind::Fenced(info) => info
+                    .split(|c: char| c.is_whitespace() || c == ',')
+                    .next()
+                    .filter(|language| !language.is_empty()),
+                CodeBlockKind::Indented => None,
+            };
+            let mut source = String::new();
+            let mut j = i + 1;
+            while j < events.len() {
+                match &events[j] {
+                    Event::End(TagEnd::CodeBlock) => break,
+                    Event::Text(text) => source.push_str(text),
+                    _ => {}
+                }
+                j += 1;
+            }
+            out.push(Event::Html(highlight::code_block(language, &source).into()));
+            i = j;
         } else if let Event::Start(Tag::Link {
             link_type,
             dest_url,
@@ -160,15 +209,35 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
         }) = &events[i]
             && let Some(reference) = dest_url.strip_prefix('~')
         {
+            link_depth += 1;
             let (target, fragment) = match reference.split_once('#') {
                 Some((target, fragment)) => (target, Some(fragment)),
                 None => (reference, None),
             };
             match links.resolve(target) {
                 Ok(mut resolved) => {
-                    if let Some(fragment) = fragment {
-                        resolved = format!("{resolved}#{fragment}");
-                    }
+                    resolved = match options.print {
+                        // Inside a print bundle: same-bundle pages become
+                        // anchors (their headings keep the page's id
+                        // prefix), others go absolute.
+                        Some(scope) => match scope.anchors.get(&resolved) {
+                            Some(anchor) => match fragment {
+                                Some(fragment) => format!("#{anchor}--{fragment}"),
+                                None => format!("#{anchor}"),
+                            },
+                            None => {
+                                let base = scope.base.unwrap_or("");
+                                match fragment {
+                                    Some(fragment) => format!("{base}{resolved}#{fragment}"),
+                                    None => format!("{base}{resolved}"),
+                                }
+                            }
+                        },
+                        None => match fragment {
+                            Some(fragment) => format!("{resolved}#{fragment}"),
+                            None => resolved,
+                        },
+                    };
                     out.push(Event::Start(Tag::Link {
                         link_type: *link_type,
                         dest_url: resolved.into(),
@@ -204,12 +273,17 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                     // flattened into the tag above.
                     i += 1 + end;
                 }
-                ImageFate::PassThrough => out.push(events[i].clone()),
+                ImageFate::PassThrough => {
+                    image_depth += 1;
+                    out.push(events[i].clone());
+                }
                 ImageFate::Broken(message) => {
+                    image_depth += 1;
                     broken.push(message);
                     out.push(events[i].clone());
                 }
                 ImageFate::Dangling(message) => {
+                    image_depth += 1;
                     dangling.push(message);
                     out.push(events[i].clone());
                 }
@@ -247,6 +321,43 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
             } else {
                 out.push(events[i].clone());
             }
+        } else if let Event::Start(Tag::Table(_)) = &events[i] {
+            // Tables scroll inside their own container: a wide table must
+            // never force the whole page to scroll sideways.
+            out.push(Event::Html("<div class=\"table-scroll\">\n".into()));
+            out.push(events[i].clone());
+        } else if let Event::End(TagEnd::Table) = &events[i] {
+            out.push(events[i].clone());
+            out.push(Event::Html("</div>\n".into()));
+        } else if let Event::End(TagEnd::Heading(_)) = &events[i] {
+            if let Some(id) = heading_id.take() {
+                out.push(Event::Html(
+                    format!(
+                        " <a class=\"heading-anchor\" href=\"#{id}\" \
+                         aria-label=\"Link to this section\">#</a>"
+                    )
+                    .into(),
+                ));
+            }
+            out.push(events[i].clone());
+        } else if let Event::Start(Tag::Link { .. }) = &events[i] {
+            link_depth += 1;
+            out.push(events[i].clone());
+        } else if let Event::End(TagEnd::Link) = &events[i] {
+            link_depth = link_depth.saturating_sub(1);
+            out.push(events[i].clone());
+        } else if let Event::End(TagEnd::Image) = &events[i] {
+            image_depth = image_depth.saturating_sub(1);
+            out.push(events[i].clone());
+        } else if let Event::Text(text) = &events[i] {
+            let plain = link_depth == 0 && image_depth == 0 && heading_id.is_none();
+            match plain
+                .then(|| enrich_text(text, &options, &mut dangling, &mut broken))
+                .flatten()
+            {
+                Some(html) => out.push(Event::Html(html.into())),
+                None => out.push(events[i].clone()),
+            }
         } else {
             out.push(events[i].clone());
         }
@@ -262,6 +373,466 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
         dangling,
         broken,
     })
+}
+
+/// Expand `:::tabs` groups into tab markup before parsing.
+///
+/// ```text
+/// :::tabs
+/// :::tab npm
+/// (markdown)
+/// :::tab pnpm
+/// (markdown)
+/// :::
+/// ```
+///
+/// Each marker line becomes its own HTML block — followed by a blank
+/// line, so CommonMark closes the block and every panel's body still
+/// parses as ordinary markdown. Markers inside fenced code are left
+/// alone, so documenting the syntax doesn't trigger it.
+fn expand_tab_groups(markdown: &str) -> Result<String> {
+    if !markdown.contains(":::") {
+        return Ok(markdown.to_string());
+    }
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut out = String::with_capacity(markdown.len() + 256);
+    let mut fence: Option<&str> = None;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+        // Track fenced code so markers inside samples stay literal.
+        match fence {
+            Some(open) => {
+                if trimmed.starts_with(open) {
+                    fence = None;
+                }
+            }
+            None => {
+                for marker in ["```", "~~~"] {
+                    if trimmed.starts_with(marker) {
+                        fence = Some(marker);
+                        break;
+                    }
+                }
+            }
+        }
+        if fence.is_some() || !trimmed.starts_with(":::") {
+            out.push_str(line);
+            out.push('\n');
+            i += 1;
+            continue;
+        }
+        if trimmed == ":::tabs" {
+            i = expand_one_group(&lines, i, &mut out)?;
+            continue;
+        }
+        if let Some(name) = trimmed.strip_prefix(":::tab") {
+            bail!(
+                "':::tab{name}' outside a ':::tabs' block \
+                 (open the group with ':::tabs' first)"
+            );
+        }
+        if trimmed == ":::" {
+            bail!("':::' closes a tab group, but none is open");
+        }
+        out.push_str(line);
+        out.push('\n');
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// Expand the group opening at `start`, returning the line index just
+/// past its closing `:::`.
+fn expand_one_group(lines: &[&str], start: usize, out: &mut String) -> Result<usize> {
+    // Collect each tab's name and body lines.
+    let mut tabs: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut fence: Option<&str> = None;
+    let mut i = start + 1;
+    let end = loop {
+        let Some(line) = lines.get(i) else {
+            bail!("unclosed ':::tabs' block (close it with ':::')");
+        };
+        let trimmed = line.trim();
+        let in_code = match fence {
+            Some(open) => {
+                if trimmed.starts_with(open) {
+                    fence = None;
+                }
+                true
+            }
+            None => {
+                for marker in ["```", "~~~"] {
+                    if trimmed.starts_with(marker) {
+                        fence = Some(marker);
+                        break;
+                    }
+                }
+                fence.is_some()
+            }
+        };
+        if !in_code {
+            if trimmed == ":::" {
+                break i;
+            }
+            if trimmed == ":::tabs" {
+                bail!("':::tabs' groups cannot nest");
+            }
+            if let Some(name) = trimmed.strip_prefix(":::tab") {
+                let name = name.trim();
+                ensure!(
+                    !name.is_empty(),
+                    "':::tab' needs a label, e.g. ':::tab Linux'"
+                );
+                tabs.push((name.to_string(), Vec::new()));
+                i += 1;
+                continue;
+            }
+        }
+        match tabs.last_mut() {
+            Some((_, body)) => body.push(line),
+            None => ensure!(
+                trimmed.is_empty(),
+                "content inside ':::tabs' before the first ':::tab' label"
+            ),
+        }
+        i += 1;
+    };
+    ensure!(
+        !tabs.is_empty(),
+        "':::tabs' block has no ':::tab' labels in it"
+    );
+
+    out.push_str(
+        "\n<div class=\"tabs\" data-tabs>\n<div class=\"tab-buttons\" role=\"tablist\">\n",
+    );
+    for (index, (name, _)) in tabs.iter().enumerate() {
+        let selected = index == 0;
+        let _ = writeln!(
+            out,
+            "<button class=\"tab-button\" type=\"button\" role=\"tab\" \
+             data-tab=\"{index}\" aria-selected=\"{selected}\">{}</button>",
+            escape_text(name)
+        );
+    }
+    out.push_str("</div>\n\n");
+    for (index, (_, body)) in tabs.iter().enumerate() {
+        let hidden = if index == 0 { "" } else { " hidden" };
+        let _ = write!(
+            out,
+            "<div class=\"tab-panel\" role=\"tabpanel\" data-tab-panel=\"{index}\"{hidden}>\n\n"
+        );
+        for line in body {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str("\n</div>\n\n");
+    }
+    out.push_str("</div>\n\n");
+    Ok(end + 1)
+}
+
+/// h2/h3 section-number counters ("2.1" → "2.1.1", "2.1.1.1"), shared by
+/// every pass that numbers headings so they can never drift apart.
+#[derive(Debug, Default)]
+struct SectionCounter {
+    h2: u32,
+    h3: u32,
+}
+
+impl SectionCounter {
+    fn advance(&mut self, numbering: Option<&str>, level: u8) -> Option<String> {
+        match (numbering, level) {
+            (Some(prefix), 2) => {
+                self.h2 += 1;
+                self.h3 = 0;
+                Some(format!("{prefix}.{}", self.h2))
+            }
+            (Some(prefix), 3) => {
+                self.h3 += 1;
+                Some(format!("{prefix}.{}.{}", self.h2, self.h3))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The headings of an article without rendering it: the same ids and
+/// section numbers `render` would assign, for building section indexes
+/// ahead of the render pass. h2/h3 only — deeper headings consume ids
+/// but never numbers, exactly as in `render`.
+pub fn heading_outline(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
+    let events: Vec<Event> = Parser::new_ext(markdown, parser_options()).collect();
+    let mut outline = Vec::new();
+    let mut used_ids = HashMap::new();
+    let mut counter = SectionCounter::default();
+    for (i, event) in events.iter().enumerate() {
+        let Event::Start(Tag::Heading { level, id, .. }) = event else {
+            continue;
+        };
+        let mut title = String::new();
+        for event in &events[i + 1..] {
+            match event {
+                Event::End(TagEnd::Heading(_)) => break,
+                Event::Text(text) | Event::Code(text) => title.push_str(text),
+                _ => {}
+            }
+        }
+        let base = match id {
+            Some(explicit) => explicit.to_string(),
+            None => slugify(&title),
+        };
+        let unique = unique_id(&mut used_ids, base);
+        let level_number = *level as u8;
+        let number = counter.advance(numbering, level_number);
+        if (2..=3).contains(&level_number) {
+            outline.push(TocEntry {
+                level: level_number,
+                id: unique,
+                title,
+                number,
+            });
+        }
+    }
+    outline
+}
+
+/// Enrich one plain-prose text segment: inline-reference phrases become
+/// links (a book phrase optionally reaching a `§` section), bare `§`
+/// references resolve within the surrounding book, and RFC-2119
+/// requirement keywords get highlighted. None means untouched — the
+/// caller keeps the original text event.
+fn enrich_text(
+    text: &str,
+    options: &RenderOptions,
+    dangling: &mut Vec<String>,
+    broken: &mut Vec<String>,
+) -> Option<String> {
+    let mut spans: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    if let Some(scope) = &options.refs {
+        phrase_spans(
+            text,
+            scope,
+            options.allow_dangling,
+            &mut spans,
+            dangling,
+            broken,
+        );
+        if let Some(book) = scope.book {
+            bare_section_spans(text, scope, book, &mut spans);
+        }
+    }
+    rfc_keyword_spans(text, &mut spans);
+    if spans.is_empty() {
+        return None;
+    }
+    spans.sort_by_key(|(range, _)| range.start);
+    let mut out = String::with_capacity(text.len() + spans.len() * 32);
+    let mut at = 0;
+    for (range, html) in spans {
+        out.push_str(&escape_text(&text[at..range.start]));
+        out.push_str(&html);
+        at = range.end;
+    }
+    out.push_str(&escape_text(&text[at..]));
+    Some(out)
+}
+
+/// Inline-reference phrase matches: whole words only, longest phrase
+/// first, never linking a page to itself.
+fn phrase_spans(
+    text: &str,
+    scope: &RefScope,
+    allow_dangling: bool,
+    spans: &mut Vec<(std::ops::Range<usize>, String)>,
+    dangling: &mut Vec<String>,
+    broken: &mut Vec<String>,
+) {
+    let Some(matcher) = scope.index.matcher() else {
+        return;
+    };
+    for hit in matcher.find_iter(text) {
+        let (start, mut end) = (hit.start(), hit.end());
+        if !boundary_before(text, start) || !boundary_after(text, end) {
+            continue;
+        }
+        let phrase = scope.index.phrase(hit.pattern().as_usize());
+        let href = match &phrase.target {
+            PhraseTarget::Page(path) => {
+                if path == scope.page {
+                    continue;
+                }
+                path.clone()
+            }
+            PhraseTarget::Book(book) => match section_suffix(&text[end..]) {
+                Some((consumed, label)) => match scope.index.section(book, label) {
+                    Some(target) => {
+                        end += consumed;
+                        match section_href(target, scope.page) {
+                            Some(href) => href,
+                            // The section is this very page: leave it plain.
+                            None => continue,
+                        }
+                    }
+                    None => {
+                        let message = format!(
+                            "'{} §{label}' does not match any section of '{book}'",
+                            &text[start..end]
+                        );
+                        if allow_dangling {
+                            dangling.push(message);
+                        } else {
+                            broken.push(message);
+                        }
+                        // Still link the phrase itself to the book.
+                        if book == scope.page {
+                            continue;
+                        }
+                        book.clone()
+                    }
+                },
+                None => {
+                    if book == scope.page {
+                        continue;
+                    }
+                    book.clone()
+                }
+            },
+        };
+        spans.push((start..end, ref_link(&href, &text[start..end])));
+    }
+}
+
+/// Bare `§<number>` references, resolved against the surrounding book.
+/// A number that resolves becomes a link; one that doesn't stays plain
+/// with no complaint — prose regularly cites *external* documents'
+/// section numbers (prior-art discussions), so only the phrase-qualified
+/// form ("PGSS §9.9"), which names its book, insists on resolving.
+fn bare_section_spans(
+    text: &str,
+    scope: &RefScope,
+    book: &str,
+    spans: &mut Vec<(std::ops::Range<usize>, String)>,
+) {
+    for (at, _) in text.match_indices('§') {
+        if covered(spans, at) || !boundary_before(text, at) {
+            continue;
+        }
+        let rest = &text[at + '§'.len_utf8()..];
+        let Some(label) = section_label(rest) else {
+            // A lone § sign is just prose.
+            continue;
+        };
+        let end = at + '§'.len_utf8() + label.len();
+        if let Some(target) = scope.index.section(book, label)
+            && let Some(href) = section_href(target, scope.page)
+        {
+            spans.push((at..end, ref_link(&href, &text[at..end])));
+        }
+    }
+}
+
+/// RFC-2119 requirement keywords, longest first so "MUST NOT" wins
+/// before "MUST".
+const RFC_KEYWORDS: &[&str] = &[
+    "MUST NOT",
+    "SHALL NOT",
+    "SHOULD NOT",
+    "NOT RECOMMENDED",
+    "RECOMMENDED",
+    "REQUIRED",
+    "OPTIONAL",
+    "SHOULD",
+    "SHALL",
+    "MUST",
+    "MAY",
+];
+
+fn rfc_keyword_spans(text: &str, spans: &mut Vec<(std::ops::Range<usize>, String)>) {
+    let mut at = 0;
+    while at < text.len() {
+        if !text.is_char_boundary(at) || !boundary_before(text, at) || covered(spans, at) {
+            at += 1;
+            continue;
+        }
+        let Some(keyword) = RFC_KEYWORDS.iter().find(|keyword| {
+            text[at..].starts_with(**keyword)
+                && boundary_after(text, at + keyword.len())
+                && !covered(spans, at + keyword.len() - 1)
+        }) else {
+            at += 1;
+            continue;
+        };
+        spans.push((
+            at..at + keyword.len(),
+            format!("<span class=\"rfc-keyword\">{keyword}</span>"),
+        ));
+        at += keyword.len();
+    }
+}
+
+/// The href for a section target, from the referencing page: a same-page
+/// section links by fragment alone; a same-page reference with no
+/// fragment has nowhere to go (None — the text stays plain).
+fn section_href(target: &SectionTarget, page: &str) -> Option<String> {
+    match (&target.fragment, target.path == page) {
+        (Some(fragment), true) => Some(format!("#{fragment}")),
+        (None, true) => None,
+        (Some(fragment), false) => Some(format!("{}#{fragment}", target.path)),
+        (None, false) => Some(target.path.clone()),
+    }
+}
+
+/// Parse a ` §<number>` suffix directly after a book phrase: one space
+/// (or no-break space), the sign, and a section label. Returns the byte
+/// length consumed and the label.
+fn section_suffix(rest: &str) -> Option<(usize, &str)> {
+    let after_space = rest
+        .strip_prefix(' ')
+        .or_else(|| rest.strip_prefix('\u{a0}'))?;
+    let after_sign = after_space.strip_prefix('§')?;
+    let label = section_label(after_sign)?;
+    Some((rest.len() - after_sign.len() + label.len(), label))
+}
+
+/// A section label: digits, dots and appendix letters ("2.1", "A.3",
+/// "2.A"), a trailing sentence dot excluded, ending at a word boundary.
+fn section_label(text: &str) -> Option<&str> {
+    let end = text
+        .find(|c: char| !(c.is_ascii_digit() || c.is_ascii_uppercase() || c == '.'))
+        .unwrap_or(text.len());
+    let label = text[..end].trim_end_matches('.');
+    if label.is_empty() || !boundary_after(text, end) {
+        return None;
+    }
+    Some(label)
+}
+
+fn boundary_before(text: &str, at: usize) -> bool {
+    text[..at]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+}
+
+fn boundary_after(text: &str, at: usize) -> bool {
+    text[at..]
+        .chars()
+        .next()
+        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+}
+
+fn covered(spans: &[(std::ops::Range<usize>, String)], at: usize) -> bool {
+    spans.iter().any(|(range, _)| range.contains(&at))
+}
+
+fn ref_link(href: &str, text: &str) -> String {
+    format!(
+        "<a class=\"inline-ref\" href=\"{}\">{}</a>",
+        escape_attribute(href),
+        escape_text(text)
+    )
 }
 
 /// Detect `[!NAME]` at the start of an unrecognised blockquote: pulldown
@@ -435,7 +1006,7 @@ pub fn rewrite_source(
     images: Option<ImageScope>,
 ) -> String {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    let (mut h2_count, mut h3_count) = (0, 0);
+    let mut counter = SectionCounter::default();
     for (event, range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) if dest_url.starts_with('~') => {
@@ -473,19 +1044,9 @@ pub fn rewrite_source(
                 }
             }
             Event::Start(Tag::Heading { level, .. }) if numbering.is_some() => {
-                let number = match (numbering, level as u8) {
-                    (Some(prefix), 2) => {
-                        h2_count += 1;
-                        h3_count = 0;
-                        Some(format!("{prefix}.{h2_count}"))
-                    }
-                    (Some(prefix), 3) => {
-                        h3_count += 1;
-                        Some(format!("{prefix}.{h2_count}.{h3_count}"))
-                    }
-                    _ => None,
+                let Some(number) = counter.advance(numbering, level as u8) else {
+                    continue;
                 };
-                let Some(number) = number else { continue };
                 // ATX headings only: insert after the "## " prefix.
                 let source = &markdown[range.clone()];
                 let hashes = source.bytes().take_while(|b| *b == b'#').count();
@@ -542,7 +1103,7 @@ fn admonition_name(kind: BlockQuoteKind) -> &'static str {
 
 /// Escape diagram source for embedding as element text; the browser decodes
 /// the entities back before mermaid reads the element's text content.
-fn escape_text(text: &str) -> String {
+pub(crate) fn escape_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -718,20 +1279,20 @@ mod tests {
         assert!(
             rendered
                 .html
-                .contains("<h2 id=\"a\"><span class=\"heading-number\">2.1.1</span> A</h2>")
+                .contains("<h2 id=\"a\"><span class=\"heading-number\">2.1.1</span> A")
         );
         assert!(
             rendered
                 .html
-                .contains("<h3 id=\"b\"><span class=\"heading-number\">2.1.1.1</span> B</h3>")
+                .contains("<h3 id=\"b\"><span class=\"heading-number\">2.1.1.1</span> B")
         );
         assert!(
             rendered
                 .html
-                .contains("<h2 id=\"c\"><span class=\"heading-number\">2.1.2</span> C</h2>")
+                .contains("<h2 id=\"c\"><span class=\"heading-number\">2.1.2</span> C")
         );
         // h4 and deeper stay unnumbered; ids and ToC titles stay clean.
-        assert!(rendered.html.contains("<h4 id=\"d\">D</h4>"));
+        assert!(rendered.html.contains("<h4 id=\"d\">D"));
         assert_eq!(rendered.toc[0].number.as_deref(), Some("2.1.1"));
         assert_eq!(rendered.toc[0].title, "A");
         assert_eq!(rendered.toc[1].number.as_deref(), Some("2.1.1.1"));
@@ -802,10 +1363,32 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_code_blocks_do_not_flag_mermaid() {
+    fn ordinary_code_blocks_are_highlighted_and_copyable() {
         let rendered = render("```rust\nfn main() {}\n```\n");
         assert!(!rendered.has_mermaid);
-        assert!(rendered.html.contains("language-rust"));
+        assert!(
+            rendered
+                .html
+                .contains("<div class=\"code-block\" data-language=\"rust\">")
+        );
+        assert!(rendered.html.contains("data-copy-code"));
+        assert!(rendered.html.contains("hl-storage"));
+        // Indented blocks get the same chrome, without a language.
+        let rendered = render("    plain text\n");
+        assert!(rendered.html.contains("<div class=\"code-block\">"));
+        assert!(!rendered.html.contains("data-language"));
+    }
+
+    #[test]
+    fn headings_carry_permalink_anchors() {
+        let rendered = render("## The Rule\n");
+        assert!(rendered.html.contains(
+            "<h2 id=\"the-rule\">The Rule \
+             <a class=\"heading-anchor\" href=\"#the-rule\" \
+             aria-label=\"Link to this section\">#</a></h2>"
+        ));
+        // The ToC title stays clean of it.
+        assert_eq!(rendered.toc[0].title, "The Rule");
     }
 
     #[test]
@@ -973,9 +1556,116 @@ mod tests {
     }
 
     #[test]
+    fn rfc_keywords_highlight_in_prose_but_not_code() {
+        let rendered = render(
+            "You MUST NOT fail, though you MAY retry.\n\n```\nMUST\n```\n\nUse `MUST` here. A MUSTARD note.\n",
+        );
+        assert!(
+            rendered
+                .html
+                .contains("<span class=\"rfc-keyword\">MUST NOT</span>")
+        );
+        assert!(
+            rendered
+                .html
+                .contains("<span class=\"rfc-keyword\">MAY</span>")
+        );
+        // Code (fenced and inline) and ordinary words stay untouched.
+        assert!(rendered.html.contains("<code>MUST\n</code>"));
+        assert!(rendered.html.contains("<code>MUST</code>"));
+        assert!(rendered.html.contains("MUSTARD"));
+        assert_eq!(rendered.html.matches("rfc-keyword").count(), 2);
+    }
+
+    #[test]
+    fn rfc_keywords_stay_out_of_headings_and_links() {
+        let rendered = render("## What You MUST Do\n\n[MUST read](https://example.com/)\n");
+        assert!(!rendered.html.contains("rfc-keyword"));
+        assert!(rendered.html.contains("<h2 id=\"what-you-must-do\">"));
+    }
+
+    #[test]
+    fn heading_outline_matches_what_render_assigns() {
+        let source = "## A\n\ntext\n\n### B\n\n#### D\n\n## A\n";
+        let outline = heading_outline(source, Some("2.1"));
+        let rendered = super::render(
+            source,
+            &LinkIndex::default(),
+            RenderOptions {
+                numbering: Some("2.1"),
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(outline, rendered.toc);
+        assert_eq!(outline[2].id, "a-2");
+        assert_eq!(outline[2].number.as_deref(), Some("2.1.2"));
+    }
+
+    #[test]
+    fn tab_groups_expand_and_their_bodies_stay_markdown() {
+        let rendered = render(
+            ":::tabs\n:::tab npm\nRun `npm i` — see **docs**.\n\n             :::tab pnpm\n```sh\npnpm add x\n```\n:::\n\nAfter.\n",
+        );
+        assert!(rendered.html.contains("<div class=\"tabs\" data-tabs>"));
+        assert!(rendered.html.contains(
+            "<button class=\"tab-button\" type=\"button\" role=\"tab\" \
+             data-tab=\"0\" aria-selected=\"true\">npm</button>"
+        ));
+        assert!(
+            rendered
+                .html
+                .contains("aria-selected=\"false\">pnpm</button>")
+        );
+        // Only the first panel is visible.
+        assert!(rendered.html.contains("data-tab-panel=\"0\">"));
+        assert!(rendered.html.contains("data-tab-panel=\"1\" hidden>"));
+        // Panel bodies parse as markdown, code fences included.
+        assert!(rendered.html.contains("<strong>docs</strong>"));
+        assert!(rendered.html.contains("<code>npm i</code>"));
+        assert!(rendered.html.contains("data-language=\"sh\""));
+        assert!(rendered.html.contains("<p>After.</p>"));
+    }
+
+    #[test]
+    fn tab_markers_inside_code_samples_stay_literal() {
+        let rendered = render("```markdown\n:::tabs\n:::tab One\n:::\n```\n");
+        assert!(!rendered.html.contains("<div class=\"tabs\""));
+        assert!(rendered.html.contains(":::tabs"));
+    }
+
+    #[test]
+    fn malformed_tab_groups_are_errors() {
+        let cases = [
+            (":::tabs\n:::tab One\ntext\n", "unclosed"),
+            (":::tab One\ntext\n:::\n", "outside a ':::tabs' block"),
+            (":::tabs\n:::\n", "no ':::tab' labels"),
+            (":::tabs\n:::tab \ntext\n:::\n", "needs a label"),
+            (":::tabs\n:::tab One\n:::tabs\n:::\n:::\n", "cannot nest"),
+            ("text\n:::\n", "none is open"),
+        ];
+        for (source, expected) in cases {
+            let error = super::render(source, &LinkIndex::default(), RenderOptions::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(expected),
+                "{source:?} gave {error:?}, wanted {expected:?}"
+            );
+        }
+    }
+
+    #[test]
     fn tables_and_inline_code_render() {
         let rendered = render("| a | b |\n|---|---|\n| 1 | 2 |\n\nUse `token` here.\n");
-        assert!(rendered.html.contains("<table>"));
+        // Tables sit inside their own scroll container, so a wide one
+        // never forces the page to scroll sideways.
+        assert!(
+            rendered
+                .html
+                .contains("<div class=\"table-scroll\">\n<table>")
+        );
+        assert!(rendered.html.contains("</table>\n</div>"));
         assert!(rendered.html.contains("<code>token</code>"));
     }
 }

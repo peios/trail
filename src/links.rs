@@ -55,8 +55,15 @@ struct Candidate {
 
 /// Add a topic's articles as candidates: [<anthologies..>,] topic,
 /// [folder,] article — every segment, folders included, exists both as
-/// an address and for disambiguation.
-fn push_topic_candidates(candidates: &mut Vec<Candidate>, prefix: &[String], topic: &Topic) {
+/// an address and for disambiguation. With `folders` set the subfolders
+/// themselves become endpoints too — used only when resolving `.link`
+/// stubs, which may alias a whole folder; body links never target one.
+fn push_topic_candidates(
+    candidates: &mut Vec<Candidate>,
+    prefix: &[String],
+    topic: &Topic,
+    folders: bool,
+) {
     let segments = |tail: &[&str]| -> Vec<String> {
         prefix
             .iter()
@@ -73,6 +80,13 @@ fn push_topic_candidates(candidates: &mut Vec<Candidate>, prefix: &[String], top
                 title: article.title.clone(),
             }),
             TopicChild::Folder { folder } => {
+                if folders {
+                    candidates.push(Candidate {
+                        segments: segments(&[&folder.slug]),
+                        target: folder.path.clone(),
+                        title: folder.title.clone(),
+                    });
+                }
                 for article in &folder.articles {
                     candidates.push(Candidate {
                         segments: segments(&[&folder.slug, &article.slug]),
@@ -113,6 +127,7 @@ fn push_anthology_candidates(
     candidates: &mut Vec<Candidate>,
     prefix: &[String],
     anthology: &Anthology,
+    folders: bool,
 ) {
     let mut base: Vec<String> = prefix.to_vec();
     base.push(anthology.slug.clone());
@@ -123,10 +138,12 @@ fn push_anthology_candidates(
     });
     for item in anthology.items() {
         match item {
-            AnthologyItem::Topic { topic } => push_topic_candidates(candidates, &base, topic),
+            AnthologyItem::Topic { topic } => {
+                push_topic_candidates(candidates, &base, topic, folders)
+            }
             AnthologyItem::Book { book } => push_book_candidates(candidates, &base, book),
             AnthologyItem::Anthology { anthology } => {
-                push_anthology_candidates(candidates, &base, anthology)
+                push_anthology_candidates(candidates, &base, anthology, folders)
             }
         }
     }
@@ -134,16 +151,26 @@ fn push_anthology_candidates(
 
 impl LinkIndex {
     pub fn new(site: &Site) -> LinkIndex {
+        Self::build(site, false)
+    }
+
+    /// Like `new`, but topic subfolders are endpoints too. Only `.link`
+    /// stub resolution uses this — a stub may alias a whole folder.
+    pub(crate) fn with_folders(site: &Site) -> LinkIndex {
+        Self::build(site, true)
+    }
+
+    fn build(site: &Site, folders: bool) -> LinkIndex {
         let mut products = HashMap::new();
         for product in &site.products {
             let mut candidates = Vec::new();
             for item in product.items() {
                 match item {
                     ProductItem::Anthology { anthology } => {
-                        push_anthology_candidates(&mut candidates, &[], anthology);
+                        push_anthology_candidates(&mut candidates, &[], anthology, folders);
                     }
                     ProductItem::Topic { topic } => {
-                        push_topic_candidates(&mut candidates, &[], topic);
+                        push_topic_candidates(&mut candidates, &[], topic, folders);
                     }
                     ProductItem::Book { book } => {
                         push_book_candidates(&mut candidates, &[], book);

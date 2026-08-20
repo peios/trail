@@ -3,12 +3,14 @@
 
 {% block sidebar %}
 <p class="sidebar-topic"><a href="{{ book.path | safe }}">{{ book.short or book.title }}</a></p>
-{{ nav(book.children, article.path) }}
+<nav data-book-nav="{{ book.path | safe }}">
+  {{ nav(book.children, article.path) }}
+</nav>
 {% endblock %}
 
 {% block search_crumbs %}{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %} / {{ book.short or book.title }}{% for chapter in chapters %} / {{ chapter.title }}{% endfor %}{% endblock %}
 
-{% block heading %}<h1><span class="heading-number">{{ article.number }}</span> {{ article.title }}</h1>{% endblock %}
+{% block heading %}<h1><span class="heading-number">{% if article.appendix %}Appendix {% endif %}{{ article.number }}</span> {{ article.title }}</h1>{% endblock %}
 
 {% block crumbs %}
 <a href="{{ product.path | safe }}">{{ product.title }}</a>

@@ -8,6 +8,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use axum::Router;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
 use notify::Watcher;
@@ -33,6 +35,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     let options = build::BuildOptions {
         live_reload: true,
         allow_dangling_links: args.build.allow_dangling_links,
+        strict: args.build.strict,
         render_llms_full: args.build.render_llms_full,
     };
     // A broken site shouldn't kill the dev server: report, serve whatever
@@ -65,9 +68,21 @@ async fn serve(
     root: PathBuf,
     state: Arc<ReloadState>,
 ) -> Result<()> {
+    // Misses serve the built 404 page with a real 404 status, exactly as
+    // a static host configured for /404.html would.
+    let missing_page = out.join("404.html");
+    let not_found = axum::routing::any(move || {
+        let page = missing_page.clone();
+        async move {
+            let body = tokio::fs::read_to_string(&page)
+                .await
+                .unwrap_or_else(|_| "404 — page not found".to_string());
+            (StatusCode::NOT_FOUND, Html(body))
+        }
+    });
     let app = Router::new()
         .route("/~trail/reload", get(reload_events))
-        .fallback_service(ServeDir::new(&out))
+        .fallback_service(ServeDir::new(&out).not_found_service(not_found))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

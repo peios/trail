@@ -5,6 +5,7 @@
 //! from the loaded model at build time — plain static files, nothing to
 //! host beyond the site itself.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -322,6 +323,20 @@ fn write_bundle(
 
     let markdown = bundle_markdown(links, images, unit);
     let md_url = format!("{}/print.md", unit.path);
+    // Every page in this bundle, by the anchor that reaches it here.
+    let anchors: HashMap<String, String> = unit
+        .entries
+        .iter()
+        .map(|(_, article)| {
+            (
+                article
+                    .original
+                    .clone()
+                    .unwrap_or_else(|| article.path.clone()),
+                print_anchor(unit.path, article),
+            )
+        })
+        .collect();
     out.write(
         &mirror_path(out.dir(), &format!("{}/print", unit.path)),
         markdown.as_bytes(),
@@ -339,11 +354,7 @@ fn write_bundle(
     let mut sections = Vec::new();
     let mut has_mermaid = false;
     for (crumbs, article) in &unit.entries {
-        let id = article
-            .path
-            .strip_prefix(&format!("{}/", unit.path))
-            .unwrap_or(&article.slug)
-            .replace('/', "-");
+        let id = print_anchor(unit.path, article);
         // Dangling links were already reported (or rejected) when the
         // article's own page rendered, so this pass stays quiet.
         let rendered = markdown::render(
@@ -353,6 +364,11 @@ fn write_bundle(
                 allow_dangling: true,
                 numbering: article.number.as_deref(),
                 id_prefix: Some(&id),
+                refs: None,
+                print: Some(markdown::PrintScope {
+                    anchors: &anchors,
+                    base: site.config.url.as_deref(),
+                }),
                 images: Some(ImageScope {
                     index: images,
                     dir: &article.source_dir,
@@ -363,6 +379,7 @@ fn write_bundle(
         sections.push(PrintSection {
             id,
             number: article.number.clone(),
+            appendix: article.appendix,
             title: article.title.clone(),
             crumbs: crumbs.clone(),
             html: rendered.html,
@@ -373,6 +390,7 @@ fn write_bundle(
         product,
         &unit.title,
         unit.description,
+        unit.path,
         &md_url,
         &sections,
         has_mermaid,
@@ -414,6 +432,9 @@ fn article_markdown(
 ) -> String {
     let mut out = String::from("# ");
     if let Some(number) = &article.number {
+        if article.appendix {
+            let _ = write!(out, "Appendix ");
+        }
         let _ = write!(out, "{number} ");
     }
     let _ = writeln!(out, "{}", article.title);
@@ -586,16 +607,18 @@ fn book_mirror(book: &Book) -> String {
             match child {
                 BookChild::Article { article } => {
                     let number = article.number.as_deref().unwrap_or_default();
+                    let label = if article.appendix { "Appendix " } else { "" };
                     let _ = writeln!(
                         out,
-                        "{indent}- {number} [{}]({}.md)",
+                        "{indent}- {label}{number} [{}]({}.md)",
                         article.title, article.path
                     );
                 }
                 BookChild::Chapter { chapter } => {
+                    let label = if chapter.appendix { "Appendix " } else { "" };
                     let _ = writeln!(
                         out,
-                        "{indent}- {} [{}]({}.md)",
+                        "{indent}- {label}{} [{}]({}.md)",
                         chapter.number, chapter.title, chapter.entry
                     );
                     contents(out, &chapter.children, depth + 1);
@@ -694,6 +717,9 @@ fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
         if let Some(number) = &article.number {
             value["number"] = json!(number);
         }
+        if article.appendix {
+            value["appendix"] = json!(true);
+        }
         if let Some(original) = &article.original {
             value["original"] = json!(original);
         }
@@ -733,14 +759,20 @@ fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
             .iter()
             .map(|child| match child {
                 BookChild::Article { article } => article_json(article, links),
-                BookChild::Chapter { chapter } => json!({
-                    "kind": "chapter",
-                    "slug": chapter.slug,
-                    "number": chapter.number,
-                    "title": chapter.title,
-                    "entry": chapter.entry,
-                    "children": book_children_json(&chapter.children, links),
-                }),
+                BookChild::Chapter { chapter } => {
+                    let mut value = json!({
+                        "kind": "chapter",
+                        "slug": chapter.slug,
+                        "number": chapter.number,
+                        "title": chapter.title,
+                        "entry": chapter.entry,
+                        "children": book_children_json(&chapter.children, links),
+                    });
+                    if chapter.appendix {
+                        value["appendix"] = json!(true);
+                    }
+                    value
+                }
             })
             .collect()
     }
@@ -806,29 +838,38 @@ fn robots_txt(site: &Site) -> String {
     out
 }
 
-/// Every HTML page's URL path, for the sitemap ("" is the front page).
-fn page_paths(site: &Site) -> Vec<String> {
-    fn topic_paths(paths: &mut Vec<String>, topic: &Topic) {
+/// Every HTML page's URL path with its last-updated date, for the
+/// sitemap ("" is the front page). Alias pages stay out: their canonical
+/// is the original.
+fn page_paths(site: &Site) -> Vec<(String, Option<String>)> {
+    fn topic_paths(paths: &mut Vec<(String, Option<String>)>, topic: &Topic) {
         if topic.pages().next().is_some() {
-            paths.push(format!("{}/print", topic.path));
+            paths.push((format!("{}/print", topic.path), topic.updated.clone()));
         }
         for article in topic.pages() {
-            paths.push(article.path.clone());
+            if article.original.is_none() {
+                paths.push((article.path.clone(), article.updated.clone()));
+            }
         }
     }
-    fn book_paths(paths: &mut Vec<String>, book: &Book) {
-        paths.push(book.path.clone());
+    fn book_paths(paths: &mut Vec<(String, Option<String>)>, book: &Book) {
+        paths.push((book.path.clone(), book.updated.clone()));
         if !book.articles().is_empty() {
-            paths.push(format!("{}/print", book.path));
+            paths.push((format!("{}/print", book.path), book.updated.clone()));
         }
         for (_, article) in book.articles() {
-            paths.push(article.path.clone());
+            if article.original.is_none() {
+                paths.push((article.path.clone(), article.updated.clone()));
+            }
         }
     }
-    fn anthology_paths(paths: &mut Vec<String>, anthology: &Anthology) {
-        paths.push(anthology.path.clone());
+    fn anthology_paths(paths: &mut Vec<(String, Option<String>)>, anthology: &Anthology) {
+        paths.push((anthology.path.clone(), anthology.updated.clone()));
         if !anthology_unit(&[], anthology).entries.is_empty() {
-            paths.push(format!("{}/print", anthology.path));
+            paths.push((
+                format!("{}/print", anthology.path),
+                anthology.updated.clone(),
+            ));
         }
         for item in anthology.items() {
             match item {
@@ -839,11 +880,21 @@ fn page_paths(site: &Site) -> Vec<String> {
         }
     }
 
-    let mut paths = vec![String::new()];
+    let site_updated = site
+        .products
+        .iter()
+        .fold(None, |so_far: Option<String>, product| {
+            match (so_far, product.updated.clone()) {
+                (Some(a), Some(b)) => Some(if a >= b { a } else { b }),
+                (Some(only), None) | (None, Some(only)) => Some(only),
+                (None, None) => None,
+            }
+        });
+    let mut paths = vec![(String::new(), site_updated)];
     for product in &site.products {
-        paths.push(product.path.clone());
+        paths.push((product.path.clone(), product.updated.clone()));
         if !product_unit(product).entries.is_empty() {
-            paths.push(format!("{}/print", product.path));
+            paths.push((format!("{}/print", product.path), product.updated.clone()));
         }
         for item in product.items() {
             match item {
@@ -864,11 +915,32 @@ fn sitemap_xml(site: &Site) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
     );
-    for path in page_paths(site) {
-        let _ = writeln!(out, "  <url><loc>{base}{path}/</loc></url>");
+    for (path, updated) in page_paths(site) {
+        match updated {
+            Some(updated) => {
+                let _ = writeln!(
+                    out,
+                    "  <url><loc>{base}{path}/</loc><lastmod>{updated}</lastmod></url>"
+                );
+            }
+            None => {
+                let _ = writeln!(out, "  <url><loc>{base}{path}/</loc></url>");
+            }
+        }
     }
     out.push_str("</urlset>\n");
     out
+}
+
+/// A page's anchor id within its unit's `/print` bundle: its path below
+/// the unit, flattened. Shared so the bundle and the links pointing into
+/// it can never disagree.
+pub(crate) fn print_anchor(unit_path: &str, article: &Article) -> String {
+    article
+        .path
+        .strip_prefix(&format!("{unit_path}/"))
+        .unwrap_or(&article.slug)
+        .replace('/', "-")
 }
 
 /// Where a page's markdown mirror lands: the page URL with `.md` appended
@@ -923,6 +995,10 @@ mod tests {
         assert!(tuning.starts_with("# 2.2.1 Article tuning\n"));
         assert!(tuning.contains("## 2.2.1.1 First section of tuning"));
         assert!(!tuning.contains("> about"));
+        // Appendix pages get the full label; their headings stay short.
+        let glossary = fs::read_to_string(out.join("alpha/manual/glossary.md")).unwrap();
+        assert!(glossary.starts_with("# Appendix A Article glossary\n"));
+        assert!(glossary.contains("## A.1 First section of glossary"));
 
         // Articles under nested anthologies carry the whole chain.
         let deep = fs::read_to_string(out.join("alpha/acorn/inner/deep/d1.md")).unwrap();
@@ -952,6 +1028,8 @@ mod tests {
         let book = fs::read_to_string(out.join("alpha/manual.md")).unwrap();
         assert!(book.starts_with("# Alpha Manual (AM)\n"));
         assert!(book.contains("- 2 [Setup](/alpha/manual/setup/install.md)"));
+        assert!(book.contains("- Appendix A [Article glossary](/alpha/manual/glossary.md)"));
+        assert!(book.contains("- Appendix B [History](/alpha/manual/history/old.md)"));
         assert!(book.contains("    - 2.1 [Article install](/alpha/manual/setup/install.md)"));
         assert!(
             book.contains(
@@ -993,6 +1071,13 @@ mod tests {
         let html = fs::read_to_string(out.join("alpha/print/index.html")).unwrap();
         assert!(html.contains("id=\"acorn-wide-a1--first-section-of-a1\""));
         assert!(html.contains(">Alpha</h1>"));
+        // Print sections label appendices in full too.
+        let manual = fs::read_to_string(out.join("alpha/manual/print/index.html")).unwrap();
+        assert!(
+            manual.contains("<span class=\"heading-number\">Appendix A</span> Article glossary")
+        );
+        let manual_md = fs::read_to_string(out.join("alpha/manual/print.md")).unwrap();
+        assert!(manual_md.contains("# Appendix A Article glossary"));
         assert!(html.contains("Alpha / Acorn Docs / Wide Topic"));
         assert!(!html.contains("data-pagefind-body"));
 
@@ -1079,6 +1164,30 @@ mod tests {
     }
 
     #[test]
+    fn print_bundles_link_inside_themselves_and_out_absolutely() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::site::write_fixture(dir.path());
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            format!("url = \"https://docs.example\"\n{config}"),
+        )
+        .unwrap();
+        let (out, _) = build_surface(dir.path(), false);
+
+        let print = fs::read_to_string(out.join("alpha/manual/print/index.html")).unwrap();
+        // A page in this bundle becomes an in-document anchor — and a
+        // heading in it keeps that page's id prefix.
+        assert!(print.contains("href=\"#setup-install--first-section-of-install\""));
+        // A page outside it goes absolute, so the link survives print,
+        // PDF, and reading the file away from the site.
+        assert!(print.contains("href=\"https://docs.example/alpha/acorn/narrow/b1\""));
+        // Ordinary pages are unaffected: this rewriting is print-only
+        // (their own links are covered in the render tests).
+        assert!(!print.contains("href=\"/alpha/manual/setup/install"));
+    }
+
+    #[test]
     fn sitemap_needs_a_base_url_and_robots_is_always_there() {
         let (dir, out, _) = fixture_surface();
         let robots = fs::read_to_string(out.join("robots.txt")).unwrap();
@@ -1098,6 +1207,18 @@ mod tests {
         assert!(sitemap.contains("<loc>https://docs.example/alpha/acorn/wide/a1/</loc>"));
         assert!(sitemap.contains("<loc>https://docs.example/alpha/print/</loc>"));
         assert!(sitemap.contains("<loc>https://docs.example/alpha/acorn/inner/deep/d1/</loc>"));
+        // Dated pages carry lastmod, rolled up for containers.
+        assert!(sitemap.contains(
+            "<loc>https://docs.example/alpha/loose/x2/</loc><lastmod>2026-03-15</lastmod>"
+        ));
+        assert!(sitemap.contains(
+            "<loc>https://docs.example/alpha/manual/</loc><lastmod>2026-05-01</lastmod>"
+        ));
+        // Undated pages simply omit it.
+        assert!(sitemap.contains("<loc>https://docs.example/alpha/acorn/wide/a1/</loc></url>"));
+        // Alias pages stay out — their canonical is the original.
+        assert!(!sitemap.contains("/alpha/loose/alias/"));
+        assert!(!sitemap.contains("/alpha/acorn/narrow/extra/linked/"));
         let robots = fs::read_to_string(out.join("robots.txt")).unwrap();
         assert!(robots.contains("Sitemap: https://docs.example/sitemap.xml"));
     }

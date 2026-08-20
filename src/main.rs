@@ -1,9 +1,11 @@
 mod build;
 mod cli;
 mod export;
+mod highlight;
 mod images;
 mod links;
 mod markdown;
+mod refs;
 mod render;
 mod search;
 mod serve;

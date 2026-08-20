@@ -18,6 +18,16 @@ pub struct Site {
     /// tree — a flat registry (relative destinations can reach across
     /// containers), kept off the presentation model.
     pub images: Vec<ImageAsset>,
+    /// The configured custom stylesheet resolved to its source file,
+    /// copied to /assets/custom.css at build time.
+    pub custom_css: Option<PathBuf>,
+    /// The configured favicon resolved to its source file.
+    pub favicon: Option<PathBuf>,
+    /// The head_html snippet's contents, injected into every head.
+    pub head_html: Option<String>,
+    /// The site root directory, for deriving source-relative paths
+    /// (edit links).
+    pub root: PathBuf,
 }
 
 /// The root `trail.toml`. Unknown keys are load errors.
@@ -36,8 +46,51 @@ pub struct SiteConfig {
     #[serde(default)]
     pub featured: Vec<String>,
     pub footer: String,
+    /// The site accent color ("#635bff"): links, focus rings, the
+    /// wordmark highlight, the hero glow. Its dark-mode variant is
+    /// derived automatically unless `accent_dark` overrides it.
+    #[serde(default)]
+    pub accent: Option<String>,
+    #[serde(default)]
+    pub accent_dark: Option<String>,
+    /// An extra stylesheet, path relative to the site root, shipped at
+    /// /assets/custom.css and loaded after the built-in one — the
+    /// theming escape hatch. Overriding the `--*` tokens goes furthest;
+    /// anything beyond is ordinary CSS.
+    #[serde(default)]
+    pub custom_css: Option<String>,
+    /// Path (relative to the site root) of the favicon file, shipped at
+    /// the output root under its own name and linked from every page.
+    #[serde(default)]
+    pub favicon: Option<String>,
+    /// Path of an HTML snippet file injected verbatim at the end of
+    /// every page's head — analytics, fonts, extra meta tags.
+    #[serde(default)]
+    pub head_html: Option<String>,
+    /// Where "Edit this page" links point: a URL template whose "{path}"
+    /// placeholder becomes the article's source path relative to the
+    /// site root ("https://github.com/org/repo/edit/main/{path}").
+    #[serde(default)]
+    pub edit_url: Option<String>,
+    /// Links shown in the site header next to the products menu.
+    #[serde(default)]
+    pub nav: Vec<NavItem>,
+    /// Per-product tinting (cards, tiles, sidebar highlights take each
+    /// product's color). Off, everything tints from the site accent.
+    #[serde(default = "default_true")]
+    pub product_theming: bool,
     #[serde(default = "default_true")]
     pub built_by_trail: bool,
+}
+
+/// One header navigation link. The url may be external, or a `~` page
+/// reference in the body-link grammar — resolved strictly at load,
+/// because site chrome must never dangle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NavItem {
+    pub label: String,
+    pub url: String,
 }
 
 fn default_true() -> bool {
@@ -53,6 +106,14 @@ pub struct Product {
     pub monogram: String,
     pub color: String,
     pub description: String,
+    /// Everything under this product, added up; see `Article`.
+    pub reading_minutes: u32,
+    /// The most recent `updated:` date anywhere under this product.
+    pub updated: Option<String>,
+    /// Phrases from trail.toml (`inline_ref`) that auto-link to this
+    /// product's page wherever prose states them.
+    #[serde(skip)]
+    pub inline_refs: Vec<String>,
     /// Direct children (anthologies, books, bare topics, shelves) in
     /// `NN--` order. Templates receive display `sections()` instead of this.
     #[serde(skip)]
@@ -208,6 +269,8 @@ struct ProductConfig {
     monogram: String,
     color: String,
     description: String,
+    #[serde(default)]
+    inline_ref: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -218,6 +281,14 @@ pub struct Anthology {
     pub order: u32,
     pub title: String,
     pub description: String,
+    /// Everything under this anthology, added up; see `Article`.
+    pub reading_minutes: u32,
+    /// The most recent `updated:` date anywhere under this anthology.
+    pub updated: Option<String>,
+    /// Phrases from trail.toml (`inline_ref`) that auto-link to this
+    /// anthology's page wherever prose states them.
+    #[serde(skip)]
+    pub inline_refs: Vec<String>,
     /// Direct children (topics, shelves) in `NN--` order.
     /// Templates receive display `sections()` instead of this.
     #[serde(skip)]
@@ -342,15 +413,21 @@ impl AnthologyItem {
 struct AnthologyConfig {
     title: String,
     description: String,
+    #[serde(default)]
+    inline_ref: Vec<String>,
 }
 
-/// A topic's, shelf's or chapter's *optional* `trail.toml`: nothing but an
-/// explicit title, for casing the derived default can't produce (acronyms
-/// and such).
+/// A topic's, shelf's, subfolder's or chapter's *optional* `trail.toml`:
+/// an explicit title, for casing the derived default can't produce
+/// (acronyms and such), and — everywhere but shelves — inline_ref
+/// phrase claims.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TitleConfig {
-    title: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    inline_ref: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -364,6 +441,13 @@ pub struct Topic {
     /// Derived from the slug ("the-two-gates" → "The Two Gates") unless the
     /// topic's trail.toml overrides it.
     pub title: String,
+    /// Every article in this topic, added up; see `Article`.
+    pub reading_minutes: u32,
+    /// The most recent `updated:` date among this topic's articles.
+    pub updated: Option<String>,
+    /// Phrases from trail.toml (`inline_ref`) that auto-link to this
+    /// topic's first article wherever prose states them.
+    pub inline_refs: Vec<String>,
     /// The topic's body in `NN--` order: articles interleaved with
     /// subfolders (plain `<order>--<slug>` directories grouping articles).
     pub children: Vec<TopicChild>,
@@ -395,11 +479,13 @@ impl Topic {
 impl Serialize for Topic {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("Topic", 7)?;
+        let mut s = serializer.serialize_struct("Topic", 9)?;
         s.serialize_field("slug", &self.slug)?;
         s.serialize_field("path", &self.path)?;
         s.serialize_field("order", &self.order)?;
         s.serialize_field("title", &self.title)?;
+        s.serialize_field("reading_minutes", &self.reading_minutes)?;
+        s.serialize_field("updated", &self.updated)?;
         s.serialize_field("entry", &self.entry())?;
         s.serialize_field("children", &self.children)?;
         s.serialize_field("pages", &self.pages().collect::<Vec<_>>())?;
@@ -442,7 +528,7 @@ impl TopicChild {
 /// run of the topic's articles under its own URL segment and sidebar
 /// section. No page of its own — links open its first article. A folder
 /// with no articles yet is tolerated and simply not shown.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TopicFolder {
     pub slug: String,
     /// URL path prefix of the folder's articles.
@@ -453,6 +539,14 @@ pub struct TopicFolder {
     /// The first article's path — where folder links land. None while
     /// the folder is empty.
     pub entry: Option<String>,
+    /// Every article in this folder, added up; see `Article`.
+    pub reading_minutes: u32,
+    /// The most recent `updated:` date among this folder's articles.
+    pub updated: Option<String>,
+    /// Phrases from trail.toml (`inline_ref`) that auto-link to this
+    /// folder's first article wherever prose states them.
+    #[serde(skip)]
+    pub inline_refs: Vec<String>,
     /// The folder's articles in `NN--` order.
     pub articles: Vec<Article>,
     /// `.link` entries awaiting resolution; drained into `articles` once
@@ -469,17 +563,35 @@ pub struct Article {
     pub order: u32,
     pub title: String,
     /// The article's section number within a book ("2.1"), dotted from the
-    /// authored `NN--` orders along its chapter trail. None outside books.
+    /// authored `NN--` orders along its chapter trail — or lettered
+    /// ("A", "B.2") for appendix entries. None outside books.
     pub number: Option<String>,
+    /// Whether this is an appendix entry (`a<N>--` order prefix): lettered
+    /// instead of numbered, sorted after every numbered sibling, and shown
+    /// with a full "Appendix A" label where the entry itself is displayed.
+    /// Book-root only; always false outside books.
+    pub appendix: bool,
     /// The page taxonomy label from frontmatter (`type:`), e.g. "concept".
     /// None inside books, where the taxonomy is meaningless.
     pub kind: Option<String>,
-    /// None inside books; sections of a formal document aren't summarised
-    /// individually.
+    /// Optional summary, fed to search-result snippets and social
+    /// previews. Book articles usually go without; `--strict` requires
+    /// one on every article.
     pub description: Option<String>,
     /// Unresolved cross-reference slugs from frontmatter; resolution comes
     /// with the linking layer.
     pub related: Vec<String>,
+    /// Phrases from frontmatter (`inline_ref:`) that auto-link to this
+    /// article wherever prose states them.
+    #[serde(skip)]
+    pub inline_refs: Vec<String>,
+    /// When the article last changed (`updated:`, an ISO date). Manual:
+    /// file mtimes are noise, and nothing here knows about git yet.
+    pub updated: Option<String>,
+    /// Estimated reading time, from the body's word count unless
+    /// `reading_minutes:` overrides it. Containers add theirs up, so a
+    /// book card can say how long the whole thing takes.
+    pub reading_minutes: u32,
     /// For a page created by a `.link` reference: the path of the
     /// canonical article whose content this page re-renders. Linked
     /// pages stay out of the search index — the original covers it.
@@ -493,6 +605,11 @@ pub struct Article {
     /// its target's source directory, so the body's images keep working.
     #[serde(skip)]
     pub source_dir: PathBuf,
+    /// The article's own .md source file, for "Edit this page" links.
+    /// A linked page keeps its target's file — editing the alias edits
+    /// the real source.
+    #[serde(skip)]
+    pub source_file: PathBuf,
 }
 
 /// An article's YAML frontmatter. Unknown keys are load errors.
@@ -502,20 +619,36 @@ struct ArticleConfig {
     title: String,
     #[serde(rename = "type")]
     kind: String,
-    description: String,
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     related: Vec<String>,
+    #[serde(default)]
+    inline_ref: Vec<String>,
+    #[serde(default)]
+    updated: Option<String>,
+    #[serde(default)]
+    reading_minutes: Option<u32>,
 }
 
-/// A book article's YAML frontmatter: just a title — the learn taxonomy
-/// (`type:`) and per-page descriptions are meaningless inside a formal
-/// document, so providing them is an error.
+/// A book article's YAML frontmatter: a title, optionally a description
+/// (for search snippets and social previews). The learn taxonomy
+/// (`type:`) is meaningless inside a formal document, so providing it
+/// is an error.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BookArticleConfig {
     title: String,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
     related: Vec<String>,
+    #[serde(default)]
+    inline_ref: Vec<String>,
+    #[serde(default)]
+    updated: Option<String>,
+    #[serde(default)]
+    reading_minutes: Option<u32>,
 }
 
 /// A book: a formal, ordered document (a specification, a TRM) with its
@@ -532,9 +665,22 @@ pub struct Book {
     /// full title is too long: breadcrumbs and the sidebar heading.
     pub short: Option<String>,
     pub description: String,
+    /// Every article in this book, added up; see `Article`.
+    pub reading_minutes: u32,
+    /// The most recent `updated:` date anywhere in this book.
+    pub updated: Option<String>,
+    /// Phrases from trail.toml (`inline_ref`) that auto-link to this
+    /// book's cover — optionally reaching a section via a `§` suffix in
+    /// prose ("PGSS §2.4").
+    #[serde(skip)]
+    pub inline_refs: Vec<String>,
     /// Direct children in `NN--` order. Serialized: templates walk the
     /// tree for the cover's contents and the article sidebar.
     pub children: Vec<BookChild>,
+    /// `.link` entries awaiting resolution; drained into `children` as
+    /// numbered alias articles once the whole site is loaded.
+    #[serde(skip)]
+    links: Vec<LinkStub>,
 }
 
 impl Book {
@@ -585,6 +731,22 @@ impl BookChild {
         }
     }
 
+    fn appendix(&self) -> bool {
+        match self {
+            BookChild::Article { article } => article.appendix,
+            BookChild::Chapter { chapter } => chapter.appendix,
+        }
+    }
+
+    /// The order prefix as authored ("3", "a1"), for duplicate reports.
+    fn order_label(&self) -> String {
+        if self.appendix() {
+            format!("a{}", self.order())
+        } else {
+            self.order().to_string()
+        }
+    }
+
     fn slug(&self) -> &str {
         match self {
             BookChild::Article { article } => &article.slug,
@@ -604,13 +766,27 @@ pub struct Chapter {
     pub order: u32,
     /// The chapter's section number ("2.2"), dotted from the authored
     /// `NN--` orders along its trail — gaps show through on purpose.
+    /// Appendix chapters are lettered ("A") instead.
     pub number: String,
+    /// Whether this is an appendix chapter; see `Article::appendix`.
+    pub appendix: bool,
     /// Derived from the slug unless the chapter's trail.toml overrides it.
     pub title: String,
     /// URL path of the chapter's first article in reading order — where
     /// chapter links (contents, breadcrumbs, sidebar) land.
     pub entry: String,
+    /// Every article in this chapter, added up; see `Article`.
+    pub reading_minutes: u32,
+    /// The most recent `updated:` date anywhere in this chapter.
+    pub updated: Option<String>,
+    /// Phrases from trail.toml (`inline_ref`) that auto-link to this
+    /// chapter's first article wherever prose states them.
+    #[serde(skip)]
+    pub inline_refs: Vec<String>,
     pub children: Vec<BookChild>,
+    /// `.link` entries awaiting resolution; see `Book::links`.
+    #[serde(skip)]
+    links: Vec<LinkStub>,
 }
 
 /// A book's `trail.toml`. Unknown keys are load errors.
@@ -620,6 +796,8 @@ struct BookConfig {
     title: String,
     short: Option<String>,
     description: String,
+    #[serde(default)]
+    inline_ref: Vec<String>,
 }
 
 /// A `.link` reference file: `target` is a `~` reference in the same
@@ -634,10 +812,12 @@ struct LinkConfig {
 
 /// An unresolved `.link` entry, held until the whole site has loaded —
 /// its target may live anywhere in the tree.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LinkStub {
     slug: String,
     order: u32,
+    /// Book links may use `a<N>--` orders, becoming appendix entries.
+    appendix: bool,
     title: String,
     target: String,
 }
@@ -663,12 +843,73 @@ impl Site {
                 url.pop();
             }
         }
+        if let Some(accent) = &config.accent {
+            validate_color(accent).context("in the site accent")?;
+        }
+        if let Some(accent_dark) = &config.accent_dark {
+            ensure!(
+                config.accent.is_some(),
+                "accent_dark without accent: set the base accent color too"
+            );
+            validate_color(accent_dark).context("in the site accent_dark")?;
+        }
+        let custom_css = match &config.custom_css {
+            Some(path) => {
+                let file = root.join(path);
+                ensure!(
+                    file.is_file(),
+                    "custom_css names '{path}', which does not exist in the site root"
+                );
+                Some(file)
+            }
+            None => None,
+        };
+        let favicon = match &config.favicon {
+            Some(path) => {
+                let file = root.join(path);
+                ensure!(
+                    file.is_file(),
+                    "favicon names '{path}', which does not exist in the site root"
+                );
+                Some(file)
+            }
+            None => None,
+        };
+        let head_html = match &config.head_html {
+            Some(path) => {
+                let file = root.join(path);
+                ensure!(
+                    file.is_file(),
+                    "head_html names '{path}', which does not exist in the site root"
+                );
+                Some(fs::read_to_string(&file).with_context(|| format!("reading {path}"))?)
+            }
+            None => None,
+        };
+        if let Some(template) = &config.edit_url {
+            ensure!(
+                template.contains("{path}"),
+                "edit_url must contain a {{path}} placeholder for the \
+                 article's source path"
+            );
+        }
+        // Configured root files (or the directories holding them) are
+        // content the root scan below must tolerate.
+        let keep_entries: Vec<String> = [&config.custom_css, &config.favicon, &config.head_html]
+            .into_iter()
+            .flatten()
+            .filter_map(|path| Path::new(path).components().next())
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect();
 
         let mut products = Vec::new();
         let mut images = Vec::new();
         for entry in read_dir_sorted(root)? {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || is_same_path(&entry.path(), out) {
+            if name.starts_with('.')
+                || is_same_path(&entry.path(), out)
+                || keep_entries.contains(&name)
+            {
                 continue;
             }
             let path = entry.path();
@@ -713,8 +954,39 @@ impl Site {
             config,
             products,
             images,
+            custom_css,
+            favicon,
+            head_html,
+            root: root.to_path_buf(),
         };
         resolve_linked_articles(&mut site)?;
+        // Reading times and dates roll up from the leaves, so this runs
+        // after `.link` aliases have joined their containers.
+        for product in &mut site.products {
+            rollup_product(product);
+        }
+
+        // Header nav links: external URLs pass through; `~` references
+        // resolve through the body-link grammar — strictly, at load,
+        // because site chrome must never dangle.
+        let resolved = {
+            let index = crate::links::LinkIndex::new(&site);
+            let mut resolved = Vec::with_capacity(site.config.nav.len());
+            for item in &site.config.nav {
+                resolved.push(match item.url.strip_prefix('~') {
+                    Some(reference) => Some(index.resolve(reference).with_context(|| {
+                        format!("resolving nav link '{}' ({})", item.label, item.url)
+                    })?),
+                    None => None,
+                });
+            }
+            resolved
+        };
+        for (item, url) in site.config.nav.iter_mut().zip(resolved) {
+            if let Some(url) = url {
+                item.url = url;
+            }
+        }
         Ok(site)
     }
 
@@ -725,6 +997,49 @@ impl Site {
             .iter()
             .filter_map(|slug| self.products.iter().find(|p| p.slug == *slug))
             .collect()
+    }
+
+    /// The served favicon URL: the configured file's own name at the
+    /// output root.
+    pub fn favicon_href(&self) -> Option<String> {
+        self.favicon.as_ref().map(|source| {
+            format!(
+                "/{}",
+                source
+                    .file_name()
+                    .expect("validated as a file at load")
+                    .to_string_lossy()
+            )
+        })
+    }
+
+    /// Every article in the site in tree order — topic articles
+    /// (subfolders included), book articles, aliases and all.
+    pub fn articles(&self) -> Vec<&Article> {
+        fn from_anthology<'a>(anthology: &'a Anthology, out: &mut Vec<&'a Article>) {
+            for item in anthology.items() {
+                match item {
+                    AnthologyItem::Topic { topic } => out.extend(topic.pages()),
+                    AnthologyItem::Book { book } => {
+                        out.extend(book.articles().into_iter().map(|(_, article)| article));
+                    }
+                    AnthologyItem::Anthology { anthology } => from_anthology(anthology, out),
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for product in &self.products {
+            for item in product.items() {
+                match item {
+                    ProductItem::Topic { topic } => out.extend(topic.pages()),
+                    ProductItem::Book { book } => {
+                        out.extend(book.articles().into_iter().map(|(_, article)| article));
+                    }
+                    ProductItem::Anthology { anthology } => from_anthology(anthology, &mut out),
+                }
+            }
+        }
+        out
     }
 }
 
@@ -779,6 +1094,9 @@ fn load_product(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<
         monogram: config.monogram,
         color: config.color,
         description: config.description,
+        reading_minutes: 0,
+        updated: None,
+        inline_refs: config.inline_ref,
         children,
     };
     check_flat_slugs("grouping", product.items().map(ProductItem::slug))?;
@@ -791,7 +1109,14 @@ fn load_product_shelf(
     product_path: &str,
     images: &mut Vec<ImageAsset>,
 ) -> Result<Shelf<ProductItem>> {
-    let title = grouping_title(dir, &name.slug)?;
+    let config = grouping_config(dir, &name.slug)?;
+    ensure!(
+        config.inline_refs.is_empty(),
+        "inline_ref on shelf '{}': a shelf has no page — declare it on \
+         the shelf's items instead",
+        name.slug
+    );
+    let title = config.title;
 
     let mut items = Vec::new();
     for (child_dir, entry_name) in grouping_dirs(dir, "a shelf")? {
@@ -886,6 +1211,9 @@ fn load_anthology(
         order: name.order,
         title: config.title,
         description: config.description,
+        reading_minutes: 0,
+        updated: None,
+        inline_refs: config.inline_ref,
         children,
     };
     check_flat_slugs("item", anthology.items().map(AnthologyItem::slug))?;
@@ -898,7 +1226,14 @@ fn load_anthology_shelf(
     anthology_path: &str,
     images: &mut Vec<ImageAsset>,
 ) -> Result<Shelf<AnthologyItem>> {
-    let title = grouping_title(dir, &name.slug)?;
+    let config = grouping_config(dir, &name.slug)?;
+    ensure!(
+        config.inline_refs.is_empty(),
+        "inline_ref on shelf '{}': a shelf has no page — declare it on \
+         the shelf's items instead",
+        name.slug
+    );
+    let title = config.title;
 
     let mut items = Vec::new();
     for (child_dir, entry_name) in grouping_dirs(dir, "a shelf")? {
@@ -945,7 +1280,7 @@ fn load_topic(
     parent_path: &str,
     images: &mut Vec<ImageAsset>,
 ) -> Result<Topic> {
-    let title = grouping_title(dir, &name.slug)?;
+    let config = grouping_config(dir, &name.slug)?;
     let path = format!("{parent_path}/{}", name.slug);
 
     let mut children = Vec::new();
@@ -976,7 +1311,7 @@ fn load_topic(
         } else if let Some(asset) = image_asset(&entry_name, entry.path(), &path)? {
             images.push(asset);
         } else if let Some(stem) = entry_name.strip_suffix(".link") {
-            links.push(load_link_stub(&entry.path(), stem)?);
+            links.push(load_link_stub(&entry.path(), stem, false)?);
         } else {
             let Some(stem) = entry_name.strip_suffix(".md") else {
                 bail!(
@@ -1002,7 +1337,10 @@ fn load_topic(
         slug: name.slug,
         path,
         order: name.order,
-        title,
+        title: config.title,
+        reading_minutes: 0,
+        updated: None,
+        inline_refs: config.inline_refs,
         children,
         links,
     })
@@ -1015,7 +1353,7 @@ fn load_topic_folder(
     parent_path: &str,
     images: &mut Vec<ImageAsset>,
 ) -> Result<TopicFolder> {
-    let title = grouping_title(dir, slug)?;
+    let config = grouping_config(dir, slug)?;
     let path = format!("{parent_path}/{slug}");
 
     let mut articles = Vec::new();
@@ -1035,7 +1373,7 @@ fn load_topic_folder(
             continue;
         }
         if let Some(stem) = entry_name.strip_suffix(".link") {
-            links.push(load_link_stub(&entry.path(), stem)?);
+            links.push(load_link_stub(&entry.path(), stem, false)?);
             continue;
         }
         let Some(stem) = entry_name.strip_suffix(".md") else {
@@ -1053,11 +1391,53 @@ fn load_topic_folder(
         slug: slug.to_string(),
         path,
         order,
-        title,
+        title: config.title,
         entry: articles.first().map(|article| article.path.clone()),
+        reading_minutes: 0,
+        updated: None,
+        inline_refs: config.inline_refs,
         articles,
         links,
     })
+}
+
+/// Parse a book child's order token: plain digits ("3--install") or an
+/// appendix marker ("a2--prior-art"). Appendices sort after every
+/// numbered sibling at their own level — a book's appendices close out
+/// the book, a chapter's close out the chapter ("2.A") — and are
+/// lettered instead of numbered. Returns (appendix, order).
+fn parse_book_order(token: &str, what: &str, entry_name: &str) -> Result<(bool, u32)> {
+    match token.strip_prefix('a') {
+        Some(rest) => {
+            let order: u32 = rest.parse().with_context(|| {
+                format!("{what} '{entry_name}' has a malformed appendix order prefix")
+            })?;
+            ensure!(
+                order >= 1,
+                "{what} '{entry_name}': appendix orders start at 'a1'"
+            );
+            Ok((true, order))
+        }
+        None => {
+            let order: u32 = token
+                .parse()
+                .with_context(|| format!("{what} '{entry_name}' has a non-numeric order prefix"))?;
+            Ok((false, order))
+        }
+    }
+}
+
+/// Appendix section letters: a1 → "A", a26 → "Z", a27 → "AA" — gaps show
+/// through, like numeric orders.
+fn appendix_letters(mut n: u32) -> String {
+    let mut letters = Vec::new();
+    while n > 0 {
+        n -= 1;
+        letters.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    letters.reverse();
+    String::from_utf8(letters).expect("ASCII letters")
 }
 
 /// Recognise a co-located image file: `<stem>.<image-extension>`, kept
@@ -1086,14 +1466,23 @@ fn image_asset(entry_name: &str, source: PathBuf, parent_path: &str) -> Result<O
     Ok(None)
 }
 
-/// Parse a `<order>--<slug>.link` reference file.
-fn load_link_stub(file: &Path, stem: &str) -> Result<LinkStub> {
-    let Some((order, slug)) = stem.split_once("--") else {
+/// Parse a `<order>--<slug>.link` reference file. Inside a book the
+/// order may be an `a<N>--` appendix marker, like any other book entry.
+fn load_link_stub(file: &Path, stem: &str, in_book: bool) -> Result<LinkStub> {
+    let Some((token, slug)) = stem.split_once("--") else {
         bail!("link '{stem}.link' is missing its '<order>--' prefix");
     };
-    let order: u32 = order
-        .parse()
-        .with_context(|| format!("link '{stem}.link' has a non-numeric order prefix"))?;
+    let entry_name = format!("{stem}.link");
+    let (appendix, order) = if in_book {
+        parse_book_order(token, "link", &entry_name)?
+    } else {
+        (
+            false,
+            token
+                .parse()
+                .with_context(|| format!("link '{entry_name}' has a non-numeric order prefix"))?,
+        )
+    };
     validate_slug(slug).with_context(|| format!("in link '{stem}.link'"))?;
     let config: LinkConfig = read_toml(file)?;
     ensure!(
@@ -1104,6 +1493,7 @@ fn load_link_stub(file: &Path, stem: &str) -> Result<LinkStub> {
     Ok(LinkStub {
         slug: slug.to_string(),
         order,
+        appendix,
         title: config.title.unwrap_or_else(|| title_from_slug(slug)),
         target: config.target,
     })
@@ -1117,7 +1507,7 @@ fn load_book(
 ) -> Result<Book> {
     let config: BookConfig = read_toml(&dir.join("trail.toml"))?;
     let path = format!("{parent_path}/{}", name.slug);
-    let children = load_book_children(dir, &path, "", "a book", images)?;
+    let (children, links) = load_book_children(dir, &path, "", "a book", images)?;
 
     Ok(Book {
         slug: name.slug,
@@ -1126,27 +1516,36 @@ fn load_book(
         title: config.title,
         short: config.short,
         description: config.description,
+        reading_minutes: 0,
+        updated: None,
+        inline_refs: config.inline_ref,
         children,
+        links,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_chapter(
     dir: &Path,
     order: u32,
+    appendix: bool,
     slug: &str,
     parent_path: &str,
     number: String,
     images: &mut Vec<ImageAsset>,
 ) -> Result<Chapter> {
-    let title = grouping_title(dir, slug)?;
+    let config = grouping_config(dir, slug)?;
     let path = format!("{parent_path}/{slug}");
-    let children = load_book_children(dir, &path, &format!("{number}."), "a chapter", images)?;
+    let (children, links) =
+        load_book_children(dir, &path, &format!("{number}."), "a chapter", images)?;
 
     // Chapter links open the chapter's first article, so a chapter with
-    // nothing to open is a mistake, not an empty page.
+    // nothing to open is a mistake, not an empty page. (A chapter whose
+    // only entries are .link references gets its entry at resolution.)
     let entry = match children.first() {
         Some(BookChild::Article { article }) => article.path.clone(),
         Some(BookChild::Chapter { chapter }) => chapter.entry.clone(),
+        None if !links.is_empty() => String::new(),
         None => bail!("chapter '{slug}' contains no articles"),
     };
 
@@ -1155,9 +1554,14 @@ fn load_chapter(
         path,
         order,
         number,
-        title,
+        appendix,
+        title: config.title,
         entry,
+        reading_minutes: 0,
+        updated: None,
+        inline_refs: config.inline_refs,
         children,
+        links,
     })
 }
 
@@ -1171,8 +1575,9 @@ fn load_book_children(
     number_prefix: &str,
     what: &str,
     images: &mut Vec<ImageAsset>,
-) -> Result<Vec<BookChild>> {
+) -> Result<(Vec<BookChild>, Vec<LinkStub>)> {
     let mut children = Vec::new();
+    let mut links = Vec::new();
     for entry in read_dir_sorted(dir)? {
         let entry_name = entry.file_name().to_string_lossy().into_owned();
         if entry_name.starts_with('.') || entry_name == "trail.toml" {
@@ -1185,38 +1590,59 @@ fn load_book_children(
                      chapters are plain '<order>--<slug>' directories"
                 );
             }
-            let Some((order, slug)) = entry_name.split_once("--") else {
+            let Some((token, slug)) = entry_name.split_once("--") else {
                 bail!("chapter '{entry_name}' is missing its '<order>--' prefix");
             };
-            let order: u32 = order.parse().with_context(|| {
-                format!("chapter '{entry_name}' has a non-numeric order prefix")
-            })?;
+            let (appendix, order) = parse_book_order(token, "chapter", &entry_name)?;
             validate_slug(slug).with_context(|| format!("in chapter '{entry_name}'"))?;
-            let number = format!("{number_prefix}{order}");
+            let segment = if appendix {
+                appendix_letters(order)
+            } else {
+                order.to_string()
+            };
+            let number = format!("{number_prefix}{segment}");
             children.push(BookChild::Chapter {
-                chapter: load_chapter(&entry.path(), order, slug, parent_path, number, images)
-                    .with_context(|| format!("loading chapter in '{entry_name}'"))?,
+                chapter: load_chapter(
+                    &entry.path(),
+                    order,
+                    appendix,
+                    slug,
+                    parent_path,
+                    number,
+                    images,
+                )
+                .with_context(|| format!("loading chapter in '{entry_name}'"))?,
             });
         } else if let Some(asset) = image_asset(&entry_name, entry.path(), parent_path)? {
             images.push(asset);
+        } else if let Some(stem) = entry_name.strip_suffix(".link") {
+            links.push(load_link_stub(&entry.path(), stem, true)?);
         } else {
             let Some(stem) = entry_name.strip_suffix(".md") else {
-                bail!("unexpected file '{entry_name}' in {what}: articles are *.md files");
+                bail!(
+                    "unexpected file '{entry_name}' in {what}: \
+                     articles are *.md files (or *.link references)"
+                );
             };
             children.push(BookChild::Article {
                 article: load_article(&entry.path(), stem, parent_path, Some(number_prefix))?,
             });
         }
     }
+    sort_book_children(&mut children);
+    // Articles and chapters share the book's URL space, so slugs are
+    // checked across both. (Link slugs join the check once resolved.)
+    check_duplicates("item", &children, BookChild::order_label, BookChild::slug)?;
+    Ok((children, links))
+}
+
+/// Appendices come after every numbered entry, whatever their orders.
+fn sort_book_children(children: &mut [BookChild]) {
     children.sort_by(|a, b| {
-        a.order()
-            .cmp(&b.order())
+        (a.appendix(), a.order())
+            .cmp(&(b.appendix(), b.order()))
             .then_with(|| a.slug().cmp(b.slug()))
     });
-    // Articles and chapters share the book's URL space, so slugs are
-    // checked across both.
-    check_duplicates("item", &children, BookChild::order, BookChild::slug)?;
-    Ok(children)
 }
 
 /// Load a `<order>--<slug>.md` article; `stem` is the filename without
@@ -1229,45 +1655,81 @@ fn load_article(
     parent_path: &str,
     number_prefix: Option<&str>,
 ) -> Result<Article> {
-    let Some((order, slug)) = stem.split_once("--") else {
+    let Some((token, slug)) = stem.split_once("--") else {
         bail!("article '{stem}.md' is missing its '<order>--' prefix");
     };
-    let order: u32 = order
-        .parse()
-        .with_context(|| format!("article '{stem}.md' has a non-numeric order prefix"))?;
+    // Appendix (`a<N>--`) entries exist only inside books; a topic
+    // article's order stays plain digits.
+    let entry_name = format!("{stem}.md");
+    let (appendix, order) = match number_prefix {
+        Some(_) => parse_book_order(token, "article", &entry_name)?,
+        None => (
+            false,
+            token.parse().with_context(|| {
+                format!("article '{entry_name}' has a non-numeric order prefix")
+            })?,
+        ),
+    };
     validate_slug(slug).with_context(|| format!("in article '{stem}.md'"))?;
 
     let context = || format!("loading article '{slug}'");
-    let (title, kind, description, related, body) = match number_prefix {
-        Some(_) => {
-            let (frontmatter, body): (BookArticleConfig, _) =
-                read_article(file).with_context(context)?;
-            (frontmatter.title, None, None, frontmatter.related, body)
-        }
-        None => {
-            let (frontmatter, body): (ArticleConfig, _) =
-                read_article(file).with_context(context)?;
-            (
-                frontmatter.title,
-                Some(frontmatter.kind),
-                Some(frontmatter.description),
-                frontmatter.related,
-                body,
-            )
-        }
+    let (title, kind, description, related, inline_refs, updated, minutes, body) =
+        match number_prefix {
+            Some(_) => {
+                let (frontmatter, body): (BookArticleConfig, _) =
+                    read_article(file).with_context(context)?;
+                (
+                    frontmatter.title,
+                    None,
+                    frontmatter.description,
+                    frontmatter.related,
+                    frontmatter.inline_ref,
+                    frontmatter.updated,
+                    frontmatter.reading_minutes,
+                    body,
+                )
+            }
+            None => {
+                let (frontmatter, body): (ArticleConfig, _) =
+                    read_article(file).with_context(context)?;
+                (
+                    frontmatter.title,
+                    Some(frontmatter.kind),
+                    frontmatter.description,
+                    frontmatter.related,
+                    frontmatter.inline_ref,
+                    frontmatter.updated,
+                    frontmatter.reading_minutes,
+                    body,
+                )
+            }
+        };
+    if let Some(updated) = &updated {
+        validate_date(updated).with_context(|| format!("in article '{stem}.md'"))?;
+    }
+    let reading_minutes = minutes.unwrap_or_else(|| reading_minutes(&body));
+    let segment = if appendix {
+        appendix_letters(order)
+    } else {
+        order.to_string()
     };
     Ok(Article {
         slug: slug.to_string(),
         path: format!("{parent_path}/{slug}"),
         order,
-        number: number_prefix.map(|prefix| format!("{prefix}{order}")),
+        number: number_prefix.map(|prefix| format!("{prefix}{segment}")),
+        appendix,
         title,
         kind,
         description,
         related,
+        inline_refs,
+        updated,
+        reading_minutes,
         original: None,
         body,
         source_dir: file.parent().map(Path::to_path_buf).unwrap_or_default(),
+        source_file: file.to_path_buf(),
     })
 }
 
@@ -1276,7 +1738,9 @@ fn load_article(
 /// whole tree has loaded, since targets can live anywhere; targets must
 /// be articles that exist on disk — a link cannot target another link.
 fn resolve_linked_articles(site: &mut Site) -> Result<()> {
-    let index = crate::links::LinkIndex::new(site);
+    // Stubs resolve through the folder-aware index: unlike body links,
+    // a stub may alias a whole topic subfolder.
+    let index = crate::links::LinkIndex::with_folders(site);
     let mut originals: HashMap<String, Article> = HashMap::new();
     for product in &site.products {
         for item in product.items() {
@@ -1313,29 +1777,6 @@ fn resolve_linked_articles(site: &mut Site) -> Result<()> {
         }
     }
 
-    let resolve = |stub: LinkStub, parent_path: &str| -> Result<Article> {
-        let reference = stub.target.trim_start_matches('~');
-        let resolved = index
-            .resolve(reference)
-            .with_context(|| format!("resolving link '{}' in '{parent_path}'", stub.slug))?;
-        let Some(original) = originals.get(&resolved) else {
-            bail!(
-                "link '{}' in '{parent_path}' targets '{}', which is not an article \
-                 (only articles can be linked, and a link cannot target another link)",
-                stub.slug,
-                stub.target
-            );
-        };
-        let mut article = original.clone();
-        article.slug = stub.slug.clone();
-        article.path = format!("{parent_path}/{}", stub.slug);
-        article.order = stub.order;
-        article.title = stub.title;
-        article.number = None;
-        article.original = Some(resolved);
-        Ok(article)
-    };
-
     fn topics_mut(products: &mut [Product]) -> Vec<&mut Topic> {
         fn from_anthology<'a>(anthology: &'a mut Anthology, out: &mut Vec<&'a mut Topic>) {
             for child in &mut anthology.children {
@@ -1371,27 +1812,28 @@ fn resolve_linked_articles(site: &mut Site) -> Result<()> {
         out
     }
 
+    // Pass 1: stubs inside subfolders (always article aliases), so the
+    // folder snapshots taken next are complete.
     for topic in topics_mut(&mut site.products) {
-        for stub in std::mem::take(&mut topic.links) {
-            let article = resolve(stub, &topic.path)?;
-            topic.children.push(TopicChild::Article { article });
-        }
-        topic.children.sort_by(|a, b| {
-            a.order()
-                .cmp(&b.order())
-                .then_with(|| a.slug().cmp(b.slug()))
-        });
-        check_duplicates("item", &topic.children, TopicChild::order, TopicChild::slug)
-            .with_context(|| format!("in topic '{}'", topic.path))?;
         for child in &mut topic.children {
             let TopicChild::Folder { folder } = child else {
                 continue;
             };
-            if folder.links.is_empty() {
-                continue;
-            }
             for stub in std::mem::take(&mut folder.links) {
-                folder.articles.push(resolve(stub, &folder.path)?);
+                let resolved = resolve_stub(&index, &stub, &folder.path)?;
+                let Some(original) = originals.get(&resolved) else {
+                    bail!(
+                        "link '{}' in '{}' targets '{}', which is not an article \
+                         (a subfolder can only link articles, and a link cannot \
+                         target another link)",
+                        stub.slug,
+                        folder.path,
+                        stub.target
+                    );
+                };
+                folder
+                    .articles
+                    .push(alias_article(original, &stub, &folder.path, resolved));
             }
             folder
                 .articles
@@ -1401,19 +1843,377 @@ fn resolve_linked_articles(site: &mut Site) -> Result<()> {
             folder.entry = folder.articles.first().map(|article| article.path.clone());
         }
     }
+
+    // Folder snapshots, for topic-level stubs that alias a whole folder.
+    let mut folders: HashMap<String, TopicFolder> = HashMap::new();
+    for product in &site.products {
+        for item in product.items() {
+            collect_folders(item, &mut folders);
+        }
+    }
+    fn collect_folders(item: &ProductItem, folders: &mut HashMap<String, TopicFolder>) {
+        fn from_topic(topic: &Topic, folders: &mut HashMap<String, TopicFolder>) {
+            for child in &topic.children {
+                if let TopicChild::Folder { folder } = child {
+                    folders.insert(folder.path.clone(), folder.clone());
+                }
+            }
+        }
+        fn from_anthology(anthology: &Anthology, folders: &mut HashMap<String, TopicFolder>) {
+            for item in anthology.items() {
+                match item {
+                    AnthologyItem::Topic { topic } => from_topic(topic, folders),
+                    AnthologyItem::Anthology { anthology } => from_anthology(anthology, folders),
+                    AnthologyItem::Book { .. } => {}
+                }
+            }
+        }
+        match item {
+            ProductItem::Topic { topic } => from_topic(topic, folders),
+            ProductItem::Anthology { anthology } => from_anthology(anthology, folders),
+            ProductItem::Book { .. } => {}
+        }
+    }
+
+    // Pass 2: topic-level stubs — an article alias, or a whole folder
+    // cloned under the topic's own URL space.
+    for topic in topics_mut(&mut site.products) {
+        for stub in std::mem::take(&mut topic.links) {
+            let resolved = resolve_stub(&index, &stub, &topic.path)?;
+            if let Some(original) = originals.get(&resolved) {
+                topic.children.push(TopicChild::Article {
+                    article: alias_article(original, &stub, &topic.path, resolved),
+                });
+            } else if let Some(source) = folders.get(&resolved) {
+                topic.children.push(TopicChild::Folder {
+                    folder: alias_folder(source, &stub, &topic.path),
+                });
+            } else {
+                bail!(
+                    "link '{}' in '{}' targets '{}', which is not an article or a \
+                     topic subfolder (a link cannot target another link)",
+                    stub.slug,
+                    topic.path,
+                    stub.target
+                );
+            }
+        }
+        topic.children.sort_by(|a, b| {
+            a.order()
+                .cmp(&b.order())
+                .then_with(|| a.slug().cmp(b.slug()))
+        });
+        check_duplicates("item", &topic.children, TopicChild::order, TopicChild::slug)
+            .with_context(|| format!("in topic '{}'", topic.path))?;
+    }
+
+    // Pass 3: stubs in books and chapters become numbered alias articles.
+    for book in books_mut(&mut site.products) {
+        let links = std::mem::take(&mut book.links);
+        resolve_book_links(
+            &index,
+            &originals,
+            &mut book.children,
+            links,
+            &book.path,
+            "",
+        )?;
+    }
+
+    fn books_mut(products: &mut [Product]) -> Vec<&mut Book> {
+        fn from_anthology<'a>(anthology: &'a mut Anthology, out: &mut Vec<&'a mut Book>) {
+            for child in &mut anthology.children {
+                let items: &mut dyn Iterator<Item = &mut AnthologyItem> = match child {
+                    AnthologyChild::Item(item) => &mut std::iter::once(item),
+                    AnthologyChild::Shelf(shelf) => &mut shelf.items.iter_mut(),
+                };
+                for item in items {
+                    match item {
+                        AnthologyItem::Book { book } => out.push(book),
+                        AnthologyItem::Anthology { anthology } => from_anthology(anthology, out),
+                        AnthologyItem::Topic { .. } => {}
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for product in products {
+            for child in &mut product.children {
+                let items: &mut dyn Iterator<Item = &mut ProductItem> = match child {
+                    ProductChild::Item(item) => &mut std::iter::once(item),
+                    ProductChild::Shelf(shelf) => &mut shelf.items.iter_mut(),
+                };
+                for item in items {
+                    match item {
+                        ProductItem::Book { book } => out.push(book),
+                        ProductItem::Anthology { anthology } => from_anthology(anthology, &mut out),
+                        ProductItem::Topic { .. } => {}
+                    }
+                }
+            }
+        }
+        out
+    }
+
     Ok(())
 }
 
-/// A topic's, shelf's or chapter's title: derived from the slug unless an
-/// optional trail.toml overrides it.
-fn grouping_title(dir: &Path, slug: &str) -> Result<String> {
-    let config_path = dir.join("trail.toml");
-    if config_path.exists() {
-        let config: TitleConfig = read_toml(&config_path)?;
-        Ok(config.title)
-    } else {
-        Ok(title_from_slug(slug))
+/// Resolve a stub's `~` target to a page (or, for topic-level stubs, a
+/// folder) path, through the folder-aware index.
+fn resolve_stub(
+    index: &crate::links::LinkIndex,
+    stub: &LinkStub,
+    parent_path: &str,
+) -> Result<String> {
+    let reference = stub.target.trim_start_matches('~');
+    index
+        .resolve(reference)
+        .with_context(|| format!("resolving link '{}' in '{parent_path}'", stub.slug))
+}
+
+/// The target article cloned under the link's own slug, URL, and title.
+fn alias_article(
+    original: &Article,
+    stub: &LinkStub,
+    parent_path: &str,
+    resolved: String,
+) -> Article {
+    let mut article = original.clone();
+    article.slug = stub.slug.clone();
+    article.path = format!("{parent_path}/{}", stub.slug);
+    article.order = stub.order;
+    article.title = stub.title.clone();
+    article.number = None;
+    article.appendix = false;
+    // Aliases never claim inline_ref phrases; the original keeps them.
+    article.inline_refs = Vec::new();
+    article.original = Some(resolved);
+    article
+}
+
+/// The target folder cloned under the link's own slug and URL: every
+/// article inside becomes an alias of its original (an article that was
+/// already an alias keeps pointing at its true original).
+fn alias_folder(source: &TopicFolder, stub: &LinkStub, parent_path: &str) -> TopicFolder {
+    let mut folder = source.clone();
+    folder.slug = stub.slug.clone();
+    folder.order = stub.order;
+    folder.title = stub.title.clone();
+    folder.path = format!("{parent_path}/{}", stub.slug);
+    folder.inline_refs = Vec::new();
+    for article in &mut folder.articles {
+        let canonical = article
+            .original
+            .take()
+            .unwrap_or_else(|| article.path.clone());
+        article.original = Some(canonical);
+        article.inline_refs = Vec::new();
+        article.path = format!("{}/{}", folder.path, article.slug);
     }
+    folder.entry = folder.articles.first().map(|article| article.path.clone());
+    folder
+}
+
+/// Resolve one book level's stubs into numbered alias articles, then
+/// recurse into its chapters, re-sorting and re-checking each level and
+/// recomputing chapter entries (a link can become the first entry).
+fn resolve_book_links(
+    index: &crate::links::LinkIndex,
+    originals: &HashMap<String, Article>,
+    children: &mut Vec<BookChild>,
+    links: Vec<LinkStub>,
+    level_path: &str,
+    number_prefix: &str,
+) -> Result<()> {
+    for stub in links {
+        let resolved = resolve_stub(index, &stub, level_path)?;
+        let Some(original) = originals.get(&resolved) else {
+            bail!(
+                "link '{}' in '{level_path}' targets '{}', which is not an article \
+                 (only articles can be linked into a book, and a link cannot \
+                 target another link)",
+                stub.slug,
+                stub.target
+            );
+        };
+        let mut article = alias_article(original, &stub, level_path, resolved);
+        let segment = if stub.appendix {
+            appendix_letters(stub.order)
+        } else {
+            stub.order.to_string()
+        };
+        article.number = Some(format!("{number_prefix}{segment}"));
+        article.appendix = stub.appendix;
+        // Book entries carry no learn taxonomy, aliases included.
+        article.kind = None;
+        article.description = None;
+        children.push(BookChild::Article { article });
+    }
+    for child in children.iter_mut() {
+        if let BookChild::Chapter { chapter } = child {
+            let links = std::mem::take(&mut chapter.links);
+            resolve_book_links(
+                index,
+                originals,
+                &mut chapter.children,
+                links,
+                &chapter.path,
+                &format!("{}.", chapter.number),
+            )?;
+            chapter.entry = match chapter.children.first() {
+                Some(BookChild::Article { article }) => article.path.clone(),
+                Some(BookChild::Chapter { chapter }) => chapter.entry.clone(),
+                None => bail!("chapter '{}' contains no articles", chapter.slug),
+            };
+        }
+    }
+    sort_book_children(children);
+    check_duplicates("item", children, BookChild::order_label, BookChild::slug)
+        .with_context(|| format!("in '{level_path}'"))?;
+    Ok(())
+}
+
+/// Estimated reading time for a body, at a middling 200 words a minute.
+/// Code blocks count as prose: they are read, just differently.
+fn reading_minutes(body: &str) -> u32 {
+    (body.split_whitespace().count() as u32)
+        .div_ceil(200)
+        .max(1)
+}
+
+/// The later of two ISO dates, either of which may be absent.
+fn later(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if a >= b { a } else { b }),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
+}
+
+/// Sum reading times and take the latest `updated:` up the tree, so a
+/// book card can say how long the whole book takes and a topic can show
+/// when anything in it last changed. Shelves are presentation only and
+/// hold no totals of their own.
+fn rollup_product(product: &mut Product) {
+    let (mut minutes, mut updated) = (0, None);
+    for child in &mut product.children {
+        let items: &mut dyn Iterator<Item = &mut ProductItem> = match child {
+            ProductChild::Item(item) => &mut std::iter::once(item),
+            ProductChild::Shelf(shelf) => &mut shelf.items.iter_mut(),
+        };
+        for item in items {
+            let totals = match item {
+                ProductItem::Topic { topic } => rollup_topic(topic),
+                ProductItem::Book { book } => rollup_book(book),
+                ProductItem::Anthology { anthology } => rollup_anthology(anthology),
+            };
+            minutes += totals.0;
+            updated = later(updated, totals.1);
+        }
+    }
+    product.reading_minutes = minutes;
+    product.updated = updated;
+}
+
+fn rollup_anthology(anthology: &mut Anthology) -> (u32, Option<String>) {
+    let (mut minutes, mut updated) = (0, None);
+    for child in &mut anthology.children {
+        let items: &mut dyn Iterator<Item = &mut AnthologyItem> = match child {
+            AnthologyChild::Item(item) => &mut std::iter::once(item),
+            AnthologyChild::Shelf(shelf) => &mut shelf.items.iter_mut(),
+        };
+        for item in items {
+            let totals = match item {
+                AnthologyItem::Topic { topic } => rollup_topic(topic),
+                AnthologyItem::Book { book } => rollup_book(book),
+                AnthologyItem::Anthology { anthology } => rollup_anthology(anthology),
+            };
+            minutes += totals.0;
+            updated = later(updated, totals.1);
+        }
+    }
+    anthology.reading_minutes = minutes;
+    anthology.updated = updated;
+    (minutes, anthology.updated.clone())
+}
+
+fn rollup_topic(topic: &mut Topic) -> (u32, Option<String>) {
+    let (mut minutes, mut updated) = (0, None);
+    for child in &mut topic.children {
+        match child {
+            TopicChild::Article { article } => {
+                minutes += article.reading_minutes;
+                updated = later(updated, article.updated.clone());
+            }
+            TopicChild::Folder { folder } => {
+                let (folder_minutes, folder_updated) = (
+                    folder.articles.iter().map(|a| a.reading_minutes).sum(),
+                    folder
+                        .articles
+                        .iter()
+                        .fold(None, |so_far, a| later(so_far, a.updated.clone())),
+                );
+                folder.reading_minutes = folder_minutes;
+                folder.updated = folder_updated.clone();
+                minutes += folder_minutes;
+                updated = later(updated, folder_updated);
+            }
+        }
+    }
+    topic.reading_minutes = minutes;
+    topic.updated = updated;
+    (minutes, topic.updated.clone())
+}
+
+fn rollup_book(book: &mut Book) -> (u32, Option<String>) {
+    let (minutes, updated) = rollup_book_children(&mut book.children);
+    book.reading_minutes = minutes;
+    book.updated = updated;
+    (minutes, book.updated.clone())
+}
+
+fn rollup_book_children(children: &mut [BookChild]) -> (u32, Option<String>) {
+    let (mut minutes, mut updated) = (0, None);
+    for child in children {
+        match child {
+            BookChild::Article { article } => {
+                minutes += article.reading_minutes;
+                updated = later(updated, article.updated.clone());
+            }
+            BookChild::Chapter { chapter } => {
+                let (chapter_minutes, chapter_updated) =
+                    rollup_book_children(&mut chapter.children);
+                chapter.reading_minutes = chapter_minutes;
+                chapter.updated = chapter_updated.clone();
+                minutes += chapter_minutes;
+                updated = later(updated, chapter_updated);
+            }
+        }
+    }
+    (minutes, updated)
+}
+
+/// What a topic's, shelf's, subfolder's or chapter's optional trail.toml
+/// provides: a title (derived from the slug unless overridden) and any
+/// inline_ref phrase claims.
+struct GroupingConfig {
+    title: String,
+    inline_refs: Vec<String>,
+}
+
+fn grouping_config(dir: &Path, slug: &str) -> Result<GroupingConfig> {
+    let config_path = dir.join("trail.toml");
+    if !config_path.exists() {
+        return Ok(GroupingConfig {
+            title: title_from_slug(slug),
+            inline_refs: Vec::new(),
+        });
+    }
+    let config: TitleConfig = read_toml(&config_path)?;
+    Ok(GroupingConfig {
+        title: config.title.unwrap_or_else(|| title_from_slug(slug)),
+        inline_refs: config.inline_ref,
+    })
 }
 
 /// "the-two-gates" → "The Two Gates".
@@ -1468,10 +2268,10 @@ fn parse_grouping_name(name: &str) -> Result<GroupingName> {
 }
 
 /// Items must already be sorted by order.
-fn check_duplicates<T>(
+fn check_duplicates<T, K: PartialEq + std::fmt::Display>(
     what: &str,
     items: &[T],
-    order: impl Fn(&T) -> u32,
+    order: impl Fn(&T) -> K,
     slug: impl Fn(&T) -> &str,
 ) -> Result<()> {
     for pair in items.windows(2) {
@@ -1537,6 +2337,26 @@ fn read_dir_sorted(dir: &Path) -> Result<Vec<fs::DirEntry>> {
 fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// `updated:` dates are ISO (YYYY-MM-DD) so they sort, roll up, and
+/// feed sitemap lastmod — unlike trail 1's free-form string.
+fn validate_date(date: &str) -> Result<()> {
+    let parts: Vec<&str> = date.split('-').collect();
+    let valid = parts.len() == 3
+        && parts[0].len() == 4
+        && parts[1].len() == 2
+        && parts[2].len() == 2
+        && parts
+            .iter()
+            .all(|part| part.bytes().all(|b| b.is_ascii_digit()))
+        && (1..=12).contains(&parts[1].parse::<u32>().unwrap_or(0))
+        && (1..=31).contains(&parts[2].parse::<u32>().unwrap_or(0));
+    ensure!(
+        valid,
+        "updated: '{date}' is not an ISO date (expected YYYY-MM-DD)"
+    );
+    Ok(())
 }
 
 fn validate_slug(slug: &str) -> Result<()> {
@@ -1709,17 +2529,25 @@ description = "anthology description"
     fs::create_dir_all(manual.join("3--appendix")).unwrap();
     fs::write(
         manual.join("trail.toml"),
-        "title = \"Alpha Manual\"\nshort = \"AM\"\ndescription = \"book description\"\n",
+        "title = \"Alpha Manual\"\nshort = \"AM\"\ndescription = \"book description\"\n\
+         inline_ref = [\"Alpha Manual\"]\n",
     )
     .unwrap();
     fs::write(
         manual.join("1--intro.md"),
-        article("intro") + "\n![Layout](layout.png)\n",
+        article("intro").replace(
+            "---\n\nBody",
+            "reading_minutes: 30\nupdated: 2026-05-01\n---\n\nBody",
+        ) + "\n![Layout](layout.png)\n\n\
+             See [install](~alpha/install#first-section-of-install) and \
+             [b1](~alpha/b1).\n",
     )
     .unwrap();
     fs::write(
         manual.join("2--setup/1--install.md"),
-        article("install") + "\n![Layout again](../layout.png)\n",
+        article("install")
+            + "\n![Layout again](../layout.png)\n\nSee §2.2.1 and §A for more. \
+               External citations like §9.9 stay plain.\n",
     )
     .unwrap();
     fs::write(
@@ -1733,6 +2561,17 @@ description = "anthology description"
     )
     .unwrap();
     fs::write(manual.join("3--appendix/1--tables.md"), article("tables")).unwrap();
+    // Real appendices: an `a<N>--` article and chapter, lettered and
+    // sorted after every numbered entry despite their low orders. They
+    // nest too — a chapter's own appendix closes out the chapter ("2.A").
+    fs::write(manual.join("a1--glossary.md"), article("glossary")).unwrap();
+    fs::create_dir_all(manual.join("a2--history")).unwrap();
+    fs::write(manual.join("a2--history/1--old.md"), article("old")).unwrap();
+    fs::write(
+        manual.join("2--setup/a1--sidenotes.md"),
+        article("sidenotes"),
+    )
+    .unwrap();
 
     let guide = root.join("alpha.product/6--tools.shelf/3--field-guide.book");
     fs::create_dir_all(&guide).unwrap();
@@ -1803,6 +2642,25 @@ description = "anthology description"
     fs::write(
         extra.join("2--linked.link"),
         "target = \"~alpha/x1\"\ntitle = \"Linked X1\"\n",
+    )
+    .unwrap();
+
+    // Inline references: the manual claims "Alpha Manual" (its trail.toml
+    // above), x2 claims "X-Two" in frontmatter. x1's prose exercises the
+    // phrase and phrase-§ forms; x2's exercises self-suppression, RFC
+    // keywords, and code immunity; install (in the manual) uses bare §.
+    fs::write(
+        root.join("alpha.product/5--loose.topic/1--x1.md"),
+        "---\ntitle: Article x1\ntype: concept\ndescription: about x1\nrelated:\n  - alpha/b1\n  - alpha/manual\n---\n\n\
+         Body of x1.\n\nX-Two expands on this, and the Alpha Manual §2.2.1 tunes it.\n\n\
+         ## First section of x1\n\nWords.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("alpha.product/5--loose.topic/2--x2.md"),
+        "---\ntitle: Article x2\ntype: concept\ndescription: about x2\nupdated: 2026-03-15\nrelated:\n  - alpha/b1\n  - alpha/manual\ninline_ref:\n  - X-Two\n---\n\n\
+         Body of x2.\n\nX-Two stays plain here. You MUST NOT skip the Alpha Manual,\nthough you MAY skim `Alpha Manual` in code.\n\n\
+         ## First section of x2\n\nWords.\n",
     )
     .unwrap();
 }
@@ -2116,7 +2974,11 @@ mod tests {
             [
                 ("article", "intro"),
                 ("chapter", "setup"),
-                ("chapter", "appendix")
+                ("chapter", "appendix"),
+                // `a<N>--` appendices sort after every numbered entry,
+                // whatever their orders.
+                ("article", "glossary"),
+                ("chapter", "history"),
             ]
         );
 
@@ -2147,12 +3009,240 @@ mod tests {
             "trail.toml overrides the title"
         );
 
+        // Appendix entries are lettered: a1 → A, a2 → B, children B.1.
+        let BookChild::Article { article: glossary } = &manual.children[3] else {
+            panic!("expected the glossary appendix");
+        };
+        assert_eq!(glossary.number.as_deref(), Some("A"));
+        // A chapter's own appendix closes out the chapter, lettered
+        // within it: setup (2) ends with "2.A".
+        let BookChild::Article { article: sidenotes } = setup.children.last().unwrap() else {
+            panic!("expected the sidenotes appendix");
+        };
+        assert_eq!(sidenotes.number.as_deref(), Some("2.A"));
+        assert!(sidenotes.appendix);
+        let BookChild::Chapter { chapter: history } = &manual.children[4] else {
+            panic!("expected the history appendix chapter");
+        };
+        assert_eq!(history.number, "B");
+        let BookChild::Article { article: old } = &history.children[0] else {
+            panic!("expected the old article");
+        };
+        assert_eq!(old.number.as_deref(), Some("B.1"));
+
         let guide = alpha(&site)
             .books()
             .find(|b| b.slug == "field-guide")
             .unwrap();
         assert_eq!(guide.short, None, "short is optional");
         assert_eq!(guide.path, "/alpha/field-guide", "shelves stay invisible");
+    }
+
+    #[test]
+    fn appendix_orders_are_books_only_and_validated() {
+        // a0 is malformed — appendix orders start at a1.
+        let dir = fixture();
+        fs::write(
+            dir.path().join("alpha.product/7--manual.book/a0--bad.md"),
+            "---\ntitle: Bad\n---\n\nBody.\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("appendix orders start at 'a1'"));
+
+        // Topics don't have appendices; the prefix stays digits-only there.
+        let dir = fixture();
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/a1--bad.md"),
+            "---\ntitle: Bad\ntype: concept\ndescription: d\n---\n\nBody.\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("non-numeric order prefix"));
+
+        // Sharing an appendix order is a collision like any other.
+        let dir = fixture();
+        fs::create_dir_all(dir.path().join("alpha.product/7--manual.book/a1--dupe")).unwrap();
+        fs::write(
+            dir.path()
+                .join("alpha.product/7--manual.book/a1--dupe/1--x.md"),
+            "---\ntitle: X\n---\n\nBody.\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("share order a1"));
+    }
+
+    #[test]
+    fn links_alias_whole_folders_into_other_topics() {
+        let dir = fixture();
+        fs::write(
+            dir.path()
+                .join("alpha.product/5--loose.topic/30--fieldnotes.link"),
+            "target = \"~alpha/extra\"\ntitle = \"Field Notes\"\n",
+        )
+        .unwrap();
+        let site = load(dir.path()).unwrap();
+
+        let loose = alpha(&site)
+            .items()
+            .find_map(|item| match item {
+                ProductItem::Topic { topic } if topic.slug == "loose" => Some(topic),
+                _ => None,
+            })
+            .unwrap();
+        let folder = loose
+            .children
+            .iter()
+            .find_map(|child| match child {
+                TopicChild::Folder { folder } if folder.slug == "fieldnotes" => Some(folder),
+                _ => None,
+            })
+            .expect("the folder alias");
+        assert_eq!(folder.title, "Field Notes");
+        assert_eq!(folder.path, "/alpha/loose/fieldnotes");
+        assert_eq!(folder.entry.as_deref(), Some("/alpha/loose/fieldnotes/c1"));
+        // Every article inside is an alias of its original — and an
+        // article that was already an alias keeps its true original.
+        let c1 = &folder.articles[0];
+        assert_eq!(c1.path, "/alpha/loose/fieldnotes/c1");
+        assert_eq!(c1.original.as_deref(), Some("/alpha/acorn/narrow/extra/c1"));
+        let linked = &folder.articles[1];
+        assert_eq!(linked.path, "/alpha/loose/fieldnotes/linked");
+        assert_eq!(linked.original.as_deref(), Some("/alpha/loose/x1"));
+    }
+
+    #[test]
+    fn links_alias_articles_into_books_with_numbers() {
+        let dir = fixture();
+        let manual = dir.path().join("alpha.product/7--manual.book");
+        fs::write(manual.join("5--linked.link"), "target = \"~alpha/x2\"\n").unwrap();
+        fs::write(
+            manual.join("2--setup/3--sub.link"),
+            "target = \"~alpha/x2\"\ntitle = \"Sub X2\"\n",
+        )
+        .unwrap();
+        fs::write(manual.join("a3--applink.link"), "target = \"~alpha/x2\"\n").unwrap();
+        // A chapter holding only a link gets its entry at resolution.
+        fs::create_dir_all(manual.join("4--linkonly")).unwrap();
+        fs::write(
+            manual.join("4--linkonly/1--first.link"),
+            "target = \"~alpha/x2\"\n",
+        )
+        .unwrap();
+        let site = load(dir.path()).unwrap();
+
+        let manual = alpha(&site).books().find(|b| b.slug == "manual").unwrap();
+        let slugs: Vec<_> = manual
+            .children
+            .iter()
+            .map(|child| child.slug().to_string())
+            .collect();
+        assert_eq!(
+            slugs,
+            [
+                "intro", "setup", "appendix", "linkonly", "linked", "glossary", "history",
+                "applink"
+            ]
+        );
+        let BookChild::Article { article: linked } = &manual.children[4] else {
+            panic!("expected the linked alias");
+        };
+        assert_eq!(linked.number.as_deref(), Some("5"));
+        assert_eq!(linked.title, "Linked", "derived from the link slug");
+        assert_eq!(linked.original.as_deref(), Some("/alpha/loose/x2"));
+        assert_eq!(linked.kind, None, "aliases take on book styling");
+        assert_eq!(linked.description, None);
+        // Appendix links letter like appendix articles: a1, a2, a3 → A, B, C.
+        let BookChild::Article { article: applink } = manual.children.last().unwrap() else {
+            panic!("expected the applink alias");
+        };
+        assert_eq!(applink.number.as_deref(), Some("C"));
+        assert!(applink.appendix);
+        // Chapter-level links number within the chapter.
+        let BookChild::Chapter { chapter: setup } = &manual.children[1] else {
+            panic!("expected the setup chapter");
+        };
+        let BookChild::Article { article: sub } = &setup.children[2] else {
+            panic!("expected the sub alias");
+        };
+        assert_eq!(sub.number.as_deref(), Some("2.3"));
+        assert_eq!(sub.title, "Sub X2");
+        // The link-only chapter's entry lands on its resolved alias.
+        let BookChild::Chapter { chapter: linkonly } = &manual.children[3] else {
+            panic!("expected the linkonly chapter");
+        };
+        assert_eq!(linkonly.entry, "/alpha/manual/linkonly/first");
+    }
+
+    #[test]
+    fn folder_targets_are_rejected_below_topic_level() {
+        // Inside a subfolder, only articles can be linked.
+        let dir = fixture();
+        fs::write(
+            dir.path()
+                .join("alpha.product/2--acorn.antho/200--narrow.topic/5--extra/9--bad.link"),
+            "target = \"~alpha/hollow\"\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("a subfolder can only link articles"),
+            "got: {err:#}"
+        );
+
+        // Books take article links only.
+        let dir = fixture();
+        fs::write(
+            dir.path().join("alpha.product/7--manual.book/5--bad.link"),
+            "target = \"~alpha/hollow\"\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("only articles can be linked into a book"),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn theming_config_is_validated() {
+        let add_config = |dir: &Path, extra: &str| {
+            let config = fs::read_to_string(dir.join("trail.toml")).unwrap();
+            fs::write(dir.join("trail.toml"), format!("{extra}\n{config}")).unwrap();
+        };
+
+        let dir = fixture();
+        add_config(dir.path(), "accent = \"blue\"");
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("not a #rrggbb hex color"));
+
+        let dir = fixture();
+        add_config(dir.path(), "accent_dark = \"#112233\"");
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("accent_dark without accent"));
+
+        let dir = fixture();
+        add_config(dir.path(), "custom_css = \"custom.css\"");
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("does not exist in the site root"));
+
+        // With the file present it loads, and the root scan tolerates
+        // the file that would otherwise be an unexpected entry.
+        let dir = fixture();
+        add_config(dir.path(), "custom_css = \"custom.css\"");
+        fs::write(dir.path().join("custom.css"), "body { color: red }").unwrap();
+        let site = load(dir.path()).unwrap();
+        assert!(site.custom_css.as_ref().unwrap().ends_with("custom.css"));
+    }
+
+    #[test]
+    fn appendix_letters_run_bijectively_past_z() {
+        assert_eq!(appendix_letters(1), "A");
+        assert_eq!(appendix_letters(26), "Z");
+        assert_eq!(appendix_letters(27), "AA");
+        assert_eq!(appendix_letters(52), "AZ");
+        assert_eq!(appendix_letters(53), "BA");
     }
 
     #[test]
@@ -2175,7 +3265,10 @@ mod tests {
                 (vec![], "intro"),
                 (vec!["setup"], "install"),
                 (vec!["setup", "advanced"], "tuning"),
+                (vec!["setup"], "sidenotes"),
                 (vec!["appendix"], "tables"),
+                (vec![], "glossary"),
+                (vec!["history"], "old"),
             ]
         );
     }
@@ -2288,6 +3381,87 @@ mod tests {
     }
 
     #[test]
+    fn reading_times_and_dates_roll_up_the_tree() {
+        let dir = fixture();
+        let site = load(dir.path()).unwrap();
+        let alpha = alpha(&site);
+
+        // An article's own time comes from its word count; frontmatter
+        // can override it outright.
+        let loose = alpha
+            .items()
+            .find_map(|item| match item {
+                ProductItem::Topic { topic } if topic.slug == "loose" => Some(topic),
+                _ => None,
+            })
+            .unwrap();
+        assert!(loose.pages().all(|article| article.reading_minutes >= 1));
+        let manual = alpha.books().find(|book| book.slug == "manual").unwrap();
+        let intro = manual
+            .articles()
+            .into_iter()
+            .find(|(_, article)| article.slug == "intro")
+            .unwrap()
+            .1;
+        assert_eq!(intro.reading_minutes, 30);
+        assert_eq!(intro.updated.as_deref(), Some("2026-05-01"));
+
+        // Containers add their children up...
+        assert_eq!(
+            loose.reading_minutes,
+            loose.pages().map(|a| a.reading_minutes).sum::<u32>()
+        );
+        assert_eq!(
+            manual.reading_minutes,
+            manual
+                .articles()
+                .into_iter()
+                .map(|(_, a)| a.reading_minutes)
+                .sum::<u32>()
+        );
+        assert!(manual.reading_minutes >= 30);
+        assert_eq!(
+            alpha.reading_minutes,
+            alpha
+                .items()
+                .map(|item| match item {
+                    ProductItem::Topic { topic } => topic.reading_minutes,
+                    ProductItem::Book { book } => book.reading_minutes,
+                    ProductItem::Anthology { anthology } => anthology.reading_minutes,
+                })
+                .sum::<u32>()
+        );
+
+        // ...and take the latest date anywhere beneath them.
+        assert_eq!(loose.updated.as_deref(), Some("2026-03-15"));
+        assert_eq!(manual.updated.as_deref(), Some("2026-05-01"));
+        assert_eq!(alpha.updated.as_deref(), Some("2026-05-01"));
+        // A topic with no dated articles has no date.
+        let narrow_has_dates = alpha
+            .anthologies()
+            .flat_map(|anthology| anthology.topics())
+            .any(|topic| topic.updated.is_some());
+        assert!(!narrow_has_dates);
+    }
+
+    #[test]
+    fn rejects_malformed_updated_dates() {
+        for bad in ["March 2026", "2026-3-15", "2026-13-01", "20260315"] {
+            let dir = fixture();
+            fs::write(
+                dir.path().join("alpha.product/5--loose.topic/1--x1.md"),
+                format!(
+                    "---\ntitle: X\ntype: concept\ndescription: d\nupdated: {bad}\n---\n\nBody.\n"
+                ),
+            )
+            .unwrap();
+            // `{:#}` so the assertion sees the whole context chain.
+            let error = format!("{:#}", load(dir.path()).unwrap_err());
+            assert!(error.contains("not an ISO date"), "{bad} was accepted");
+        }
+    }
+
+    #[test]
     fn rejects_bad_link_targets() {
         let dir = fixture();
         fs::write(
@@ -2306,7 +3480,10 @@ mod tests {
         )
         .unwrap();
         let err = load(dir.path()).unwrap_err();
-        assert!(format!("{err:#}").contains("only articles can be linked"));
+        assert!(
+            format!("{err:#}").contains("is not an article or a topic subfolder"),
+            "got: {err:#}"
+        );
 
         let dir = fixture();
         fs::write(
