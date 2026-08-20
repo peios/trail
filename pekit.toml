@@ -1,0 +1,13 @@
+out_dir = "out"
+
+[build]
+command = 'cargo build --release --locked && install -m 0755 target/release/trail "$PEKIT_OUT/trail"'
+
+[test]
+command = "cargo test --locked"
+
+[install]
+command = "cargo install --path . --locked"
+
+[clean]
+command = "cargo clean"

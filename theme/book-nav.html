@@ -1,0 +1,22 @@
+{#- The recursive sidebar tree over a book's children (articles and
+    chapters): each chapter is a collapsible <details>, open along the
+    trail to the current page. Section numbers are the model's, derived
+    from the authored `NN--` orders (1--x/2--y is "1.2"). Chapter links
+    open the chapter's first article, like topic links. -#}
+
+{% macro nav(children, current) %}
+<ul class="sidebar-list">
+  {%- for child in children %}
+  {%- if child.kind == "chapter" %}
+  <li class="sidebar-chapter">
+    <details{% if current is startingwith(child.path ~ "/") %} open{% endif %}>
+      <summary><a href="{{ child.entry | safe }}"><span class="section-number">{{ child.number }}</span>{{ child.title }}</a></summary>
+      {{ nav(child.children, current) }}
+    </details>
+  </li>
+  {%- else %}
+  <li><a href="{{ child.path | safe }}"{% if child.path == current %} class="current" aria-current="page"{% endif %}><span class="section-number">{{ child.number }}</span>{{ child.title }}</a></li>
+  {%- endif %}
+  {%- endfor %}
+</ul>
+{% endmacro %}

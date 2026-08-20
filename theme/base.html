@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ site.sitename }}{% endblock %}</title>
+<link rel="stylesheet" href="/assets/style.css">
+{%- if md_path %}
+<link rel="alternate" type="text/markdown" href="{{ md_path | safe }}">
+{%- endif %}
+</head>
+<body>
+
+<header class="site-header">
+  <a class="wordmark" href="/">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
+  <nav class="site-nav">
+    <details class="nav-dropdown">
+      <summary>Products</summary>
+      <div class="menu">
+        {%- for product in products %}
+        <a class="menu-item" href="{{ product.path | safe }}" style="--pc: {{ product.color }}"><span class="tile tile-menu">{{ product.monogram }}</span>{{ product.title }}</a>
+        {%- endfor %}
+      </div>
+    </details>
+  </nav>
+  <button class="search search-small" type="button" data-search-open>
+    <span class="search-placeholder">Search…</span>
+    <kbd data-search-kbd>⌘K</kbd>
+  </button>
+</header>
+
+<main>
+{% block content %}{% endblock %}
+</main>
+
+<footer class="site-footer">
+  <p>{{ site.footer }}</p>
+  {%- if site.built_by_trail %}
+  <p class="colophon">Built with Trail.</p>
+  {%- endif %}
+</footer>
+
+{%- if has_mermaid %}
+<script src="/assets/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default",
+  });
+</script>
+{%- endif %}
+
+<dialog class="search-modal" id="search-modal" aria-label="Search {{ site.sitename }}">
+  <div class="search-panel">
+    <div class="search-box">
+      <input type="search" placeholder="Search {{ site.sitename }}…" autocomplete="off" aria-label="Search query">
+      <button class="search-close" type="button" data-search-close aria-label="Close search"><kbd>Esc</kbd></button>
+    </div>
+    <ul class="search-results" role="listbox"></ul>
+    <p class="search-status" role="status"></p>
+  </div>
+</dialog>
+<script src="/assets/search.js" defer></script>
+
+{%- if live_reload %}
+<script>
+  (() => {
+    let current = null;
+    new EventSource("/~trail/reload").onmessage = (event) => {
+      if (current === null) current = event.data;
+      else if (event.data !== current) location.reload();
+    };
+  })();
+</script>
+{%- endif %}
+</body>
+</html>

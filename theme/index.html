@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <h1>{{ site.title }}</h1>
+  <p class="lede">{{ site.description }}</p>
+  <button class="search search-hero" type="button" data-search-open>
+    <span class="search-placeholder">Search {{ site.sitename }}…</span>
+    <kbd data-search-kbd>⌘K</kbd>
+  </button>
+</section>
+
+<section class="products" id="products">
+  <h2>Products</h2>
+  <ul class="card-grid">
+    {%- for product in featured %}
+    <li><a class="card" href="{{ product.path | safe }}" style="--pc: {{ product.color }}">
+      <span class="tile">{{ product.monogram }}</span>
+      <h3>{{ product.title }}</h3>
+      <p>{{ product.description }}</p>
+    </a></li>
+    {%- endfor %}
+  </ul>
+</section>
+{% endblock %}

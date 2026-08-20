@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block title %}{{ article.title }} — {{ site.sitename }}{% endblock %}
+
+{% block content %}
+<div class="article-layout" style="--pc: {{ product.color }}">
+  <aside class="sidebar">
+    {%- block sidebar %}
+    <p class="sidebar-topic"><a href="{{ topic.entry | safe }}">{{ topic.title }}</a></p>
+    <ul class="sidebar-list">
+      {%- for child in topic.children %}
+      {%- if child.kind == "folder" %}
+      {%- if child.entry %}
+      <li class="sidebar-folder">
+        <details{% if article.path is startingwith(child.path ~ "/") %} open{% endif %}>
+          <summary><a href="{{ child.entry | safe }}">{{ child.title }}</a></summary>
+          <ul class="sidebar-list">
+            {%- for entry in child.articles %}
+            <li><a href="{{ entry.path | safe }}"{% if entry.path == article.path %} class="current" aria-current="page"{% endif %}>{{ entry.title }}</a></li>
+            {%- endfor %}
+          </ul>
+        </details>
+      </li>
+      {%- endif %}
+      {%- else %}
+      <li><a href="{{ child.path | safe }}"{% if child.path == article.path %} class="current" aria-current="page"{% endif %}>{{ child.title }}</a></li>
+      {%- endif %}
+      {%- endfor %}
+    </ul>
+    {%- endblock %}
+  </aside>
+
+  <article class="article-body" data-pagefind-body data-pagefind-meta="crumbs:{% block search_crumbs %}{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %} / {{ topic.title }}{% if folder %} / {{ folder.title }}{% endif %}{% endblock %}">
+    <nav class="crumbs" data-pagefind-ignore>
+      {%- block crumbs %}
+      <a href="{{ product.path | safe }}">{{ product.title }}</a>
+      {%- for ancestor in anthologies %}
+      <span>/</span>
+      <a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+      {%- endfor %}
+      <span>/</span>
+      <a href="{{ topic.entry | safe }}">{{ topic.title }}</a>
+      {%- if folder %}
+      <span>/</span>
+      <a href="{{ folder.entry | safe }}">{{ folder.title }}</a>
+      {%- endif %}
+      {%- endblock %}
+    </nav>
+    {% block heading %}<h1>{{ article.title }}</h1>{% endblock %}
+    {{ content | safe }}
+  </article>
+
+  <aside class="toc">
+    {%- if toc %}
+    <p class="toc-label">On this page</p>
+    <ul>
+      {%- for entry in toc %}
+      <li class="toc-{{ entry.level }}"><a href="#{{ entry.id }}">{% if entry.number %}<span class="section-number">{{ entry.number }}</span>{% endif %}{{ entry.title }}</a></li>
+      {%- endfor %}
+    </ul>
+    {%- endif %}
+  </aside>
+</div>
+
+{%- if toc %}
+<script>
+  // Scroll-spy: highlight the ToC entry for the section in view.
+  (() => {
+    const links = Array.from(document.querySelectorAll(".toc a"));
+    const headings = links
+      .map((link) => document.getElementById(link.hash.slice(1)))
+      .filter(Boolean);
+    if (headings.length === 0) return;
+
+    let activeLink = null;
+    const update = () => {
+      let current = headings[0];
+      for (const heading of headings) {
+        if (heading.getBoundingClientRect().top <= 96) current = heading;
+      }
+      if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 2) {
+        current = headings[headings.length - 1];
+      }
+      const link = links.find((l) => l.hash === "#" + current.id) || null;
+      if (link === activeLink) return;
+      if (activeLink) {
+        activeLink.classList.remove("active");
+        activeLink.removeAttribute("aria-current");
+      }
+      activeLink = link;
+      if (activeLink) {
+        activeLink.classList.add("active");
+        activeLink.setAttribute("aria-current", "location");
+      }
+    };
+
+    let scheduled = false;
+    addEventListener(
+      "scroll",
+      () => {
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(() => {
+          scheduled = false;
+          update();
+        });
+      },
+      { passive: true }
+    );
+    addEventListener("resize", update, { passive: true });
+    update();
+  })();
+</script>
+{%- endif %}
+
+{% endblock %}

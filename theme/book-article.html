@@ -1,0 +1,25 @@
+{% extends "article.html" %}
+{% from "book-nav.html" import nav %}
+
+{% block sidebar %}
+<p class="sidebar-topic"><a href="{{ book.path | safe }}">{{ book.short or book.title }}</a></p>
+{{ nav(book.children, article.path) }}
+{% endblock %}
+
+{% block search_crumbs %}{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %} / {{ book.short or book.title }}{% for chapter in chapters %} / {{ chapter.title }}{% endfor %}{% endblock %}
+
+{% block heading %}<h1><span class="heading-number">{{ article.number }}</span> {{ article.title }}</h1>{% endblock %}
+
+{% block crumbs %}
+<a href="{{ product.path | safe }}">{{ product.title }}</a>
+{%- for ancestor in anthologies %}
+<span>/</span>
+<a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+{%- endfor %}
+<span>/</span>
+<a href="{{ book.path | safe }}">{{ book.short or book.title }}</a>
+{%- for chapter in chapters %}
+<span>/</span>
+<a href="{{ chapter.entry | safe }}">{{ chapter.title }}</a>
+{%- endfor %}
+{% endblock %}

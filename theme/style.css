@@ -1,0 +1,902 @@
+/* Peios Learn — front page.
+   Light theme tokens on :root; dark redefines them under prefers-color-scheme.
+   Product cards carry a per-card --pc (the product's hex color); tiles and
+   hover accents derive their tints from it with color-mix, so one hex adapts
+   to both themes. */
+
+@font-face {
+  font-family: "Inter";
+  src: url("/assets/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/assets/fonts/SpaceGroteskVariable.woff2") format("woff2");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --bg: #f6f7f9;
+  --surface: rgba(255, 255, 255, 0.72);
+  --text: #15171c;
+  --text-muted: #5c6470;
+  --border: rgba(21, 23, 28, 0.09);
+  --border-strong: rgba(21, 23, 28, 0.18);
+  --accent: #635bff;
+  --glow: rgba(99, 91, 255, 0.10);
+  --headline: linear-gradient(180deg, #15171c 55%, #5c6470);
+  --tile-mix: 10%;
+  --tile-fg-mix: 62%;
+  --card-shadow: 0 8px 24px rgba(21, 23, 28, 0.07);
+  --menu-bg: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0c10;
+    --surface: rgba(255, 255, 255, 0.028);
+    --text: #eceef2;
+    --text-muted: #99a3b3;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --accent: #8b7bff;
+    --glow: rgba(139, 123, 255, 0.13);
+    --headline: linear-gradient(180deg, #ffffff 55%, #9aa4b4);
+    --tile-mix: 15%;
+    --tile-fg-mix: 80%;
+    --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    --menu-bg: #12151b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.55;
+}
+
+/* Ambient glow behind the hero. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(42rem 26rem at 50% -6rem, var(--glow), transparent 70%);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1, h2, h3 { line-height: 1.15; margin: 0; }
+
+/* Display face for brand and titles; body stays in Inter. */
+.wordmark, .hero h1, .card h3 {
+  font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
+}
+
+/* ---- Header ------------------------------------------------------------- */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.6rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.wordmark {
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  white-space: nowrap;
+}
+.wordmark span { color: var(--accent); }
+.wordmark:hover { text-decoration: none; }
+
+.site-nav {
+  display: flex;
+  gap: 1.2rem;
+  flex: 1;
+}
+
+/* Product switcher — a <details> so it works without JavaScript. */
+
+.nav-dropdown { position: relative; }
+
+.nav-dropdown summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+.nav-dropdown summary::-webkit-details-marker { display: none; }
+.nav-dropdown summary:hover,
+.nav-dropdown[open] summary { color: var(--text); }
+
+.nav-dropdown summary::after {
+  content: "";
+  width: 0.4em;
+  height: 0.4em;
+  margin-top: -0.2em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.nav-dropdown[open] summary::after {
+  transform: rotate(225deg);
+  margin-top: 0.2em;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 0.75rem);
+  left: -0.6rem;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(11rem, max-content));
+  gap: 0.15rem 1rem;
+  padding: 0.45rem;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+.menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  text-decoration: none;
+}
+
+.tile-menu {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 6px;
+  font-size: 0.62rem;
+  margin: 0;
+}
+
+/* ---- Search ------------------------------------------------------------- */
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: border-color 0.15s ease;
+}
+.search:hover { border-color: var(--border-strong); }
+.search:focus-visible {
+  border-color: var(--accent);
+  outline: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.search-placeholder {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.search kbd {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.1rem 0.35rem;
+  white-space: nowrap;
+}
+
+.search-small {
+  width: 13.5rem;
+  padding: 0.32rem 0.6rem 0.32rem 0.9rem;
+  font-size: 0.88rem;
+}
+
+.search-hero {
+  width: 100%;
+  max-width: 33rem;
+  margin: 2rem auto 0;
+  padding: 0.65rem 0.8rem 0.65rem 1.15rem;
+  font-size: 1rem;
+  box-shadow: var(--card-shadow);
+}
+
+/* ---- Search modal --------------------------------------------------------- */
+
+.search-modal {
+  width: min(38rem, calc(100vw - 2rem));
+  margin: 10vh auto auto;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--menu-bg);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+}
+.search-modal::backdrop {
+  background: rgba(10, 12, 16, 0.45);
+}
+
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: min(28rem, 70vh);
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.7rem 0;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  background: none;
+  border: none;
+  outline: none;
+}
+.search-box input::placeholder { color: var(--text-muted); }
+
+.search-close {
+  padding: 0;
+  font: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.search-close kbd {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.1rem 0.35rem;
+}
+
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem;
+  overflow-y: auto;
+}
+.search-results:empty { padding: 0; }
+.search-results a {
+  display: block;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  color: inherit;
+}
+.search-results a:hover { text-decoration: none; }
+.search-results li[aria-selected="true"] a {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.result-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+.result-crumbs {
+  margin: 0.1rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+.result-excerpt {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.result-excerpt mark {
+  background: none;
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+  font-weight: 600;
+}
+
+.search-status {
+  margin: 0;
+  padding: 0.55rem 1.1rem 0.7rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.search-status:empty { display: none; }
+
+/* ---- Print pages (single-page unit views) --------------------------------- */
+
+.print-page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2.25rem 1.5rem 4.5rem;
+}
+
+.print-header {
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.print-header h1 {
+  font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.print-note {
+  margin: 0.8rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.print-article {
+  padding-top: 2.5rem;
+}
+.print-article + .print-article {
+  margin-top: 2.5rem;
+  border-top: 1px solid var(--border);
+}
+.print-article > header h2 {
+  font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.print-crumbs {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+@media print {
+  .site-header, .site-footer, .search-modal, .print-note { display: none; }
+}
+
+/* ---- Hero --------------------------------------------------------------- */
+
+.hero {
+  position: relative;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 5.5rem 1.5rem 4rem;
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: clamp(2.4rem, 6vw, 3.4rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: var(--headline);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.lede {
+  max-width: 38rem;
+  margin: 1.1rem auto 0;
+  font-size: 1.08rem;
+  color: var(--text-muted);
+}
+
+/* ---- Product & anthology page heroes --------------------------------------- */
+
+.tile-hero {
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 12px;
+  font-size: 1.15rem;
+  margin-bottom: 1.1rem;
+}
+
+.crumb {
+  display: inline-block;
+  margin-bottom: 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.crumb:hover { color: var(--text); text-decoration: none; }
+
+.hero-crumbs {
+  justify-content: center;
+  margin-bottom: 0.9rem;
+}
+
+.anthology-grid {
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+}
+
+/* ---- Topic cards --------------------------------------------------------- */
+
+.topic-card h3 a { color: inherit; }
+.topic-card h3 a:hover {
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  text-decoration: none;
+}
+
+.article-list {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+}
+.article-list li {
+  border-top: 1px solid var(--border);
+  padding: 0.32rem 0;
+  font-size: 0.88rem;
+}
+.article-list a { color: var(--text-muted); }
+.article-list a:hover {
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  text-decoration: none;
+}
+
+.see-all {
+  display: inline-block;
+  margin-top: 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.see-all::after { content: " \2192"; }
+.see-all:hover {
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  text-decoration: none;
+}
+
+/* ---- Product cards ------------------------------------------------------ */
+
+.products,
+.anthologies {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 4.5rem;
+}
+
+.products h2,
+.anthologies h2 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 1.2rem;
+}
+
+.shelf-title {
+  font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
+  font-size: 1.15rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 2.2rem 0 1rem;
+}
+
+.anthologies .card-grid:not(:last-child) { margin-bottom: 1.5rem; }
+
+.card-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  display: block;
+  height: 100%;
+  padding: 1.2rem 1.3rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: inherit;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.card:hover {
+  text-decoration: none;
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--pc) 55%, transparent);
+  box-shadow: var(--card-shadow);
+}
+
+.tile {
+  display: inline-grid;
+  place-items: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--pc) var(--tile-mix), transparent);
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  font-size: 0.8rem;
+  font-weight: 650;
+  margin-bottom: 0.75rem;
+}
+
+.card h3 {
+  font-size: 1rem;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+.card p {
+  margin: 0.4rem 0 0;
+  font-size: 0.87rem;
+  color: var(--text-muted);
+}
+
+/* ---- Books ---------------------------------------------------------------- */
+
+.book-pill {
+  display: inline-block;
+  margin-bottom: 0.6rem;
+  padding: 0.16rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  background: color-mix(in srgb, var(--pc) var(--tile-mix), transparent);
+  border: 1px solid color-mix(in srgb, var(--pc) 25%, transparent);
+}
+
+.book-short {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+}
+
+.book-lede {
+  margin: 0.75rem 0 0;
+  font-size: 1.05rem;
+  color: var(--text-muted);
+}
+
+/* Section numbers come from the authored NN-- orders ("2.1"). */
+.section-number {
+  display: inline-block;
+  min-width: 2.2rem;
+  padding-right: 0.45rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+/* ---- Article page ------------------------------------------------------- */
+
+.article-layout {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr) 13rem;
+  gap: 2.75rem;
+  max-width: 82rem;
+  margin: 0 auto;
+  padding: 2.25rem 1.5rem 4.5rem;
+}
+
+.sidebar,
+.toc {
+  position: sticky;
+  top: 4.25rem;
+  align-self: start;
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+  font-size: 0.88rem;
+}
+
+.sidebar-topic {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+}
+.sidebar-topic a { color: var(--text); }
+.sidebar-topic a:hover {
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  text-decoration: none;
+}
+
+.sidebar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+}
+.sidebar-list a {
+  display: block;
+  padding: 0.28rem 0.85rem;
+  color: var(--text-muted);
+  border-left: 2px solid transparent;
+  margin-left: -1px;
+}
+.sidebar-list a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+.sidebar-list a.current {
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  border-left-color: color-mix(in srgb, var(--pc) 70%, transparent);
+  font-weight: 550;
+}
+
+/* Collapsing sidebar groups: book chapters and topic subfolders are
+   <details>, open along the trail to the current page. Chapter labels
+   are bold; subfolder labels look like any other page link. */
+.sidebar-chapter summary,
+.sidebar-folder summary {
+  list-style: none;
+  position: relative;
+  cursor: pointer;
+}
+.sidebar-chapter summary::-webkit-details-marker,
+.sidebar-folder summary::-webkit-details-marker { display: none; }
+.sidebar-chapter summary::after,
+.sidebar-folder summary::after {
+  content: "";
+  position: absolute;
+  right: 0.55rem;
+  top: 50%;
+  width: 0.32rem;
+  height: 0.32rem;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: translateY(-50%) rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+.sidebar-chapter details[open] > summary::after,
+.sidebar-folder details[open] > summary::after {
+  transform: translateY(-65%) rotate(45deg);
+}
+.sidebar-chapter summary a,
+.sidebar-folder summary a {
+  padding-right: 1.5rem;
+}
+.sidebar-chapter summary a {
+  color: var(--text);
+  font-weight: 600;
+}
+.sidebar-list .sidebar-list {
+  margin-left: 0.85rem;
+}
+.sidebar-list .section-number {
+  min-width: 1.9rem;
+  padding-right: 0.35rem;
+}
+
+/* Heading numbers inside book articles are real text (searchable,
+   copyable); mute them so titles stay the anchor of the line. */
+.heading-number {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.toc .section-number {
+  min-width: 0;
+  padding-right: 0.35rem;
+}
+
+.toc-label {
+  margin: 0 0 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+}
+.toc a {
+  display: block;
+  padding: 0.24rem 0.85rem;
+  color: var(--text-muted);
+  border-left: 2px solid transparent;
+  margin-left: -1px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.toc a:hover { color: var(--text); text-decoration: none; }
+.toc a.active {
+  color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
+  border-left-color: color-mix(in srgb, var(--pc) 70%, transparent);
+  font-weight: 550;
+}
+.toc .toc-3 a { padding-left: 1.7rem; }
+
+.crumbs {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  margin-bottom: 1.2rem;
+}
+.crumbs a { color: var(--text-muted); }
+.crumbs a:hover { color: var(--text); text-decoration: none; }
+
+.article-body,
+.print-article { line-height: 1.65; }
+
+.article-body h1,
+.print-article h1 {
+  font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 1.1rem;
+}
+.article-body h2,
+.print-article h2 {
+  font-size: 1.4rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 2.3rem 0 0.8rem;
+}
+.article-body h3,
+.print-article h3 {
+  font-size: 1.12rem;
+  font-weight: 620;
+  margin: 1.8rem 0 0.6rem;
+}
+.article-body p,
+.print-article p { margin: 0.85rem 0; }
+.article-body img,
+.print-article img { max-width: 100%; }
+
+.article-body code,
+.print-article code {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 0.86em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.08em 0.35em;
+}
+.article-body pre,
+.print-article pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  overflow-x: auto;
+  margin: 1.1rem 0;
+}
+.article-body pre code,
+.print-article pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85rem;
+}
+.article-body pre.mermaid,
+.print-article pre.mermaid {
+  display: flex;
+  justify-content: center;
+  background: none;
+  border: none;
+}
+
+.article-body table,
+.print-article table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.1rem 0;
+  font-size: 0.92rem;
+}
+.article-body th,
+.print-article th,
+.article-body td,
+.print-article td {
+  text-align: left;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+.article-body th,
+.print-article th {
+  font-weight: 600;
+  border-bottom-color: var(--border-strong);
+}
+
+.article-body blockquote,
+.print-article blockquote {
+  margin: 1.1rem 0;
+  padding: 0.1rem 0 0.1rem 1.1rem;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+/* Admonitions: `> [!NOTE]`-style asides, tinted by type via --adm. */
+
+.admonition {
+  margin: 1.1rem 0;
+  padding: 0.8rem 1.15rem 0.9rem;
+  border-left: 3px solid var(--adm);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--adm) 7%, transparent);
+}
+.admonition-title {
+  margin: 0;
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--adm) var(--tile-fg-mix), var(--text));
+}
+.admonition > p:not(.admonition-title) { margin: 0.4rem 0 0; }
+
+.admonition-note { --adm: #3b82f6; }
+.admonition-tip { --adm: #22c55e; }
+.admonition-important { --adm: #a855f7; }
+.admonition-warning { --adm: #eab308; }
+.admonition-caution { --adm: #ef4444; }
+
+@media (max-width: 1100px) {
+  .article-layout { grid-template-columns: 15rem minmax(0, 1fr); }
+  .toc { display: none; }
+}
+@media (max-width: 800px) {
+  .article-layout { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { display: none; }
+}
+
+/* ---- Footer ------------------------------------------------------------- */
+
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding: 1.6rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.site-footer p { margin: 0.2rem 0; }
+.colophon { font-size: 0.76rem; opacity: 0.8; }
+
+/* ---- Small screens ------------------------------------------------------ */
+
+@media (max-width: 640px) {
+  .site-nav, .search-small { display: none; }
+  .hero { padding-top: 3.5rem; }
+}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "cards.html" import topic_card, anthology_card, book_card %}
+
+{% block title %}{{ anthology.title }} — {{ site.sitename }}{% endblock %}
+
+{% block content %}
+<section class="hero product-hero" style="--pc: {{ product.color }}" data-pagefind-body data-pagefind-meta="crumbs:{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %}">
+  <nav class="crumbs hero-crumbs" data-pagefind-ignore>
+    <a href="{{ product.path | safe }}">{{ product.title }}</a>
+    {%- for ancestor in anthologies %}
+    <span>/</span>
+    <a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+    {%- endfor %}
+  </nav>
+  <h1>{{ anthology.title }}</h1>
+  <p class="lede">{{ anthology.description }}</p>
+</section>
+
+<section class="anthologies">
+  <h2>Topics</h2>
+  {%- for section in sections %}
+  {%- if section.title %}
+  <h3 class="shelf-title">{{ section.title }}</h3>
+  {%- endif %}
+  <ul class="card-grid anthology-grid">
+    {%- for item in section.items %}
+    {%- if item.kind == "anthology" %}
+    {{ anthology_card(item, product.color) }}
+    {%- elif item.kind == "book" %}
+    {{ book_card(item, product.color) }}
+    {%- else %}
+    {{ topic_card(item, product.color) }}
+    {%- endif %}
+    {%- endfor %}
+  </ul>
+  {%- endfor %}
+</section>
+{% endblock %}

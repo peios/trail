@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "cards.html" import topic_card, anthology_card, book_card %}
+
+{% block title %}{{ product.title }} — {{ site.sitename }}{% endblock %}
+
+{% block content %}
+<section class="hero product-hero" style="--pc: {{ product.color }}" data-pagefind-body>
+  <span class="tile tile-hero" data-pagefind-ignore>{{ product.monogram }}</span>
+  <h1>{{ product.title }}</h1>
+  <p class="lede">{{ product.description }}</p>
+</section>
+
+<section class="anthologies">
+  <h2>Documentation</h2>
+  {%- for section in sections %}
+  {%- if section.title %}
+  <h3 class="shelf-title">{{ section.title }}</h3>
+  {%- endif %}
+  <ul class="card-grid anthology-grid">
+    {%- for item in section.items %}
+    {%- if item.kind == "anthology" %}
+    {{ anthology_card(item, product.color) }}
+    {%- elif item.kind == "book" %}
+    {{ book_card(item, product.color) }}
+    {%- else %}
+    {{ topic_card(item, product.color) }}
+    {%- endif %}
+    {%- endfor %}
+  </ul>
+  {%- endfor %}
+</section>
+{% endblock %}

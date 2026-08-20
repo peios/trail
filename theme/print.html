@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} — {{ site.sitename }}{% endblock %}
+
+{% block content %}
+<div class="print-page" style="--pc: {{ product.color }}">
+  <header class="print-header">
+    <nav class="crumbs">
+      <a href="{{ product.path | safe }}">{{ product.title }}</a>
+    </nav>
+    <h1>{{ title }}</h1>
+    {%- if description %}
+    <p class="book-lede">{{ description }}</p>
+    {%- endif %}
+    <p class="print-note">Single-page view · <a href="{{ md_path | safe }}">as markdown</a></p>
+  </header>
+
+  {%- for section in sections %}
+  <section class="print-article">
+    <header>
+      <h2 id="{{ section.id }}">{% if section.number %}<span class="heading-number">{{ section.number }}</span> {% endif %}{{ section.title }}</h2>
+      <p class="print-crumbs">{% for crumb in section.crumbs %}{% if not loop.first %} / {% endif %}{{ crumb }}{% endfor %}</p>
+    </header>
+    {{ section.html | safe }}
+  </section>
+  {%- endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "book-nav.html" import nav %}
+
+{% block title %}{{ book.title }} — {{ site.sitename }}{% endblock %}
+
+{% block content %}
+<div class="article-layout" style="--pc: {{ product.color }}">
+  <aside class="sidebar">
+    <p class="sidebar-topic"><a href="{{ book.path | safe }}" aria-current="page">{{ book.short or book.title }}</a></p>
+    {{ nav(book.children, book.path) }}
+  </aside>
+
+  <article class="article-body" data-pagefind-body data-pagefind-meta="crumbs:{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %}">
+    <nav class="crumbs" data-pagefind-ignore>
+      <a href="{{ product.path | safe }}">{{ product.title }}</a>
+      {%- for ancestor in anthologies %}
+      <span>/</span>
+      <a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+      {%- endfor %}
+    </nav>
+    {%- if book.short %}
+    <p class="book-short">{{ book.short }}</p>
+    {%- endif %}
+    <h1>{{ book.title }}</h1>
+    <p class="book-lede">{{ book.description }}</p>
+  </article>
+
+  <aside class="toc"></aside>
+</div>
+{% endblock %}
