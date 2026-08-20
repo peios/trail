@@ -641,6 +641,9 @@ fn site_json(site: &Site) -> serde_json::Value {
         if let Some(number) = &article.number {
             value["number"] = json!(number);
         }
+        if let Some(original) = &article.original {
+            value["original"] = json!(original);
+        }
         value
     }
     fn topic_json(topic: &Topic) -> serde_json::Value {
@@ -861,7 +864,7 @@ mod tests {
         assert!(product.starts_with("# Alpha\n"));
         assert!(product.contains("[/alpha/print.md](/alpha/print.md)"));
         assert!(product.contains("- [Acorn Docs](/alpha/acorn.md): anthology description"));
-        assert!(product.contains("- [Loose](/alpha/loose/print.md): 3 articles"));
+        assert!(product.contains("- [Loose](/alpha/loose/print.md): 4 articles"));
         assert!(product.contains("## Tools"), "shelf sections survive");
 
         let anthology = fs::read_to_string(out.join("alpha/acorn.md")).unwrap();
@@ -940,7 +943,7 @@ mod tests {
         assert!(llms.contains("- [Alpha overview](/alpha.md): a description"));
         assert!(llms.contains("- [All Alpha docs in one file](/alpha/print.md)"));
         assert!(llms.contains("- [Acorn Docs](/alpha/acorn/print.md): anthology description"));
-        assert!(llms.contains("- [Loose](/alpha/loose/print.md): 3 articles"));
+        assert!(llms.contains("- [Loose](/alpha/loose/print.md): 4 articles"));
         assert!(llms.contains("- [Alpha Manual](/alpha/manual/print.md): book description"));
         // Books and anthologies nested inside anthologies are listed too.
         assert!(llms.contains("- [Acorn Spec](/alpha/acorn/spec/print.md): spec description"));

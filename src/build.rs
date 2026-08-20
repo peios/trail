@@ -219,7 +219,13 @@ fn write_articles(
             article,
             &rendered,
         )?;
-        write_page(sink, out, &article.path, html)?;
+        if article.original.is_some() {
+            // Linked pages render like any other but stay out of the
+            // search index — the canonical article covers the content.
+            out.write(&page_path(out.dir(), &article.path), html.as_bytes())?;
+        } else {
+            write_page(sink, out, &article.path, html)?;
+        }
         Ok(rendered.has_mermaid)
     };
     for child in &topic.children {

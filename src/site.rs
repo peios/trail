@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -361,6 +361,9 @@ pub struct Topic {
     /// The topic's body in `NN--` order: articles interleaved with
     /// subfolders (plain `<order>--<slug>` directories grouping articles).
     pub children: Vec<TopicChild>,
+    /// `.link` entries awaiting resolution; drained into `children` as
+    /// articles once the whole site is loaded.
+    links: Vec<LinkStub>,
 }
 
 impl Topic {
@@ -446,9 +449,13 @@ pub struct TopicFolder {
     pub entry: Option<String>,
     /// The folder's articles in `NN--` order.
     pub articles: Vec<Article>,
+    /// `.link` entries awaiting resolution; drained into `articles` once
+    /// the whole site is loaded.
+    #[serde(skip)]
+    links: Vec<LinkStub>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Article {
     pub slug: String,
     /// Site-absolute URL path of the article page.
@@ -467,6 +474,10 @@ pub struct Article {
     /// Unresolved cross-reference slugs from frontmatter; resolution comes
     /// with the linking layer.
     pub related: Vec<String>,
+    /// For a page created by a `.link` reference: the path of the
+    /// canonical article whose content this page re-renders. Linked
+    /// pages stay out of the search index — the original covers it.
+    pub original: Option<String>,
     /// The markdown body after the frontmatter. Not exposed to templates —
     /// it is rendered separately and passed to the article page as HTML.
     #[serde(skip)]
@@ -600,6 +611,26 @@ struct BookConfig {
     description: String,
 }
 
+/// A `.link` reference file: `target` is a `~` reference in the same
+/// grammar articles use; `title` overrides the slug-derived default.
+/// Unknown keys are load errors.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkConfig {
+    target: String,
+    title: Option<String>,
+}
+
+/// An unresolved `.link` entry, held until the whole site has loaded —
+/// its target may live anywhere in the tree.
+#[derive(Debug)]
+pub struct LinkStub {
+    slug: String,
+    order: u32,
+    title: String,
+    target: String,
+}
+
 /// A parsed grouping directory name: `<order>--<slug>.<kind>`.
 struct GroupingName {
     order: u32,
@@ -666,7 +697,9 @@ impl Site {
             (None, None) => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
         });
 
-        Ok(Site { config, products })
+        let mut site = Site { config, products };
+        resolve_linked_articles(&mut site)?;
+        Ok(site)
     }
 
     /// The products shown as cards on the front page, in `featured` order.
@@ -888,6 +921,7 @@ fn load_topic(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Topic
     let path = format!("{parent_path}/{}", name.slug);
 
     let mut children = Vec::new();
+    let mut links = Vec::new();
     for entry in read_dir_sorted(dir)? {
         let entry_name = entry.file_name().to_string_lossy().into_owned();
         if entry_name.starts_with('.') || entry_name == "trail.toml" {
@@ -911,9 +945,14 @@ fn load_topic(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Topic
                 folder: load_topic_folder(&entry.path(), order, slug, &path)
                     .with_context(|| format!("loading subfolder in '{entry_name}'"))?,
             });
+        } else if let Some(stem) = entry_name.strip_suffix(".link") {
+            links.push(load_link_stub(&entry.path(), stem)?);
         } else {
             let Some(stem) = entry_name.strip_suffix(".md") else {
-                bail!("unexpected file '{entry_name}' in a topic: articles are *.md files");
+                bail!(
+                    "unexpected file '{entry_name}' in a topic: \
+                     articles are *.md files (or *.link references)"
+                );
             };
             children.push(TopicChild::Article {
                 article: load_article(&entry.path(), stem, &path, None)?,
@@ -926,7 +965,7 @@ fn load_topic(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Topic
             .then_with(|| a.slug().cmp(b.slug()))
     });
     // Articles and subfolders share the topic's URL space, so slugs are
-    // checked across both.
+    // checked across both. (Link slugs join the check once resolved.)
     check_duplicates("item", &children, TopicChild::order, TopicChild::slug)?;
 
     Ok(Topic {
@@ -935,6 +974,7 @@ fn load_topic(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Topic
         order: name.order,
         title,
         children,
+        links,
     })
 }
 
@@ -943,6 +983,7 @@ fn load_topic_folder(dir: &Path, order: u32, slug: &str, parent_path: &str) -> R
     let path = format!("{parent_path}/{slug}");
 
     let mut articles = Vec::new();
+    let mut links = Vec::new();
     for entry in read_dir_sorted(dir)? {
         let entry_name = entry.file_name().to_string_lossy().into_owned();
         if entry_name.starts_with('.') || entry_name == "trail.toml" {
@@ -953,8 +994,15 @@ fn load_topic_folder(dir: &Path, order: u32, slug: &str, parent_path: &str) -> R
             "unexpected directory '{entry_name}' in a topic subfolder: \
              subfolders hold only articles"
         );
+        if let Some(stem) = entry_name.strip_suffix(".link") {
+            links.push(load_link_stub(&entry.path(), stem)?);
+            continue;
+        }
         let Some(stem) = entry_name.strip_suffix(".md") else {
-            bail!("unexpected file '{entry_name}' in a topic subfolder: articles are *.md files");
+            bail!(
+                "unexpected file '{entry_name}' in a topic subfolder: \
+                 articles are *.md files (or *.link references)"
+            );
         };
         articles.push(load_article(&entry.path(), stem, &path, None)?);
     }
@@ -968,6 +1016,30 @@ fn load_topic_folder(dir: &Path, order: u32, slug: &str, parent_path: &str) -> R
         title,
         entry: articles.first().map(|article| article.path.clone()),
         articles,
+        links,
+    })
+}
+
+/// Parse a `<order>--<slug>.link` reference file.
+fn load_link_stub(file: &Path, stem: &str) -> Result<LinkStub> {
+    let Some((order, slug)) = stem.split_once("--") else {
+        bail!("link '{stem}.link' is missing its '<order>--' prefix");
+    };
+    let order: u32 = order
+        .parse()
+        .with_context(|| format!("link '{stem}.link' has a non-numeric order prefix"))?;
+    validate_slug(slug).with_context(|| format!("in link '{stem}.link'"))?;
+    let config: LinkConfig = read_toml(file)?;
+    ensure!(
+        config.target.starts_with('~'),
+        "link '{stem}.link' target '{}' is not a ~reference",
+        config.target
+    );
+    Ok(LinkStub {
+        slug: slug.to_string(),
+        order,
+        title: config.title.unwrap_or_else(|| title_from_slug(slug)),
+        target: config.target,
     })
 }
 
@@ -1118,8 +1190,142 @@ fn load_article(
         kind,
         description,
         related,
+        original: None,
         body,
     })
+}
+
+/// Resolve every `.link` stub into a real article: the target's content
+/// under the link's own slug, title, URL, and chrome. Runs after the
+/// whole tree has loaded, since targets can live anywhere; targets must
+/// be articles that exist on disk — a link cannot target another link.
+fn resolve_linked_articles(site: &mut Site) -> Result<()> {
+    let index = crate::links::LinkIndex::new(site);
+    let mut originals: HashMap<String, Article> = HashMap::new();
+    for product in &site.products {
+        for item in product.items() {
+            collect_originals(item_articles(item), &mut originals);
+        }
+    }
+
+    fn item_articles(item: &ProductItem) -> Vec<&Article> {
+        match item {
+            ProductItem::Topic { topic } => topic.pages().collect(),
+            ProductItem::Book { book } => book.articles().into_iter().map(|(_, a)| a).collect(),
+            ProductItem::Anthology { anthology } => anthology
+                .items()
+                .flat_map(|item| anthology_item_articles(item))
+                .collect(),
+        }
+    }
+    fn anthology_item_articles(item: &AnthologyItem) -> Vec<&Article> {
+        match item {
+            AnthologyItem::Topic { topic } => topic.pages().collect(),
+            AnthologyItem::Book { book } => book.articles().into_iter().map(|(_, a)| a).collect(),
+            AnthologyItem::Anthology { anthology } => anthology
+                .items()
+                .flat_map(anthology_item_articles)
+                .collect(),
+        }
+    }
+    fn collect_originals<'a>(
+        articles: impl IntoIterator<Item = &'a Article>,
+        originals: &mut HashMap<String, Article>,
+    ) {
+        for article in articles {
+            originals.insert(article.path.clone(), article.clone());
+        }
+    }
+
+    let resolve = |stub: LinkStub, parent_path: &str| -> Result<Article> {
+        let reference = stub.target.trim_start_matches('~');
+        let resolved = index
+            .resolve(reference)
+            .with_context(|| format!("resolving link '{}' in '{parent_path}'", stub.slug))?;
+        let Some(original) = originals.get(&resolved) else {
+            bail!(
+                "link '{}' in '{parent_path}' targets '{}', which is not an article \
+                 (only articles can be linked, and a link cannot target another link)",
+                stub.slug,
+                stub.target
+            );
+        };
+        let mut article = original.clone();
+        article.slug = stub.slug.clone();
+        article.path = format!("{parent_path}/{}", stub.slug);
+        article.order = stub.order;
+        article.title = stub.title;
+        article.number = None;
+        article.original = Some(resolved);
+        Ok(article)
+    };
+
+    fn topics_mut(products: &mut [Product]) -> Vec<&mut Topic> {
+        fn from_anthology<'a>(anthology: &'a mut Anthology, out: &mut Vec<&'a mut Topic>) {
+            for child in &mut anthology.children {
+                let items: &mut dyn Iterator<Item = &mut AnthologyItem> = match child {
+                    AnthologyChild::Item(item) => &mut std::iter::once(item),
+                    AnthologyChild::Shelf(shelf) => &mut shelf.items.iter_mut(),
+                };
+                for item in items {
+                    match item {
+                        AnthologyItem::Topic { topic } => out.push(topic),
+                        AnthologyItem::Anthology { anthology } => from_anthology(anthology, out),
+                        AnthologyItem::Book { .. } => {}
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for product in products {
+            for child in &mut product.children {
+                let items: &mut dyn Iterator<Item = &mut ProductItem> = match child {
+                    ProductChild::Item(item) => &mut std::iter::once(item),
+                    ProductChild::Shelf(shelf) => &mut shelf.items.iter_mut(),
+                };
+                for item in items {
+                    match item {
+                        ProductItem::Topic { topic } => out.push(topic),
+                        ProductItem::Anthology { anthology } => from_anthology(anthology, &mut out),
+                        ProductItem::Book { .. } => {}
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    for topic in topics_mut(&mut site.products) {
+        for stub in std::mem::take(&mut topic.links) {
+            let article = resolve(stub, &topic.path)?;
+            topic.children.push(TopicChild::Article { article });
+        }
+        topic.children.sort_by(|a, b| {
+            a.order()
+                .cmp(&b.order())
+                .then_with(|| a.slug().cmp(b.slug()))
+        });
+        check_duplicates("item", &topic.children, TopicChild::order, TopicChild::slug)
+            .with_context(|| format!("in topic '{}'", topic.path))?;
+        for child in &mut topic.children {
+            let TopicChild::Folder { folder } = child else {
+                continue;
+            };
+            if folder.links.is_empty() {
+                continue;
+            }
+            for stub in std::mem::take(&mut folder.links) {
+                folder.articles.push(resolve(stub, &folder.path)?);
+            }
+            folder
+                .articles
+                .sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.slug.cmp(&b.slug)));
+            check_duplicates("article", &folder.articles, |a| a.order, |a| &a.slug)
+                .with_context(|| format!("in subfolder '{}'", folder.path))?;
+            folder.entry = folder.articles.first().map(|article| article.path.clone());
+        }
+    }
+    Ok(())
 }
 
 /// A topic's, shelf's or chapter's title: derived from the slug unless an
@@ -1470,6 +1676,19 @@ description = "anthology description"
     fs::create_dir_all(&extra).unwrap();
     fs::write(extra.join("1--c1.md"), topic_article("c1")).unwrap();
     fs::create_dir_all(root.join("alpha.product/5--loose.topic/9--hollow")).unwrap();
+
+    // Links: the loose topic aliases the wide topic's a2 (derived title),
+    // and the narrow topic's subfolder aliases x1 with a title override.
+    fs::write(
+        root.join("alpha.product/5--loose.topic/4--alias.link"),
+        "target = \"~alpha/a2\"\n",
+    )
+    .unwrap();
+    fs::write(
+        extra.join("2--linked.link"),
+        "target = \"~alpha/x1\"\ntitle = \"Linked X1\"\n",
+    )
+    .unwrap();
 }
 
 #[cfg(test)]
@@ -1655,7 +1874,7 @@ mod tests {
 
         // Flattened reading order feeds the cards; entry is the first page.
         let pages: Vec<_> = narrow.pages().map(|a| a.slug.as_str()).collect();
-        assert_eq!(pages, ["b1", "b2", "c1"]);
+        assert_eq!(pages, ["b1", "b2", "c1", "linked"]);
         assert_eq!(narrow.entry(), Some("/alpha/acorn/narrow/b1"));
 
         // The loose topic's empty folder is tolerated and has no entry.
@@ -1875,6 +2094,68 @@ mod tests {
         fs::create_dir(dir.path().join("alpha.product/3--stray")).unwrap();
         let err = load(dir.path()).unwrap_err();
         assert!(format!("{err:#}").contains("no type suffix"));
+    }
+
+    #[test]
+    fn links_alias_articles_into_other_locations() {
+        let dir = fixture();
+        let site = load(dir.path()).unwrap();
+
+        let loose = alpha(&site)
+            .items()
+            .find_map(|item| match item {
+                ProductItem::Topic { topic } if topic.slug == "loose" => Some(topic),
+                _ => None,
+            })
+            .unwrap();
+        // The alias slots into reading order under the link's own slug,
+        // URL, and derived title, carrying the target's content.
+        let pages: Vec<_> = loose.pages().map(|a| a.slug.as_str()).collect();
+        assert_eq!(pages, ["x1", "x2", "a1", "alias"]);
+        let alias = loose.pages().find(|a| a.slug == "alias").unwrap();
+        assert_eq!(alias.path, "/alpha/loose/alias");
+        assert_eq!(alias.title, "Alias", "derived from the link slug");
+        assert_eq!(alias.original.as_deref(), Some("/alpha/acorn/wide/a2"));
+        assert!(alias.body.contains("Body of a2."));
+        assert_eq!(alias.number, None);
+
+        // Folder links work too, with the title override.
+        let narrow = acorn(&site).topics().find(|t| t.slug == "narrow").unwrap();
+        let linked = narrow.pages().find(|a| a.slug == "linked").unwrap();
+        assert_eq!(linked.title, "Linked X1");
+        assert_eq!(linked.path, "/alpha/acorn/narrow/extra/linked");
+        assert_eq!(linked.original.as_deref(), Some("/alpha/loose/x1"));
+    }
+
+    #[test]
+    fn rejects_bad_link_targets() {
+        let dir = fixture();
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/6--bad.link"),
+            "target = \"~alpha/nope\"\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("resolving link 'bad'"));
+        assert!(format!("{err:#}").contains("matches no page"));
+
+        let dir = fixture();
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/6--bad.link"),
+            "target = \"~alpha/acorn\"\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("only articles can be linked"));
+
+        let dir = fixture();
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/6--bad.link"),
+            "target = \"/alpha/loose/x1\"\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("is not a ~reference"));
     }
 
     #[test]
