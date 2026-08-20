@@ -38,6 +38,7 @@ pub struct LinkIndex {
 #[derive(Debug)]
 struct ProductIndex {
     path: String,
+    title: String,
     candidates: Vec<Candidate>,
 }
 
@@ -47,6 +48,9 @@ struct Candidate {
     segments: Vec<String>,
     /// The page the candidate resolves to.
     target: String,
+    /// The page's display title, for surfaces that show the link
+    /// (related-content lists).
+    title: String,
 }
 
 /// Add a topic's articles as candidates: [<anthologies..>,] topic,
@@ -66,12 +70,14 @@ fn push_topic_candidates(candidates: &mut Vec<Candidate>, prefix: &[String], top
             TopicChild::Article { article } => candidates.push(Candidate {
                 segments: segments(&[&article.slug]),
                 target: article.path.clone(),
+                title: article.title.clone(),
             }),
             TopicChild::Folder { folder } => {
                 for article in &folder.articles {
                     candidates.push(Candidate {
                         segments: segments(&[&folder.slug, &article.slug]),
                         target: article.path.clone(),
+                        title: article.title.clone(),
                     });
                 }
             }
@@ -87,6 +93,7 @@ fn push_book_candidates(candidates: &mut Vec<Candidate>, prefix: &[String], book
     candidates.push(Candidate {
         segments: cover.clone(),
         target: book.path.clone(),
+        title: book.title.clone(),
     });
     for (chapters, article) in book.articles() {
         let mut segments = cover.clone();
@@ -95,6 +102,7 @@ fn push_book_candidates(candidates: &mut Vec<Candidate>, prefix: &[String], book
         candidates.push(Candidate {
             segments,
             target: article.path.clone(),
+            title: article.title.clone(),
         });
     }
 }
@@ -111,6 +119,7 @@ fn push_anthology_candidates(
     candidates.push(Candidate {
         segments: base.clone(),
         target: anthology.path.clone(),
+        title: anthology.title.clone(),
     });
     for item in anthology.items() {
         match item {
@@ -145,6 +154,7 @@ impl LinkIndex {
                 product.slug.clone(),
                 ProductIndex {
                     path: product.path.clone(),
+                    title: product.title.clone(),
                     candidates,
                 },
             );
@@ -154,6 +164,12 @@ impl LinkIndex {
 
     /// Resolve a reference with its leading `~` already stripped.
     pub fn resolve(&self, reference: &str) -> Result<String, ResolveError> {
+        self.resolve_page(reference).map(|(path, _)| path)
+    }
+
+    /// Resolve like `resolve`, also returning the target page's title —
+    /// for surfaces that display the link rather than embed it.
+    pub fn resolve_page(&self, reference: &str) -> Result<(String, String), ResolveError> {
         let mut segments = reference.split('/');
         let product_slug = segments.next().unwrap_or("");
         let suffix: Vec<&str> = segments.collect();
@@ -164,7 +180,7 @@ impl LinkIndex {
             )));
         };
         if suffix.is_empty() {
-            return Ok(product.path.clone());
+            return Ok((product.path.clone(), product.title.clone()));
         }
 
         let matches: Vec<&Candidate> = product
@@ -180,7 +196,7 @@ impl LinkIndex {
             .collect();
 
         match matches.as_slice() {
-            [only] => Ok(only.target.clone()),
+            [only] => Ok((only.target.clone(), only.title.clone())),
             [] => Err(ResolveError::NoMatch(format!(
                 "link '~{reference}' matches no page in product '{product_slug}'"
             ))),
@@ -305,6 +321,25 @@ mod tests {
             index.resolve("alpha/d1").unwrap(),
             "/alpha/acorn/inner/deep/d1"
         );
+    }
+
+    #[test]
+    fn resolve_page_carries_display_titles() {
+        let (_dir, index) = index();
+        let page = |reference: &str| index.resolve_page(reference).unwrap();
+        assert_eq!(
+            page("alpha/a2"),
+            ("/alpha/acorn/wide/a2".into(), "Article a2".into())
+        );
+        assert_eq!(
+            page("alpha/manual"),
+            ("/alpha/manual".into(), "Alpha Manual".into())
+        );
+        assert_eq!(
+            page("alpha/acorn"),
+            ("/alpha/acorn".into(), "Acorn Docs".into())
+        );
+        assert_eq!(page("alpha"), ("/alpha".into(), "Alpha".into()));
     }
 
     #[test]

@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+
+use crate::images::{IMAGE_EXTENSIONS, ImageAsset};
 
 /// The site model: everything the renderer needs, loaded and validated.
 #[derive(Debug)]
@@ -12,6 +14,10 @@ pub struct Site {
     /// All products in display order: featured first (in `featured` order),
     /// then the rest sorted by title.
     pub products: Vec<Product>,
+    /// Every image file found alongside articles, wherever it sits in the
+    /// tree — a flat registry (relative destinations can reach across
+    /// containers), kept off the presentation model.
+    pub images: Vec<ImageAsset>,
 }
 
 /// The root `trail.toml`. Unknown keys are load errors.
@@ -482,6 +488,11 @@ pub struct Article {
     /// it is rendered separately and passed to the article page as HTML.
     #[serde(skip)]
     pub body: String,
+    /// The directory the article's .md file was loaded from — what its
+    /// relative image destinations resolve against. A linked page keeps
+    /// its target's source directory, so the body's images keep working.
+    #[serde(skip)]
+    pub source_dir: PathBuf,
 }
 
 /// An article's YAML frontmatter. Unknown keys are load errors.
@@ -654,6 +665,7 @@ impl Site {
         }
 
         let mut products = Vec::new();
+        let mut images = Vec::new();
         for entry in read_dir_sorted(root)? {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') || is_same_path(&entry.path(), out) {
@@ -674,7 +686,7 @@ impl Site {
                      '/{slug}' output directory)"
                 );
                 products.push(
-                    load_product(&path, slug)
+                    load_product(&path, slug, &mut images)
                         .with_context(|| format!("loading product '{slug}'"))?,
                 );
             } else if name != "trail.toml" {
@@ -697,7 +709,11 @@ impl Site {
             (None, None) => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
         });
 
-        let mut site = Site { config, products };
+        let mut site = Site {
+            config,
+            products,
+            images,
+        };
         resolve_linked_articles(&mut site)?;
         Ok(site)
     }
@@ -712,7 +728,7 @@ impl Site {
     }
 }
 
-fn load_product(dir: &Path, slug: &str) -> Result<Product> {
+fn load_product(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<Product> {
     let config: ProductConfig = read_toml(&dir.join("trail.toml"))?;
     validate_color(&config.color)?;
     let path = format!("/{slug}");
@@ -722,19 +738,19 @@ fn load_product(dir: &Path, slug: &str) -> Result<Product> {
         let grouping = parse_grouping_name(&name)?;
         let child = match grouping.kind.as_str() {
             "antho" => ProductChild::Item(ProductItem::Anthology {
-                anthology: load_anthology(&child_dir, grouping, &path)
+                anthology: load_anthology(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading anthology in '{name}'"))?,
             }),
             "topic" => ProductChild::Item(ProductItem::Topic {
-                topic: load_topic(&child_dir, grouping, &path)
+                topic: load_topic(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading topic in '{name}'"))?,
             }),
             "book" => ProductChild::Item(ProductItem::Book {
-                book: load_book(&child_dir, grouping, &path)
+                book: load_book(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading book in '{name}'"))?,
             }),
             "shelf" => ProductChild::Shelf(
-                load_product_shelf(&child_dir, grouping, &path)
+                load_product_shelf(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading shelf in '{name}'"))?,
             ),
             kind => bail!(
@@ -773,6 +789,7 @@ fn load_product_shelf(
     dir: &Path,
     name: GroupingName,
     product_path: &str,
+    images: &mut Vec<ImageAsset>,
 ) -> Result<Shelf<ProductItem>> {
     let title = grouping_title(dir, &name.slug)?;
 
@@ -781,15 +798,15 @@ fn load_product_shelf(
         let grouping = parse_grouping_name(&entry_name)?;
         let item = match grouping.kind.as_str() {
             "antho" => ProductItem::Anthology {
-                anthology: load_anthology(&child_dir, grouping, product_path)
+                anthology: load_anthology(&child_dir, grouping, product_path, images)
                     .with_context(|| format!("loading anthology in '{entry_name}'"))?,
             },
             "topic" => ProductItem::Topic {
-                topic: load_topic(&child_dir, grouping, product_path)
+                topic: load_topic(&child_dir, grouping, product_path, images)
                     .with_context(|| format!("loading topic in '{entry_name}'"))?,
             },
             "book" => ProductItem::Book {
-                book: load_book(&child_dir, grouping, product_path)
+                book: load_book(&child_dir, grouping, product_path, images)
                     .with_context(|| format!("loading book in '{entry_name}'"))?,
             },
             "shelf" => bail!("a shelf cannot contain another shelf ('{entry_name}')"),
@@ -815,7 +832,12 @@ fn load_product_shelf(
     })
 }
 
-fn load_anthology(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Anthology> {
+fn load_anthology(
+    dir: &Path,
+    name: GroupingName,
+    parent_path: &str,
+    images: &mut Vec<ImageAsset>,
+) -> Result<Anthology> {
     let config: AnthologyConfig = read_toml(&dir.join("trail.toml"))?;
     let path = format!("{parent_path}/{}", name.slug);
 
@@ -824,19 +846,19 @@ fn load_anthology(dir: &Path, name: GroupingName, parent_path: &str) -> Result<A
         let grouping = parse_grouping_name(&entry_name)?;
         let child = match grouping.kind.as_str() {
             "antho" => AnthologyChild::Item(AnthologyItem::Anthology {
-                anthology: load_anthology(&child_dir, grouping, &path)
+                anthology: load_anthology(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading anthology in '{entry_name}'"))?,
             }),
             "topic" => AnthologyChild::Item(AnthologyItem::Topic {
-                topic: load_topic(&child_dir, grouping, &path)
+                topic: load_topic(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading topic in '{entry_name}'"))?,
             }),
             "book" => AnthologyChild::Item(AnthologyItem::Book {
-                book: load_book(&child_dir, grouping, &path)
+                book: load_book(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading book in '{entry_name}'"))?,
             }),
             "shelf" => AnthologyChild::Shelf(
-                load_anthology_shelf(&child_dir, grouping, &path)
+                load_anthology_shelf(&child_dir, grouping, &path, images)
                     .with_context(|| format!("loading shelf in '{entry_name}'"))?,
             ),
             kind => bail!(
@@ -874,6 +896,7 @@ fn load_anthology_shelf(
     dir: &Path,
     name: GroupingName,
     anthology_path: &str,
+    images: &mut Vec<ImageAsset>,
 ) -> Result<Shelf<AnthologyItem>> {
     let title = grouping_title(dir, &name.slug)?;
 
@@ -882,15 +905,15 @@ fn load_anthology_shelf(
         let grouping = parse_grouping_name(&entry_name)?;
         let item = match grouping.kind.as_str() {
             "antho" => AnthologyItem::Anthology {
-                anthology: load_anthology(&child_dir, grouping, anthology_path)
+                anthology: load_anthology(&child_dir, grouping, anthology_path, images)
                     .with_context(|| format!("loading anthology in '{entry_name}'"))?,
             },
             "topic" => AnthologyItem::Topic {
-                topic: load_topic(&child_dir, grouping, anthology_path)
+                topic: load_topic(&child_dir, grouping, anthology_path, images)
                     .with_context(|| format!("loading topic in '{entry_name}'"))?,
             },
             "book" => AnthologyItem::Book {
-                book: load_book(&child_dir, grouping, anthology_path)
+                book: load_book(&child_dir, grouping, anthology_path, images)
                     .with_context(|| format!("loading book in '{entry_name}'"))?,
             },
             "shelf" => bail!("a shelf cannot contain another shelf ('{entry_name}')"),
@@ -916,7 +939,12 @@ fn load_anthology_shelf(
     })
 }
 
-fn load_topic(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Topic> {
+fn load_topic(
+    dir: &Path,
+    name: GroupingName,
+    parent_path: &str,
+    images: &mut Vec<ImageAsset>,
+) -> Result<Topic> {
     let title = grouping_title(dir, &name.slug)?;
     let path = format!("{parent_path}/{}", name.slug);
 
@@ -942,9 +970,11 @@ fn load_topic(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Topic
             })?;
             validate_slug(slug).with_context(|| format!("in subfolder '{entry_name}'"))?;
             children.push(TopicChild::Folder {
-                folder: load_topic_folder(&entry.path(), order, slug, &path)
+                folder: load_topic_folder(&entry.path(), order, slug, &path, images)
                     .with_context(|| format!("loading subfolder in '{entry_name}'"))?,
             });
+        } else if let Some(asset) = image_asset(&entry_name, entry.path(), &path)? {
+            images.push(asset);
         } else if let Some(stem) = entry_name.strip_suffix(".link") {
             links.push(load_link_stub(&entry.path(), stem)?);
         } else {
@@ -978,7 +1008,13 @@ fn load_topic(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Topic
     })
 }
 
-fn load_topic_folder(dir: &Path, order: u32, slug: &str, parent_path: &str) -> Result<TopicFolder> {
+fn load_topic_folder(
+    dir: &Path,
+    order: u32,
+    slug: &str,
+    parent_path: &str,
+    images: &mut Vec<ImageAsset>,
+) -> Result<TopicFolder> {
     let title = grouping_title(dir, slug)?;
     let path = format!("{parent_path}/{slug}");
 
@@ -994,6 +1030,10 @@ fn load_topic_folder(dir: &Path, order: u32, slug: &str, parent_path: &str) -> R
             "unexpected directory '{entry_name}' in a topic subfolder: \
              subfolders hold only articles"
         );
+        if let Some(asset) = image_asset(&entry_name, entry.path(), &path)? {
+            images.push(asset);
+            continue;
+        }
         if let Some(stem) = entry_name.strip_suffix(".link") {
             links.push(load_link_stub(&entry.path(), stem)?);
             continue;
@@ -1020,6 +1060,32 @@ fn load_topic_folder(dir: &Path, order: u32, slug: &str, parent_path: &str) -> R
     })
 }
 
+/// Recognise a co-located image file: `<stem>.<image-extension>`, kept
+/// under the containing directory's URL with its file name intact.
+/// Returns None for anything that isn't an image, leaving the caller's
+/// own "unexpected file" checks to run.
+fn image_asset(entry_name: &str, source: PathBuf, parent_path: &str) -> Result<Option<ImageAsset>> {
+    let Some((stem, extension)) = entry_name.rsplit_once('.') else {
+        return Ok(None);
+    };
+    if IMAGE_EXTENSIONS.contains(&extension) {
+        validate_slug(stem).with_context(|| format!("in image '{entry_name}'"))?;
+        return Ok(Some(ImageAsset {
+            source,
+            url: format!("{parent_path}/{entry_name}"),
+        }));
+    }
+    // Catch "Diagram.PNG" here with a pointed message rather than letting
+    // it fall through to the generic unexpected-file error.
+    ensure!(
+        !IMAGE_EXTENSIONS
+            .iter()
+            .any(|known| extension.eq_ignore_ascii_case(known)),
+        "image '{entry_name}' must use a lowercase extension"
+    );
+    Ok(None)
+}
+
 /// Parse a `<order>--<slug>.link` reference file.
 fn load_link_stub(file: &Path, stem: &str) -> Result<LinkStub> {
     let Some((order, slug)) = stem.split_once("--") else {
@@ -1043,10 +1109,15 @@ fn load_link_stub(file: &Path, stem: &str) -> Result<LinkStub> {
     })
 }
 
-fn load_book(dir: &Path, name: GroupingName, parent_path: &str) -> Result<Book> {
+fn load_book(
+    dir: &Path,
+    name: GroupingName,
+    parent_path: &str,
+    images: &mut Vec<ImageAsset>,
+) -> Result<Book> {
     let config: BookConfig = read_toml(&dir.join("trail.toml"))?;
     let path = format!("{parent_path}/{}", name.slug);
-    let children = load_book_children(dir, &path, "", "a book")?;
+    let children = load_book_children(dir, &path, "", "a book", images)?;
 
     Ok(Book {
         slug: name.slug,
@@ -1065,10 +1136,11 @@ fn load_chapter(
     slug: &str,
     parent_path: &str,
     number: String,
+    images: &mut Vec<ImageAsset>,
 ) -> Result<Chapter> {
     let title = grouping_title(dir, slug)?;
     let path = format!("{parent_path}/{slug}");
-    let children = load_book_children(dir, &path, &format!("{number}."), "a chapter")?;
+    let children = load_book_children(dir, &path, &format!("{number}."), "a chapter", images)?;
 
     // Chapter links open the chapter's first article, so a chapter with
     // nothing to open is a mistake, not an empty page.
@@ -1098,6 +1170,7 @@ fn load_book_children(
     parent_path: &str,
     number_prefix: &str,
     what: &str,
+    images: &mut Vec<ImageAsset>,
 ) -> Result<Vec<BookChild>> {
     let mut children = Vec::new();
     for entry in read_dir_sorted(dir)? {
@@ -1121,9 +1194,11 @@ fn load_book_children(
             validate_slug(slug).with_context(|| format!("in chapter '{entry_name}'"))?;
             let number = format!("{number_prefix}{order}");
             children.push(BookChild::Chapter {
-                chapter: load_chapter(&entry.path(), order, slug, parent_path, number)
+                chapter: load_chapter(&entry.path(), order, slug, parent_path, number, images)
                     .with_context(|| format!("loading chapter in '{entry_name}'"))?,
             });
+        } else if let Some(asset) = image_asset(&entry_name, entry.path(), parent_path)? {
+            images.push(asset);
         } else {
             let Some(stem) = entry_name.strip_suffix(".md") else {
                 bail!("unexpected file '{entry_name}' in {what}: articles are *.md files");
@@ -1192,6 +1267,7 @@ fn load_article(
         related,
         original: None,
         body,
+        source_dir: file.parent().map(Path::to_path_buf).unwrap_or_default(),
     })
 }
 
@@ -1499,6 +1575,15 @@ fn is_same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// A valid 2×1 red PNG, so image tests exercise real header parsing
+/// (and width ≠ height catches swapped dimensions).
+#[cfg(test)]
+pub(crate) const TEST_PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 1, 8, 2, 0,
+    0, 0, 123, 64, 232, 221, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 0, 68, 0, 8,
+    254, 1, 255, 198, 158, 121, 247, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
 #[cfg(test)]
 pub(crate) fn write_fixture(root: &Path) {
     fs::create_dir_all(root).unwrap();
@@ -1599,7 +1684,7 @@ description = "anthology description"
             fs::write(
                 dir.join(format!("{article}.md")),
                 format!(
-                    "---\ntitle: Article {slug}\ntype: concept\ndescription: about {slug}\nrelated:\n  - somewhere/else\n---\n\nBody of {slug}.\n\n## First section of {slug}\n\nWords.\n"
+                    "---\ntitle: Article {slug}\ntype: concept\ndescription: about {slug}\nrelated:\n  - alpha/b1\n  - alpha/manual\n---\n\nBody of {slug}.\n\n## First section of {slug}\n\nWords.\n"
                 ),
             )
             .unwrap();
@@ -1627,8 +1712,16 @@ description = "anthology description"
         "title = \"Alpha Manual\"\nshort = \"AM\"\ndescription = \"book description\"\n",
     )
     .unwrap();
-    fs::write(manual.join("1--intro.md"), article("intro")).unwrap();
-    fs::write(manual.join("2--setup/1--install.md"), article("install")).unwrap();
+    fs::write(
+        manual.join("1--intro.md"),
+        article("intro") + "\n![Layout](layout.png)\n",
+    )
+    .unwrap();
+    fs::write(
+        manual.join("2--setup/1--install.md"),
+        article("install") + "\n![Layout again](../layout.png)\n",
+    )
+    .unwrap();
     fs::write(
         manual.join("2--setup/2--advanced/1--tuning.md"),
         article("tuning"),
@@ -1668,6 +1761,29 @@ description = "anthology description"
     )
     .unwrap();
     fs::write(inner.join("1--deep.topic/1--d1.md"), topic_article("d1")).unwrap();
+
+    // Images live alongside the articles that use them. The loose topic
+    // gets a captioned raster image and an inline SVG; the manual book
+    // gets a root-level image referenced from its own level and from a
+    // chapter via "../".
+    fs::write(
+        root.join("alpha.product/5--loose.topic/wiring.png"),
+        TEST_PNG,
+    )
+    .unwrap();
+    fs::write(
+        root.join("alpha.product/5--loose.topic/glyph.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+    )
+    .unwrap();
+    fs::write(
+        root.join("alpha.product/5--loose.topic/20--pic.md"),
+        "---\ntitle: Article pic\ntype: concept\ndescription: about pic\n---\n\n\
+         ![Wiring overview](wiring.png \"The wiring\")\n\n\
+         Inline ![glyph](glyph.svg) here.\n",
+    )
+    .unwrap();
+    fs::write(manual.join("layout.png"), TEST_PNG).unwrap();
 
     // Topic subfolders: a populated one in the narrow topic (derived
     // title, own URL segment) and an empty one in the loose topic, which
@@ -1840,7 +1956,51 @@ mod tests {
         assert_eq!(a1.title, "Article a1");
         assert_eq!(a1.kind.as_deref(), Some("concept"));
         assert_eq!(a1.number, None, "only book articles are numbered");
-        assert_eq!(a1.related, ["somewhere/else"]);
+        assert_eq!(a1.related, ["alpha/b1", "alpha/manual"]);
+    }
+
+    #[test]
+    fn images_are_collected_with_published_urls() {
+        let dir = fixture();
+        let site = load(dir.path()).unwrap();
+
+        let urls: Vec<_> = site.images.iter().map(|i| i.url.as_str()).collect();
+        assert!(urls.contains(&"/alpha/loose/wiring.png"));
+        assert!(urls.contains(&"/alpha/loose/glyph.svg"));
+        assert!(urls.contains(&"/alpha/manual/layout.png"));
+        let wiring = site
+            .images
+            .iter()
+            .find(|i| i.url == "/alpha/loose/wiring.png")
+            .unwrap();
+        assert!(wiring.source.ends_with("5--loose.topic/wiring.png"));
+
+        // Articles remember where they loaded from — what their relative
+        // image destinations resolve against.
+        let loose = alpha(&site)
+            .items()
+            .find_map(|item| match item {
+                ProductItem::Topic { topic } if topic.slug == "loose" => Some(topic),
+                _ => None,
+            })
+            .unwrap();
+        let pic = loose.pages().find(|a| a.slug == "pic").unwrap();
+        assert!(pic.source_dir.ends_with("alpha.product/5--loose.topic"));
+    }
+
+    #[test]
+    fn uppercase_image_extensions_are_rejected() {
+        let dir = fixture();
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/Shot.PNG"),
+            TEST_PNG,
+        )
+        .unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("image 'Shot.PNG' must use a lowercase extension"),
+            "got: {err:#}"
+        );
     }
 
     #[test]
@@ -2111,7 +2271,7 @@ mod tests {
         // The alias slots into reading order under the link's own slug,
         // URL, and derived title, carrying the target's content.
         let pages: Vec<_> = loose.pages().map(|a| a.slug.as_str()).collect();
-        assert_eq!(pages, ["x1", "x2", "a1", "alias"]);
+        assert_eq!(pages, ["x1", "x2", "a1", "alias", "pic"]);
         let alias = loose.pages().find(|a| a.slug == "alias").unwrap();
         assert_eq!(alias.path, "/alpha/loose/alias");
         assert_eq!(alias.title, "Alias", "derived from the link slug");

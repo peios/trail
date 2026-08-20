@@ -12,6 +12,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::build::Output;
+use crate::images::{ImageIndex, ImageScope};
 use crate::links::LinkIndex;
 use crate::markdown;
 use crate::render::{PrintSection, Renderer};
@@ -37,6 +38,7 @@ struct Unit<'a> {
 pub fn write_ai_surface(
     site: &Site,
     links: &LinkIndex,
+    images: &ImageIndex,
     renderer: &Renderer,
     out: &Output,
     llms_full: bool,
@@ -52,13 +54,14 @@ pub fn write_ai_surface(
             match item {
                 ProductItem::Anthology { anthology } => {
                     pages += export_anthology(
-                        site, links, renderer, out, llms_full, product, &base, anthology,
+                        site, links, images, renderer, out, llms_full, product, &base, anthology,
                     )?;
                 }
                 ProductItem::Topic { topic } => {
                     pages += write_bundle(
                         site,
                         links,
+                        images,
                         renderer,
                         out,
                         product,
@@ -74,6 +77,7 @@ pub fn write_ai_surface(
                     pages += write_bundle(
                         site,
                         links,
+                        images,
                         renderer,
                         out,
                         product,
@@ -86,6 +90,7 @@ pub fn write_ai_surface(
         pages += write_bundle(
             site,
             links,
+            images,
             renderer,
             out,
             product,
@@ -93,11 +98,11 @@ pub fn write_ai_surface(
             llms_full,
         )?;
     }
-    write_article_mirrors(site, links, out)?;
+    write_article_mirrors(site, links, images, out)?;
     out.write(&out.dir().join("llms.txt"), llms_txt(site).as_bytes())?;
     out.write(
         &out.dir().join("site.json"),
-        serde_json::to_string_pretty(&site_json(site))?.as_bytes(),
+        serde_json::to_string_pretty(&site_json(site, links))?.as_bytes(),
     )?;
     out.write(&out.dir().join("robots.txt"), robots_txt(site).as_bytes())?;
     if site.config.url.is_some() {
@@ -112,6 +117,7 @@ pub fn write_ai_surface(
 fn export_anthology(
     site: &Site,
     links: &LinkIndex,
+    images: &ImageIndex,
     renderer: &Renderer,
     out: &Output,
     llms_full: bool,
@@ -132,6 +138,7 @@ fn export_anthology(
                 pages += write_bundle(
                     site,
                     links,
+                    images,
                     renderer,
                     out,
                     product,
@@ -147,6 +154,7 @@ fn export_anthology(
                 pages += write_bundle(
                     site,
                     links,
+                    images,
                     renderer,
                     out,
                     product,
@@ -158,6 +166,7 @@ fn export_anthology(
                 pages += export_anthology(
                     site,
                     links,
+                    images,
                     renderer,
                     out,
                     llms_full,
@@ -171,6 +180,7 @@ fn export_anthology(
     pages += write_bundle(
         site,
         links,
+        images,
         renderer,
         out,
         product,
@@ -295,9 +305,11 @@ fn book_entries<'a>(
 /// does not serve symlinks) for agents that probe for that name instead
 /// of reading llms.txt. Empty units get no bundle. Returns the number of
 /// HTML pages written (0 or 1).
+#[allow(clippy::too_many_arguments)]
 fn write_bundle(
     site: &Site,
     links: &LinkIndex,
+    images: &ImageIndex,
     renderer: &Renderer,
     out: &Output,
     product: &Product,
@@ -308,7 +320,7 @@ fn write_bundle(
         return Ok(0);
     }
 
-    let markdown = bundle_markdown(links, unit);
+    let markdown = bundle_markdown(links, images, unit);
     let md_url = format!("{}/print.md", unit.path);
     out.write(
         &mirror_path(out.dir(), &format!("{}/print", unit.path)),
@@ -341,6 +353,10 @@ fn write_bundle(
                 allow_dangling: true,
                 numbering: article.number.as_deref(),
                 id_prefix: Some(&id),
+                images: Some(ImageScope {
+                    index: images,
+                    dir: &article.source_dir,
+                }),
             },
         )?;
         has_mermaid |= rendered.has_mermaid;
@@ -372,7 +388,7 @@ fn write_bundle(
 }
 
 /// The whole unit as one markdown document, in reading order.
-fn bundle_markdown(links: &LinkIndex, unit: &Unit) -> String {
+fn bundle_markdown(links: &LinkIndex, images: &ImageIndex, unit: &Unit) -> String {
     let mut out = format!("# {}\n", unit.title);
     if let Some(description) = unit.description {
         let _ = write!(out, "\n> {description}\n");
@@ -381,7 +397,7 @@ fn bundle_markdown(links: &LinkIndex, unit: &Unit) -> String {
         let _ = write!(
             out,
             "\n---\n\n{}",
-            article_markdown(links, &crumbs.join(" / "), article)
+            article_markdown(links, images, &crumbs.join(" / "), article)
         );
     }
     out
@@ -390,7 +406,12 @@ fn bundle_markdown(links: &LinkIndex, unit: &Unit) -> String {
 /// One article as standalone markdown: title (numbered inside books),
 /// crumbs for orientation, description, then the body with `~` links
 /// resolved to the target pages' own mirrors.
-fn article_markdown(links: &LinkIndex, crumbs: &str, article: &Article) -> String {
+fn article_markdown(
+    links: &LinkIndex,
+    images: &ImageIndex,
+    crumbs: &str,
+    article: &Article,
+) -> String {
     let mut out = String::from("# ");
     if let Some(number) = &article.number {
         let _ = write!(out, "{number} ");
@@ -400,21 +421,53 @@ fn article_markdown(links: &LinkIndex, crumbs: &str, article: &Article) -> Strin
     if let Some(description) = &article.description {
         let _ = write!(out, "\n> {description}\n");
     }
-    let body = markdown::rewrite_source(&article.body, links, article.number.as_deref());
+    let body = markdown::rewrite_source(
+        &article.body,
+        links,
+        article.number.as_deref(),
+        Some(ImageScope {
+            index: images,
+            dir: &article.source_dir,
+        }),
+    );
     let _ = write!(out, "\n{}", body.trim_end());
     out.push('\n');
     out
 }
 
+/// An article's `related:` references resolved to (path, title) — kept
+/// quiet: anything broken was already reported (or rejected) when the
+/// article's own page rendered, so this pass just drops failures.
+fn related_pages(links: &LinkIndex, article: &Article) -> Vec<(String, String)> {
+    article
+        .related
+        .iter()
+        .filter_map(|reference| links.resolve_page(reference).ok())
+        .collect()
+}
+
 // ---- Page mirrors ----------------------------------------------------------
 
-fn write_article_mirrors(site: &Site, links: &LinkIndex, out: &Output) -> Result<()> {
+fn write_article_mirrors(
+    site: &Site,
+    links: &LinkIndex,
+    images: &ImageIndex,
+    out: &Output,
+) -> Result<()> {
     for product in &site.products {
         for (crumbs, article) in product_unit(product).entries {
-            out.write(
-                &mirror_path(out.dir(), &article.path),
-                article_markdown(links, &crumbs.join(" / "), article).as_bytes(),
-            )?;
+            let mut markdown = article_markdown(links, images, &crumbs.join(" / "), article);
+            // Standalone mirrors carry the Related Content list the page
+            // shows, pointing at the targets' own mirrors. Bundles skip
+            // it — a linear document doesn't want per-article footers.
+            let related = related_pages(links, article);
+            if !related.is_empty() {
+                markdown.push_str("\nRelated content:\n\n");
+                for (path, title) in &related {
+                    let _ = writeln!(markdown, "- [{title}]({path}.md)");
+                }
+            }
+            out.write(&mirror_path(out.dir(), &article.path), markdown.as_bytes())?;
         }
     }
     Ok(())
@@ -628,8 +681,8 @@ fn llms_txt(site: &Site) -> String {
 }
 
 /// The whole model as JSON, for tools that want structure, not prose.
-fn site_json(site: &Site) -> serde_json::Value {
-    fn article_json(article: &Article) -> serde_json::Value {
+fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
+    fn article_json(article: &Article, links: &LinkIndex) -> serde_json::Value {
         let mut value = json!({
             "slug": article.slug,
             "path": article.path,
@@ -644,9 +697,16 @@ fn site_json(site: &Site) -> serde_json::Value {
         if let Some(original) = &article.original {
             value["original"] = json!(original);
         }
+        let related: Vec<String> = related_pages(links, article)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        if !related.is_empty() {
+            value["related"] = json!(related);
+        }
         value
     }
-    fn topic_json(topic: &Topic) -> serde_json::Value {
+    fn topic_json(topic: &Topic, links: &LinkIndex) -> serde_json::Value {
         json!({
             "kind": "topic",
             "slug": topic.slug,
@@ -655,34 +715,36 @@ fn site_json(site: &Site) -> serde_json::Value {
             "title": topic.title,
             "entry": topic.entry(),
             "children": topic.children.iter().map(|child| match child {
-                TopicChild::Article { article } => article_json(article),
+                TopicChild::Article { article } => article_json(article, links),
                 TopicChild::Folder { folder } => json!({
                     "kind": "folder",
                     "slug": folder.slug,
                     "path": folder.path,
                     "title": folder.title,
-                    "articles": folder.articles.iter().map(article_json).collect::<Vec<_>>(),
+                    "articles": folder.articles.iter()
+                        .map(|article| article_json(article, links))
+                        .collect::<Vec<_>>(),
                 }),
             }).collect::<Vec<_>>(),
         })
     }
-    fn book_children_json(children: &[BookChild]) -> Vec<serde_json::Value> {
+    fn book_children_json(children: &[BookChild], links: &LinkIndex) -> Vec<serde_json::Value> {
         children
             .iter()
             .map(|child| match child {
-                BookChild::Article { article } => article_json(article),
+                BookChild::Article { article } => article_json(article, links),
                 BookChild::Chapter { chapter } => json!({
                     "kind": "chapter",
                     "slug": chapter.slug,
                     "number": chapter.number,
                     "title": chapter.title,
                     "entry": chapter.entry,
-                    "children": book_children_json(&chapter.children),
+                    "children": book_children_json(&chapter.children, links),
                 }),
             })
             .collect()
     }
-    fn book_json(book: &Book) -> serde_json::Value {
+    fn book_json(book: &Book, links: &LinkIndex) -> serde_json::Value {
         json!({
             "kind": "book",
             "slug": book.slug,
@@ -692,10 +754,10 @@ fn site_json(site: &Site) -> serde_json::Value {
             "title": book.title,
             "short": book.short,
             "description": book.description,
-            "children": book_children_json(&book.children),
+            "children": book_children_json(&book.children, links),
         })
     }
-    fn anthology_json(anthology: &Anthology) -> serde_json::Value {
+    fn anthology_json(anthology: &Anthology, links: &LinkIndex) -> serde_json::Value {
         json!({
             "kind": "anthology",
             "slug": anthology.slug,
@@ -705,9 +767,9 @@ fn site_json(site: &Site) -> serde_json::Value {
             "title": anthology.title,
             "description": anthology.description,
             "items": anthology.items().map(|item| match item {
-                AnthologyItem::Topic { topic } => topic_json(topic),
-                AnthologyItem::Book { book } => book_json(book),
-                AnthologyItem::Anthology { anthology } => anthology_json(anthology),
+                AnthologyItem::Topic { topic } => topic_json(topic, links),
+                AnthologyItem::Book { book } => book_json(book, links),
+                AnthologyItem::Anthology { anthology } => anthology_json(anthology, links),
             }).collect::<Vec<_>>(),
         })
     }
@@ -728,9 +790,9 @@ fn site_json(site: &Site) -> serde_json::Value {
             "color": product.color,
             "description": product.description,
             "items": product.items().map(|item| match item {
-                ProductItem::Anthology { anthology } => anthology_json(anthology),
-                ProductItem::Topic { topic } => topic_json(topic),
-                ProductItem::Book { book } => book_json(book),
+                ProductItem::Anthology { anthology } => anthology_json(anthology, links),
+                ProductItem::Topic { topic } => topic_json(topic, links),
+                ProductItem::Book { book } => book_json(book, links),
             }).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     })
@@ -825,9 +887,11 @@ mod tests {
         let out = root.join("dist");
         let site = Site::load(root, &out).unwrap();
         let links = LinkIndex::new(&site);
+        let images = ImageIndex::new(&site.images);
         let renderer = Renderer::new(false).unwrap();
         let output = Output::new(&out);
-        let pages = write_ai_surface(&site, &links, &renderer, &output, llms_full).unwrap();
+        let pages =
+            write_ai_surface(&site, &links, &images, &renderer, &output, llms_full).unwrap();
         (out, pages)
     }
 
@@ -847,6 +911,11 @@ mod tests {
         assert!(article.contains("_Alpha / Acorn Docs / Wide Topic_"));
         assert!(article.contains("> about a1"));
         assert!(article.contains("Body of a1."));
+        // The mirror carries the page's Related Content list, pointing
+        // at the targets' own mirrors.
+        assert!(article.contains("Related content:"));
+        assert!(article.contains("- [Article b1](/alpha/acorn/narrow/b1.md)"));
+        assert!(article.contains("- [Alpha Manual](/alpha/manual.md)"));
 
         // Book pages carry their section numbers, in title and headings,
         // and no description (book frontmatter is title-only).
@@ -859,12 +928,19 @@ mod tests {
         let deep = fs::read_to_string(out.join("alpha/acorn/inner/deep/d1.md")).unwrap();
         assert!(deep.contains("_Alpha / Acorn Docs / Inner Docs / Deep_"));
 
+        // Image destinations are rewritten to their published URLs —
+        // mirrors and bundles serve the body away from its own folder.
+        let pic = fs::read_to_string(out.join("alpha/loose/pic.md")).unwrap();
+        assert!(pic.contains("![Wiring overview](/alpha/loose/wiring.png \"The wiring\")"));
+        let install = fs::read_to_string(out.join("alpha/manual/setup/install.md")).unwrap();
+        assert!(install.contains("![Layout again](/alpha/manual/layout.png)"));
+
         // Container pages mirror as annotated listings.
         let product = fs::read_to_string(out.join("alpha.md")).unwrap();
         assert!(product.starts_with("# Alpha\n"));
         assert!(product.contains("[/alpha/print.md](/alpha/print.md)"));
         assert!(product.contains("- [Acorn Docs](/alpha/acorn.md): anthology description"));
-        assert!(product.contains("- [Loose](/alpha/loose/print.md): 4 articles"));
+        assert!(product.contains("- [Loose](/alpha/loose/print.md): 5 articles"));
         assert!(product.contains("## Tools"), "shelf sections survive");
 
         let anthology = fs::read_to_string(out.join("alpha/acorn.md")).unwrap();
@@ -895,6 +971,10 @@ mod tests {
         assert!(bundle.starts_with("# Wide Topic\n"));
         assert!(bundle.contains("# Article a1"));
         assert!(bundle.contains("# Article a5"));
+        assert!(
+            !bundle.contains("Related content:"),
+            "linear bundles skip per-article related footers"
+        );
         assert!(
             !out.join("alpha/acorn/wide/llms-full.txt").exists(),
             "llms-full.txt is opt-in"
@@ -943,7 +1023,7 @@ mod tests {
         assert!(llms.contains("- [Alpha overview](/alpha.md): a description"));
         assert!(llms.contains("- [All Alpha docs in one file](/alpha/print.md)"));
         assert!(llms.contains("- [Acorn Docs](/alpha/acorn/print.md): anthology description"));
-        assert!(llms.contains("- [Loose](/alpha/loose/print.md): 4 articles"));
+        assert!(llms.contains("- [Loose](/alpha/loose/print.md): 5 articles"));
         assert!(llms.contains("- [Alpha Manual](/alpha/manual/print.md): book description"));
         // Books and anthologies nested inside anthologies are listed too.
         assert!(llms.contains("- [Acorn Spec](/alpha/acorn/spec/print.md): spec description"));
@@ -985,6 +1065,17 @@ mod tests {
         assert_eq!(manual["children"][1]["kind"], "chapter");
         assert_eq!(manual["children"][1]["number"], "2");
         assert_eq!(manual["children"][0]["type"], serde_json::Value::Null);
+        // `related:` references come out resolved to page paths.
+        let a1 = &acorn["items"][0]["children"][0];
+        assert_eq!(
+            a1["related"],
+            serde_json::json!(["/alpha/acorn/narrow/b1", "/alpha/manual"])
+        );
+        assert_eq!(
+            manual["children"][0]["related"],
+            serde_json::Value::Null,
+            "articles without related get no key"
+        );
     }
 
     #[test]

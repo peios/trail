@@ -7,9 +7,10 @@ use anyhow::{Context, Result, bail};
 
 use crate::cli::BuildArgs;
 use crate::export;
+use crate::images::{ImageIndex, ImageScope};
 use crate::links::LinkIndex;
 use crate::markdown;
-use crate::render::Renderer;
+use crate::render::{RelatedLink, Renderer};
 use crate::search::{self, SearchPage};
 use crate::site::{
     Anthology, AnthologyItem, Book, Product, ProductItem, Site, Topic, TopicChild, TopicFolder,
@@ -95,6 +96,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
     let out = &Output::new(out);
     let renderer = Renderer::new(options.live_reload)?;
     let links = LinkIndex::new(site);
+    let images = ImageIndex::new(&site.images);
     out.write(
         &out.dir().join("index.html"),
         renderer.index(site)?.as_bytes(),
@@ -114,6 +116,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
                     let (count, mermaid) = write_anthology(
                         &renderer,
                         &links,
+                        &images,
                         options,
                         site,
                         product,
@@ -129,6 +132,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
                     let (count, mermaid) = write_articles(
                         &renderer,
                         &links,
+                        &images,
                         options,
                         site,
                         product,
@@ -144,6 +148,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
                     let (count, mermaid) = write_book(
                         &renderer,
                         &links,
+                        &images,
                         options,
                         site,
                         product,
@@ -168,7 +173,32 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
     }
     // The AI-facing surface: markdown mirrors, /print bundles, llms.txt,
     // site.json, sitemap, robots. Print pages are pages; the rest are not.
-    pages += export::write_ai_surface(site, &links, &renderer, out, options.render_llms_full)?;
+    pages += export::write_ai_surface(
+        site,
+        &links,
+        &images,
+        &renderer,
+        out,
+        options.render_llms_full,
+    )?;
+    // Referenced images ship at their published URLs; an image nothing
+    // references stays out of the output — a warning, not an error, so a
+    // file added ahead of its article doesn't block the build.
+    for asset in &site.images {
+        if images.is_used(asset) {
+            let contents = fs::read(&asset.source)
+                .with_context(|| format!("reading image {}", asset.source.display()))?;
+            out.write(
+                &out.dir().join(asset.url.trim_start_matches('/')),
+                &contents,
+            )?;
+        } else {
+            eprintln!(
+                "warning: image '{}' is not referenced by any article and was not published",
+                asset.source.display()
+            );
+        }
+    }
     search::write_search_bundle(sink.search, out)?;
     for (rel, contents) in ASSET_FILES {
         out.write(&out.dir().join(rel), contents)?;
@@ -186,6 +216,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
 fn write_articles(
     renderer: &Renderer,
     links: &LinkIndex,
+    images: &ImageIndex,
     options: BuildOptions,
     site: &Site,
     product: &Product,
@@ -205,11 +236,16 @@ fn write_articles(
             links,
             markdown::RenderOptions {
                 allow_dangling: options.allow_dangling_links,
+                images: Some(ImageScope {
+                    index: images,
+                    dir: &article.source_dir,
+                }),
                 ..markdown::RenderOptions::default()
             },
         )
         .with_context(|| format!("in article '{}'", article.path))?;
         report_links(sink, article, &rendered);
+        let related = resolve_related(article, links, options, sink);
         let html = renderer.article(
             site,
             product,
@@ -218,6 +254,7 @@ fn write_articles(
             folder,
             article,
             &rendered,
+            &related,
         )?;
         if article.original.is_some() {
             // Linked pages render like any other but stay out of the
@@ -251,6 +288,7 @@ fn write_articles(
 fn write_anthology(
     renderer: &Renderer,
     links: &LinkIndex,
+    images: &ImageIndex,
     options: BuildOptions,
     site: &Site,
     product: &Product,
@@ -268,13 +306,13 @@ fn write_anthology(
     for item in anthology.items() {
         let (count, mermaid) = match item {
             AnthologyItem::Topic { topic } => write_articles(
-                renderer, links, options, site, product, &trail, topic, out, sink,
+                renderer, links, images, options, site, product, &trail, topic, out, sink,
             )?,
             AnthologyItem::Book { book } => write_book(
-                renderer, links, options, site, product, &trail, book, out, sink,
+                renderer, links, images, options, site, product, &trail, book, out, sink,
             )?,
             AnthologyItem::Anthology { anthology } => write_anthology(
-                renderer, links, options, site, product, &trail, anthology, out, sink,
+                renderer, links, images, options, site, product, &trail, anthology, out, sink,
             )?,
         };
         pages += count;
@@ -288,6 +326,7 @@ fn write_anthology(
 fn write_book(
     renderer: &Renderer,
     links: &LinkIndex,
+    images: &ImageIndex,
     options: BuildOptions,
     site: &Site,
     product: &Product,
@@ -307,12 +346,17 @@ fn write_book(
             markdown::RenderOptions {
                 allow_dangling: options.allow_dangling_links,
                 numbering: article.number.as_deref(),
+                images: Some(ImageScope {
+                    index: images,
+                    dir: &article.source_dir,
+                }),
                 ..markdown::RenderOptions::default()
             },
         )
         .with_context(|| format!("in article '{}'", article.path))?;
         report_links(sink, article, &rendered);
         uses_mermaid |= rendered.has_mermaid;
+        let related = resolve_related(article, links, options, sink);
         let html = renderer.book_article(
             site,
             product,
@@ -321,11 +365,43 @@ fn write_book(
             &chapters,
             article,
             &rendered,
+            &related,
         )?;
         write_page(sink, out, &article.path, html)?;
         pages += 1;
     }
     Ok((pages, uses_mermaid))
+}
+
+/// Resolve an article's `related:` references for its Related Content
+/// list. Failures behave exactly like body links — ambiguity is always
+/// fatal, missing targets are fatal unless downgraded — and a reference
+/// that doesn't resolve is dropped from the list.
+fn resolve_related(
+    article: &crate::site::Article,
+    links: &LinkIndex,
+    options: BuildOptions,
+    sink: &mut PageSink,
+) -> Vec<RelatedLink> {
+    let mut related = Vec::new();
+    for reference in &article.related {
+        match links.resolve_page(reference) {
+            Ok((path, title)) => related.push(RelatedLink { path, title }),
+            Err(error @ crate::links::ResolveError::Ambiguous(_)) => sink.broken.push(format!(
+                "in article '{}' (related): {}",
+                article.path, error
+            )),
+            Err(error) if options.allow_dangling_links => eprintln!(
+                "warning: in article '{}' (related): {}",
+                article.path, error
+            ),
+            Err(error) => sink.broken.push(format!(
+                "in article '{}' (related): {}",
+                article.path, error
+            )),
+        }
+    }
+    related
 }
 
 /// Write one page to disk and queue it for search indexing under its
@@ -489,6 +565,170 @@ mod tests {
         assert!(out.join("pagefind/pagefind-entry.json").is_file());
         // No article uses mermaid, so the asset stays out of the output.
         assert!(!out.join("assets/mermaid.min.js").exists());
+    }
+
+    #[test]
+    fn referenced_images_ship_and_orphans_stay_home() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/orphan.png"),
+            site::TEST_PNG,
+        )
+        .unwrap();
+        // An alias in another topic renders the pic article's body; its
+        // images must still resolve against the original's folder.
+        fs::write(
+            dir.path()
+                .join("alpha.product/2--acorn.antho/200--narrow.topic/5--extra/3--piclink.link"),
+            "target = \"~alpha/pic\"\n",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+
+        build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap();
+
+        // Referenced images land at their published URLs, byte for byte.
+        assert_eq!(
+            fs::read(out.join("alpha/loose/wiring.png")).unwrap(),
+            site::TEST_PNG
+        );
+        assert!(out.join("alpha/loose/glyph.svg").is_file());
+        assert!(out.join("alpha/manual/layout.png").is_file());
+        assert!(
+            !out.join("alpha/loose/orphan.png").exists(),
+            "unreferenced images are not published"
+        );
+
+        // The page carries the resolved tag: absolute URL, header-read
+        // dimensions, and the caption as a real figure.
+        let pic = fs::read_to_string(out.join("alpha/loose/pic/index.html")).unwrap();
+        assert!(pic.contains(
+            "<figure><img src=\"/alpha/loose/wiring.png\" alt=\"Wiring overview\" \
+             width=\"2\" height=\"1\"><figcaption>The wiring</figcaption></figure>"
+        ));
+        // "../" destinations cross into the parent chapter's URL space.
+        let install =
+            fs::read_to_string(out.join("alpha/manual/setup/install/index.html")).unwrap();
+        assert!(install.contains("<img src=\"/alpha/manual/layout.png\""));
+        // The alias page shows the same resolved image.
+        let alias =
+            fs::read_to_string(out.join("alpha/acorn/narrow/extra/piclink/index.html")).unwrap();
+        assert!(alias.contains("<img src=\"/alpha/loose/wiring.png\""));
+    }
+
+    #[test]
+    fn related_content_renders_at_the_foot_of_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        // Book articles carry related too.
+        fs::write(
+            dir.path().join("alpha.product/7--manual.book/4--refs.md"),
+            "---\ntitle: Refs\nrelated:\n  - alpha/x2\n---\n\nBody of refs.\n",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+
+        build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap();
+
+        // Resolved links, in frontmatter order, titled after their targets.
+        let a1 = fs::read_to_string(out.join("alpha/acorn/wide/a1/index.html")).unwrap();
+        assert!(a1.contains("Related Content"));
+        assert!(a1.contains("<a href=\"/alpha/acorn/narrow/b1\">Article b1</a>"));
+        assert!(a1.contains("<a href=\"/alpha/manual\">Alpha Manual</a>"));
+        let refs = fs::read_to_string(out.join("alpha/manual/refs/index.html")).unwrap();
+        assert!(refs.contains("<a href=\"/alpha/loose/x2\">Article x2</a>"));
+        // No related, no section.
+        let d1 = fs::read_to_string(out.join("alpha/acorn/inner/deep/d1/index.html")).unwrap();
+        assert!(!d1.contains("Related Content"));
+    }
+
+    #[test]
+    fn broken_related_references_break_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/22--badrel.md"),
+            "---\ntitle: Badrel\ntype: concept\ndescription: d\nrelated:\n  - alpha/nope\n  - alpha/a1\n---\n\nBody.\n",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        let options = BuildOptions {
+            live_reload: false,
+            allow_dangling_links: false,
+            render_llms_full: false,
+        };
+
+        let err = build_site(&site, &out, options).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains(
+            "in article '/alpha/loose/badrel' (related): \
+             link '~alpha/nope' matches no page"
+        ));
+        assert!(message.contains("link '~alpha/a1' is ambiguous"));
+
+        // allow-dangling drops the missing target with a warning, but
+        // ambiguity still has to be settled by the author.
+        let err = build_site(
+            &site,
+            &out,
+            BuildOptions {
+                allow_dangling_links: true,
+                ..options
+            },
+        )
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(!message.contains("~alpha/nope"));
+        assert!(message.contains("link '~alpha/a1' is ambiguous"));
+    }
+
+    #[test]
+    fn missing_images_break_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/21--noimg.md"),
+            "---\ntitle: Noimg\ntype: concept\ndescription: d\n---\n\n![x](gone.png)\n",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+
+        let err = build_site(
+            &site,
+            &out,
+            BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                render_llms_full: false,
+            },
+        )
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("in article '/alpha/loose/noimg'"));
+        assert!(message.contains("image 'gone.png' not found"));
     }
 
     #[test]

@@ -784,7 +784,36 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 .article-body p,
 .print-article p { margin: 0.85rem 0; }
 .article-body img,
-.print-article img { max-width: 100%; }
+.print-article img { max-width: 100%; height: auto; }
+
+/* Related Content: the resolved `related:` list at the foot of a page. */
+.article-body .related {
+  margin-top: 3rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border);
+}
+.article-body .related-label {
+  margin: 0 0 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.article-body .related-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.article-body .related-list li { margin: 0.3rem 0; }
+.article-body figure,
+.print-article figure { margin: 1.4rem 0; }
+.article-body figcaption,
+.print-article figcaption {
+  margin-top: 0.5rem;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
 
 .article-body code,
 .print-article code {

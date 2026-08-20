@@ -1,6 +1,7 @@
 mod build;
 mod cli;
 mod export;
+mod images;
 mod links;
 mod markdown;
 mod render;

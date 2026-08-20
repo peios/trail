@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use anyhow::{Result, bail};
 use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
 use serde::Serialize;
 
+use crate::images::{ImageInfo, ImageScope};
 use crate::links::{LinkIndex, ResolveError};
 
 /// One "On this page" entry: an h2 or h3 with its generated anchor id.
@@ -47,6 +49,10 @@ pub struct RenderOptions<'a> {
     /// Namespace for heading anchor ids, for pages that concatenate many
     /// articles (print pages) where slugs would otherwise collide.
     pub id_prefix: Option<&'a str>,
+    /// Where relative `![](...)` destinations resolve: the site's image
+    /// index plus this article's source directory. None (plain-markdown
+    /// tests) leaves image events untouched.
+    pub images: Option<ImageScope<'a>>,
 }
 
 /// Render article markdown to HTML. Every heading gets a slugified,
@@ -70,7 +76,10 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
 
     let mut i = 0;
     while i < events.len() {
-        if let Event::Start(Tag::Heading {
+        if let Some((figure_html, consumed)) = figure(&events[i..], &options) {
+            out.push(Event::Html(figure_html.into()));
+            i += consumed;
+        } else if let Event::Start(Tag::Heading {
             level,
             id,
             classes,
@@ -183,6 +192,28 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                     out.push(events[i].clone());
                 }
             }
+        } else if let Event::Start(Tag::Image {
+            dest_url, title, ..
+        }) = &events[i]
+        {
+            match classify_image(dest_url, &options) {
+                ImageFate::Local(info) => {
+                    let (alt, end) = alt_text(&events[i + 1..]);
+                    out.push(Event::Html(image_tag(&info, &alt, Some(title)).into()));
+                    // Skip to the image's End tag; its alt events are
+                    // flattened into the tag above.
+                    i += 1 + end;
+                }
+                ImageFate::PassThrough => out.push(events[i].clone()),
+                ImageFate::Broken(message) => {
+                    broken.push(message);
+                    out.push(events[i].clone());
+                }
+                ImageFate::Dangling(message) => {
+                    dangling.push(message);
+                    out.push(events[i].clone());
+                }
+            }
         } else if let Event::Start(Tag::BlockQuote(kind)) = &events[i] {
             match kind {
                 Some(kind) => {
@@ -256,6 +287,130 @@ fn admonition_typo(events: &[Event]) -> Option<String> {
     (!name.is_empty() && rest[name.len()..].starts_with(']')).then_some(name)
 }
 
+/// How one image destination renders; see `classify_image`.
+enum ImageFate {
+    /// A tree image: emit our own tag with its published URL (and size).
+    Local(ImageInfo),
+    /// External, explicitly absolute, or no scope to resolve against —
+    /// leave pulldown's own rendering alone.
+    PassThrough,
+    Broken(String),
+    Dangling(String),
+}
+
+/// Classify an image destination. Relative paths resolve against the
+/// article's source directory through the image index; `~` is a page
+/// reference and never an image. Pure lookup — the caller records any
+/// problem, so the figure lookahead and the inline pass can both
+/// classify without double-reporting.
+fn classify_image(dest: &str, options: &RenderOptions) -> ImageFate {
+    if dest.starts_with('~') {
+        return ImageFate::Broken(format!(
+            "image '{dest}': ~references name pages, not files — \
+             use a path relative to the article"
+        ));
+    }
+    if dest.starts_with("http://")
+        || dest.starts_with("https://")
+        || dest.starts_with("data:")
+        || dest.starts_with('/')
+    {
+        return ImageFate::PassThrough;
+    }
+    let Some(scope) = options.images else {
+        return ImageFate::PassThrough;
+    };
+    match scope.index.resolve(scope.dir, dest) {
+        Some(info) => ImageFate::Local(info.clone()),
+        None => {
+            let message =
+                format!("image '{dest}' not found (resolved relative to the article's folder)");
+            if options.allow_dangling {
+                ImageFate::Dangling(message)
+            } else {
+                ImageFate::Broken(message)
+            }
+        }
+    }
+}
+
+/// A paragraph holding nothing but one captioned image — `![alt](src
+/// "Caption")` on its own line — becomes a `<figure>` with the caption
+/// as its `<figcaption>` (an inline `<img>` inside a `<p>` couldn't
+/// legally hold one). Returns the figure and the number of events it
+/// replaces, or None to let the paragraph render normally: uncaptioned,
+/// unresolvable (the inline pass reports it once), or the image shares
+/// its paragraph with other text.
+fn figure(events: &[Event], options: &RenderOptions) -> Option<(String, usize)> {
+    let Some(Event::Start(Tag::Paragraph)) = events.first() else {
+        return None;
+    };
+    let Some(Event::Start(Tag::Image {
+        dest_url, title, ..
+    })) = events.get(1)
+    else {
+        return None;
+    };
+    if title.is_empty() {
+        return None;
+    }
+    let (alt, end) = alt_text(&events[2..]);
+    let end_image = 2 + end;
+    let Some(Event::End(TagEnd::Paragraph)) = events.get(end_image + 1) else {
+        return None;
+    };
+    let info = match classify_image(dest_url, options) {
+        ImageFate::Local(info) => info,
+        // External images can be figures too; no dimensions to give.
+        ImageFate::PassThrough => ImageInfo {
+            url: dest_url.to_string(),
+            width: None,
+            height: None,
+        },
+        ImageFate::Broken(_) | ImageFate::Dangling(_) => return None,
+    };
+    let html = format!(
+        "<figure>{}<figcaption>{}</figcaption></figure>\n",
+        image_tag(&info, &alt, None),
+        escape_text(title),
+    );
+    Some((html, end_image + 1))
+}
+
+/// Flatten an image's alt-text events (everything before its End tag)
+/// to plain text, the way an HTML alt attribute flattens markup.
+/// Returns the text and the End tag's index within the slice.
+fn alt_text(events: &[Event]) -> (String, usize) {
+    let mut alt = String::new();
+    let mut i = 0;
+    while i < events.len() {
+        match &events[i] {
+            Event::End(TagEnd::Image) => break,
+            Event::Text(text) | Event::Code(text) => alt.push_str(text),
+            Event::SoftBreak | Event::HardBreak => alt.push(' '),
+            _ => {}
+        }
+        i += 1;
+    }
+    (alt, i)
+}
+
+fn image_tag(info: &ImageInfo, alt: &str, title: Option<&str>) -> String {
+    let mut tag = format!(
+        "<img src=\"{}\" alt=\"{}\"",
+        escape_attribute(&info.url),
+        escape_attribute(alt)
+    );
+    if let (Some(width), Some(height)) = (info.width, info.height) {
+        let _ = write!(tag, " width=\"{width}\" height=\"{height}\"");
+    }
+    if let Some(title) = title.filter(|title| !title.is_empty()) {
+        let _ = write!(tag, " title=\"{}\"", escape_attribute(title));
+    }
+    tag.push('>');
+    tag
+}
+
 /// ENABLE_GFM parses `> [!NOTE]`-style blockquote alerts (admonitions).
 fn parser_options() -> Options {
     Options::ENABLE_TABLES
@@ -266,12 +421,19 @@ fn parser_options() -> Options {
 
 /// Rewrite article markdown for the AI-facing mirrors, preserving the
 /// source formatting: inline `~` link destinations become the target
-/// page's own mirror URL ("/alpha/acorn/wide/a2.md"), and with
-/// `numbering` set the h2/h3 headings gain their section numbers as
-/// text, exactly as `render` numbers them. Links that don't resolve are
-/// left untouched — the HTML render has already reported or rejected
-/// them, so this pass never fails.
-pub fn rewrite_source(markdown: &str, links: &LinkIndex, numbering: Option<&str>) -> String {
+/// page's own mirror URL ("/alpha/acorn/wide/a2.md"), relative image
+/// destinations become the image's published URL (mirrors and bundles
+/// serve the body away from its own folder), and with `numbering` set
+/// the h2/h3 headings gain their section numbers as text, exactly as
+/// `render` numbers them. Anything that doesn't resolve is left
+/// untouched — the HTML render has already reported or rejected it, so
+/// this pass never fails.
+pub fn rewrite_source(
+    markdown: &str,
+    links: &LinkIndex,
+    numbering: Option<&str>,
+    images: Option<ImageScope>,
+) -> String {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let (mut h2_count, mut h3_count) = (0, 0);
     for (event, range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
@@ -289,20 +451,25 @@ pub fn rewrite_source(markdown: &str, links: &LinkIndex, numbering: Option<&str>
                     Some(fragment) => format!("{resolved}.md#{fragment}"),
                     None => format!("{resolved}.md"),
                 };
-                // The event range covers "[text](dest)"; rewrite the
-                // destination between the final "](" and the closing ")".
-                // Reference-style links keep their destination elsewhere
-                // and are left alone.
-                let source = &markdown[range.clone()];
-                let Some(open) = source.rfind("](") else {
-                    continue;
-                };
-                if !source.ends_with(')') {
+                if let Some(dest_range) = inline_dest_range(markdown, &range, &dest_url) {
+                    edits.push((dest_range, new_dest));
+                }
+            }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                if dest_url.starts_with('~')
+                    || dest_url.starts_with("http://")
+                    || dest_url.starts_with("https://")
+                    || dest_url.starts_with("data:")
+                    || dest_url.starts_with('/')
+                {
                     continue;
                 }
-                let dest_range = (range.start + open + 2)..(range.end - 1);
-                if markdown[dest_range.clone()] == *dest_url {
-                    edits.push((dest_range, new_dest));
+                let Some(scope) = images else { continue };
+                let Some(info) = scope.index.resolve(scope.dir, &dest_url) else {
+                    continue;
+                };
+                if let Some(dest_range) = inline_dest_range(markdown, &range, &dest_url) {
+                    edits.push((dest_range, info.url.clone()));
                 }
             }
             Event::Start(Tag::Heading { level, .. }) if numbering.is_some() => {
@@ -339,6 +506,30 @@ pub fn rewrite_source(markdown: &str, links: &LinkIndex, numbering: Option<&str>
     out
 }
 
+/// The byte range of an inline link/image destination inside its event
+/// range — "[text](dest)", "![alt](dest \"title\")" — for source
+/// rewriting. Reference-style links keep their destination elsewhere
+/// and get None; a title after the destination is tolerated and kept.
+fn inline_dest_range(
+    markdown: &str,
+    range: &std::ops::Range<usize>,
+    dest_url: &str,
+) -> Option<std::ops::Range<usize>> {
+    let source = &markdown[range.clone()];
+    let open = source.rfind("](")?;
+    if !source.ends_with(')') {
+        return None;
+    }
+    let inner = (range.start + open + 2)..(range.end - 1);
+    let written = &markdown[inner.clone()];
+    if written == dest_url {
+        return Some(inner);
+    }
+    let rest = written.strip_prefix(dest_url)?;
+    rest.starts_with([' ', '\t'])
+        .then(|| inner.start..inner.start + dest_url.len())
+}
+
 fn admonition_name(kind: BlockQuoteKind) -> &'static str {
     match kind {
         BlockQuoteKind::Note => "Note",
@@ -355,6 +546,11 @@ fn escape_text(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Escape text for an HTML attribute value (double-quoted).
+fn escape_attribute(text: &str) -> String {
+    escape_text(text).replace('"', "&quot;")
 }
 
 fn slugify(text: &str) -> String {
@@ -561,7 +757,7 @@ mod tests {
         let (_dir, index) = fixture_index();
         let source = "Intro with [a2](~alpha/a2#part) and [missing](~alpha/nope).\n\n\
                       ## First\n\n```\n## not a heading [x](~alpha/a2)\n```\n\n### Sub\n";
-        let rewritten = super::rewrite_source(source, &index, Some("2.1"));
+        let rewritten = super::rewrite_source(source, &index, Some("2.1"), None);
         assert!(rewritten.contains("[a2](/alpha/acorn/wide/a2.md#part)"));
         // Unresolvable links and code-block contents stay untouched.
         assert!(rewritten.contains("[missing](~alpha/nope)"));
@@ -573,7 +769,8 @@ mod tests {
     #[test]
     fn rewrite_source_without_numbering_leaves_headings_alone() {
         let (_dir, index) = fixture_index();
-        let rewritten = super::rewrite_source("## Plain\n\nSee [a2](~alpha/a2).\n", &index, None);
+        let rewritten =
+            super::rewrite_source("## Plain\n\nSee [a2](~alpha/a2).\n", &index, None, None);
         assert!(rewritten.contains("## Plain"));
         assert!(rewritten.contains("[a2](/alpha/acorn/wide/a2.md)"));
     }
@@ -634,6 +831,145 @@ mod tests {
         let rendered = render("> just quoting someone\n");
         assert!(rendered.html.contains("<blockquote>"));
         assert!(!rendered.html.contains("admonition"));
+    }
+
+    /// A one-image index: wiring.png (the 2×1 test PNG) inside "topic",
+    /// published at /alpha/topic/wiring.png.
+    fn image_fixture() -> (tempfile::TempDir, crate::images::ImageIndex) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("topic")).unwrap();
+        std::fs::write(dir.path().join("topic/wiring.png"), crate::site::TEST_PNG).unwrap();
+        let index = crate::images::ImageIndex::new(&[crate::images::ImageAsset {
+            source: dir.path().join("topic/wiring.png"),
+            url: "/alpha/topic/wiring.png".into(),
+        }]);
+        (dir, index)
+    }
+
+    #[test]
+    fn relative_images_resolve_with_dimensions() {
+        let (dir, index) = image_fixture();
+        let topic = dir.path().join("topic");
+        let rendered = super::render(
+            "Inline ![Alt \"text\"](wiring.png) here.",
+            &LinkIndex::default(),
+            RenderOptions {
+                images: Some(ImageScope {
+                    index: &index,
+                    dir: &topic,
+                }),
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(rendered.html.contains(
+            "<img src=\"/alpha/topic/wiring.png\" \
+             alt=\"Alt &quot;text&quot;\" width=\"2\" height=\"1\">"
+        ));
+        assert!(rendered.broken.is_empty());
+    }
+
+    #[test]
+    fn captioned_standalone_images_become_figures() {
+        let (dir, index) = image_fixture();
+        let topic = dir.path().join("topic");
+        let options = RenderOptions {
+            images: Some(ImageScope {
+                index: &index,
+                dir: &topic,
+            }),
+            ..RenderOptions::default()
+        };
+        let rendered = super::render(
+            "![Alt](wiring.png \"A caption\")\n",
+            &LinkIndex::default(),
+            options,
+        )
+        .unwrap();
+        assert_eq!(
+            rendered.html,
+            "<figure><img src=\"/alpha/topic/wiring.png\" alt=\"Alt\" \
+             width=\"2\" height=\"1\"><figcaption>A caption</figcaption></figure>\n"
+        );
+
+        // Mid-sentence, the caption stays a plain title attribute — an
+        // <img> inside a <p> can't legally hold a <figcaption>.
+        let rendered = super::render(
+            "Before ![Alt](wiring.png \"Cap\") after.",
+            &LinkIndex::default(),
+            options,
+        )
+        .unwrap();
+        assert!(rendered.html.contains("<p>Before <img"));
+        assert!(rendered.html.contains(" title=\"Cap\"> after.</p>"));
+        assert!(!rendered.html.contains("<figure>"));
+    }
+
+    #[test]
+    fn missing_images_are_broken_and_downgradable() {
+        let (dir, index) = image_fixture();
+        let topic = dir.path().join("topic");
+        let scope = Some(ImageScope {
+            index: &index,
+            dir: &topic,
+        });
+        let rendered = super::render(
+            "![x](gone.png)",
+            &LinkIndex::default(),
+            RenderOptions {
+                images: scope,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(rendered.broken.len(), 1);
+        assert!(rendered.broken[0].contains("image 'gone.png' not found"));
+
+        let rendered = super::render(
+            "![x](gone.png)",
+            &LinkIndex::default(),
+            RenderOptions {
+                images: scope,
+                allow_dangling: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(rendered.broken.is_empty());
+        assert_eq!(rendered.dangling.len(), 1);
+        assert!(rendered.html.contains("src=\"gone.png\""));
+    }
+
+    #[test]
+    fn tilde_image_destinations_are_always_broken() {
+        let rendered =
+            super::render("![x](~alpha/a2)", &LinkIndex::default(), allow_dangling()).unwrap();
+        assert_eq!(rendered.broken.len(), 1);
+        assert!(rendered.broken[0].contains("~references name pages"));
+    }
+
+    #[test]
+    fn external_and_absolute_images_pass_through() {
+        let rendered = render("![x](https://example.com/i.png) and ![y](/assets/logo.svg)\n");
+        assert!(rendered.html.contains("src=\"https://example.com/i.png\""));
+        assert!(rendered.html.contains("src=\"/assets/logo.svg\""));
+        assert!(rendered.broken.is_empty());
+    }
+
+    #[test]
+    fn rewrite_source_rewrites_image_destinations() {
+        let (dir, index) = image_fixture();
+        let topic = dir.path().join("topic");
+        let scope = Some(ImageScope {
+            index: &index,
+            dir: &topic,
+        });
+        let source = "![Alt](wiring.png \"Cap\")\n\n![B](wiring.png)\n\n![C](gone.png)\n";
+        let rewritten = super::rewrite_source(source, &LinkIndex::default(), None, scope);
+        assert!(rewritten.contains("![Alt](/alpha/topic/wiring.png \"Cap\")"));
+        assert!(rewritten.contains("![B](/alpha/topic/wiring.png)"));
+        // Unresolvable destinations stay untouched, like links.
+        assert!(rewritten.contains("![C](gone.png)"));
     }
 
     #[test]

@@ -8,6 +8,7 @@ description = "Static site builder for the Peios learn documentation."
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
+imagesize = "0.15.0"
 minijinja = "2"
 notify = "8"
 pagefind = "1.5.2"

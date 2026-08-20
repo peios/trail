@@ -48,6 +48,16 @@
     </nav>
     {% block heading %}<h1>{{ article.title }}</h1>{% endblock %}
     {{ content | safe }}
+    {%- if related %}
+    <section class="related" data-pagefind-ignore>
+      <h2 class="related-label">Related Content</h2>
+      <ul class="related-list">
+        {%- for link in related %}
+        <li><a href="{{ link.path | safe }}">{{ link.title }}</a></li>
+        {%- endfor %}
+      </ul>
+    </section>
+    {%- endif %}
   </article>
 
   <aside class="toc">

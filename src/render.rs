@@ -20,6 +20,14 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("print.html", include_str!("../theme/print.html")),
 ];
 
+/// One entry in an article's Related Content list: a resolved
+/// `related:` reference, ready to display.
+#[derive(Debug, serde::Serialize)]
+pub struct RelatedLink {
+    pub path: String,
+    pub title: String,
+}
+
 /// One article's slot on a `/print` single-page view.
 #[derive(Debug, serde::Serialize)]
 pub struct PrintSection {
@@ -152,6 +160,7 @@ impl Renderer {
         chapters: &[&Chapter],
         article: &Article,
         rendered: &markdown::Rendered,
+        related: &[RelatedLink],
     ) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.env
@@ -165,6 +174,7 @@ impl Renderer {
                 book => book,
                 chapters => chapters,
                 article => article,
+                related => related,
                 md_path => format!("{}.md", article.path),
                 content => rendered.html,
                 toc => rendered.toc,
@@ -218,6 +228,7 @@ impl Renderer {
         folder: Option<&TopicFolder>,
         article: &Article,
         rendered: &markdown::Rendered,
+        related: &[RelatedLink],
     ) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.env
@@ -231,6 +242,7 @@ impl Renderer {
                 topic => topic,
                 folder => folder,
                 article => article,
+                related => related,
                 md_path => format!("{}.md", article.path),
                 content => rendered.html,
                 toc => rendered.toc,
@@ -378,7 +390,16 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .book_article(&site, alpha, &[], manual, &chapters, article, &rendered)
+            .book_article(
+                &site,
+                alpha,
+                &[],
+                manual,
+                &chapters,
+                article,
+                &rendered,
+                &[],
+            )
             .unwrap();
 
         // The sidebar shows the whole book, current article marked and
@@ -425,7 +446,7 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered)
+            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
             .unwrap();
 
         // Sidebar lists all the topic's articles, marking the current one.
@@ -458,7 +479,7 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered)
+            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
             .unwrap();
 
         assert!(html.contains("<pre class=\"mermaid\">"));
@@ -492,6 +513,7 @@ mod tests {
                 Some(folder),
                 article,
                 &rendered,
+                &[],
             )
             .unwrap();
 
@@ -514,7 +536,7 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], narrow, None, b1, &rendered)
+            .article(&site, alpha, &[acorn], narrow, None, b1, &rendered, &[])
             .unwrap();
         assert!(html.contains("<details>"));
         assert!(!html.contains("<details open>"));
@@ -540,7 +562,7 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[], loose, None, article, &rendered)
+            .article(&site, alpha, &[], loose, None, article, &rendered, &[])
             .unwrap();
 
         assert!(html.contains(">Loose</a>"));
@@ -563,7 +585,7 @@ mod tests {
         .unwrap();
         let html = Renderer::new(false)
             .unwrap()
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered)
+            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
             .unwrap();
 
         assert!(!html.contains("On this page"));
@@ -602,7 +624,7 @@ mod tests {
         )
         .unwrap();
         let html = renderer
-            .article(&site, alpha, &[acorn], wide, None, article, &rendered)
+            .article(&site, alpha, &[acorn], wide, None, article, &rendered, &[])
             .unwrap();
         assert!(html.contains("data-pagefind-body"));
         assert!(html.contains("data-pagefind-meta=\"crumbs:Alpha / Acorn Docs / Wide Topic\""));
@@ -624,7 +646,16 @@ mod tests {
         )
         .unwrap();
         let html = renderer
-            .book_article(&site, alpha, &[], manual, &chapters, article, &rendered)
+            .book_article(
+                &site,
+                alpha,
+                &[],
+                manual,
+                &chapters,
+                article,
+                &rendered,
+                &[],
+            )
             .unwrap();
         assert!(html.contains("data-pagefind-meta=\"crumbs:Alpha / AM / Setup / Advanced\""));
     }
