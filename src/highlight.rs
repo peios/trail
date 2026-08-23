@@ -5,6 +5,7 @@
 //! follows the reader's light/dark choice through the same CSS tokens as
 //! everything else, instead of freezing one palette into the markup.
 
+use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 use syntect::html::{ClassStyle, ClassedHTMLGenerator};
@@ -19,9 +20,46 @@ const CLASS_STYLE: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
 
 /// The bundled syntax definitions; parsing them is expensive, so one set
 /// is built on first use and shared for the whole build.
+///
+/// syntect's own defaults stop at about forty languages and are missing
+/// several a documentation site cannot do without — TOML above all, but
+/// also TypeScript, Zig, Nix, Dockerfile and the shell-session forms.
+/// `two-face` carries bat's collection instead: the same definitions,
+/// several hundred of them. Their licences ship at
+/// /assets/LICENSE-Syntaxes.txt, as those licences require.
 fn syntaxes() -> &'static SyntaxSet {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
-    SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+    SYNTAXES.get_or_init(two_face::syntax::extra_newlines)
+}
+
+/// The licences of the bundled syntax definitions, as one text file.
+/// Only the ones whose terms require acknowledgement are listed; the
+/// rest (Sublime's own permissive licence and friends) do not ask for
+/// it. Shipped at /assets/LICENSE-Syntaxes.txt, beside the fonts'.
+pub fn licenses() -> String {
+    let mut out = String::new();
+    for line in [
+        "Syntax highlighting in this site's code blocks uses syntax definitions",
+        "bundled with Trail, collected by the `two-face` crate from bat's assets.",
+        "The licences below are those whose terms require acknowledgement when",
+        "the definitions are redistributed.",
+        "",
+        "The full listing, including the licences that do not require",
+        "acknowledgement, is at:",
+        two_face::acknowledgement::url(),
+    ] {
+        out.push_str(line);
+        out.push('\n');
+    }
+    for license in two_face::acknowledgement::listing().for_syntaxes() {
+        let _ = write!(
+            out,
+            "\n\n---- {} ----\n\n{}\n",
+            license.rel_path.display(),
+            license.text.trim_end()
+        );
+    }
+    out
 }
 
 /// Render one code block: the highlighted source inside a wrapper that
@@ -86,6 +124,32 @@ mod tests {
         }
         // An unknown language is still announced, for the label and CSS.
         assert!(code_block(Some("nosuchlang"), "x\n").contains("data-language=\"nosuchlang\""));
+    }
+
+    #[test]
+    fn the_extended_set_covers_the_languages_the_defaults_miss() {
+        // syntect's own defaults stop short of these; the docs promise
+        // them, so a change of syntax set has to fail here first.
+        for (language, source) in [
+            ("toml", "# hi\nkey = \"value\"\n"),
+            ("typescript", "// hi\nconst s: string = \"x\";\n"),
+            ("dockerfile", "# hi\nFROM alpine\n"),
+            ("nix", "# hi\n{ pkgs }: pkgs.hello\n"),
+            ("zig", "// hi\nconst x = 1;\n"),
+        ] {
+            let html = code_block(Some(language), source);
+            assert!(
+                html.contains("hl-comment"),
+                "{language} was not highlighted: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn syntax_licenses_are_shippable() {
+        let text = licenses();
+        assert!(text.contains("two-face"));
+        assert!(text.len() > 500, "acknowledgements look empty");
     }
 
     #[test]

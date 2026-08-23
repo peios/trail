@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::cli::BuildArgs;
 use crate::export;
+use crate::highlight;
 use crate::images::{ImageIndex, ImageScope};
 use crate::links::LinkIndex;
 use crate::markdown;
@@ -86,10 +87,13 @@ pub fn run(args: &BuildArgs) -> Result<()> {
         render_llms_full: args.render_llms_full,
     };
     let pages = build_site(&site, &out, options)?;
+    let products = site.products.len();
     println!(
-        "built {} pages ({} products) → {}",
+        "built {} page{} ({} product{}) → {}",
         pages,
-        site.products.len(),
+        if pages == 1 { "" } else { "s" },
+        products,
+        if products == 1 { "" } else { "s" },
         out.display()
     );
     Ok(())
@@ -232,6 +236,12 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
     for (rel, contents) in ASSET_FILES {
         out.write(&out.dir().join(rel), contents)?;
     }
+    // The bundled syntax definitions carry licences that ask to travel
+    // with them, exactly as the fonts' do.
+    out.write(
+        &out.dir().join("assets/LICENSE-Syntaxes.txt"),
+        highlight::licenses().as_bytes(),
+    )?;
     if let Some(source) = &site.custom_css {
         let contents = fs::read(source)
             .with_context(|| format!("reading custom stylesheet {}", source.display()))?;

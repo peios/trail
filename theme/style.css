@@ -1264,6 +1264,9 @@ body.drawer-open { overflow: hidden; }
   .copy-code { opacity: 1; }
 }
 
+/* Nothing to copy on paper. */
+@media print { .copy-code { display: none; } }
+
 /* ---- Heading permalinks ---------------------------------------------- */
 
 .heading-anchor {

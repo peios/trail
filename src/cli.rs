@@ -35,7 +35,8 @@ pub struct BuildArgs {
     pub allow_dangling_links: bool,
 
     /// Fail the build when an article has no `description:` frontmatter.
-    /// Descriptions feed search-result snippets and social previews.
+    /// Descriptions become each page's meta description and social
+    /// preview text, and its standfirst in the markdown mirrors.
     #[arg(long)]
     pub strict: bool,
 
