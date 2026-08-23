@@ -1017,6 +1017,30 @@ mod tests {
         assert!(html.contains("data-pagefind-meta=\"crumbs:Alpha / AM / Setup / Advanced\""));
     }
 
+    /// The search box's slash commands are JavaScript, so their test is
+    /// too: theme/tests/commands.mjs drives theme/search.js against a stub
+    /// DOM. It needs node, which not every machine building trail has —
+    /// where node is missing the test says so rather than failing, and CI
+    /// (which has node) is what keeps it honest.
+    #[test]
+    fn slash_commands_do_what_they_say() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/theme/tests/commands.mjs");
+        let run = match std::process::Command::new("node").arg(script).output() {
+            Ok(run) => run,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipping: node is not installed, so {script} did not run");
+                return;
+            }
+            Err(error) => panic!("running node: {error}"),
+        };
+        assert!(
+            run.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
     #[test]
     fn live_reload_script_is_dev_server_only() {
         let (_dir, site) = fixture_site();

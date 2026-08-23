@@ -137,7 +137,7 @@
 <dialog class="search-modal" id="search-modal" aria-label="Search {{ site.sitename }}">
   <div class="search-panel">
     <div class="search-box">
-      <input type="search" placeholder="Search {{ site.sitename }}…" autocomplete="off" aria-label="Search query">
+      <input type="search" placeholder="Search {{ site.sitename }}, or / for commands…" autocomplete="off" aria-label="Search query">
       <button class="search-close" type="button" data-search-close aria-label="Close search"><kbd>Esc</kbd></button>
     </div>
     <ul class="search-results" role="listbox"></ul>
@@ -164,11 +164,22 @@
       button.title = "Theme: " + state;
     };
     apply(document.documentElement.dataset.theme || "system");
-    button.addEventListener("click", () => {
-      const order = ["system", "light", "dark"];
-      const next = order[(order.indexOf(button.dataset.themeState) + 1) % order.length];
-      apply(next);
-    });
+    const order = ["system", "light", "dark"];
+    const cycle = () =>
+      apply(order[(order.indexOf(button.dataset.themeState) + 1) % order.length]);
+    button.addEventListener("click", cycle);
+    // The /theme command in the search box drives the same state as the
+    // button, so the two can never disagree.
+    window.trail.themes = order;
+    window.trail.setTheme = (state) => {
+      if (!order.includes(state)) return null;
+      apply(state);
+      return state;
+    };
+    window.trail.cycleTheme = () => {
+      cycle();
+      return button.dataset.themeState;
+    };
   })();
 
   // Book tree: chapters expanded by hand stay expanded while moving
