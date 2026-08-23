@@ -1,0 +1,42 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The binary is consumed by peios/learn's Pages workflow, which runs
+      # on the same runner image, so a plain glibc build is enough. A fully
+      # static one would mean cross-compiling zstd-sys (pagefind's, via cc)
+      # against musl, which is a toolchain to maintain for no gain here.
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Stage the artifact
+        run: cp target/release/trail trail-linux-amd64
+
+      - name: Update latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes 2>/dev/null || true
+          git tag -f latest
+          git push -f origin latest
+          gh release create latest trail-linux-amd64 \
+            --title "Latest Build" \
+            --notes "Built from $(git rev-parse --short HEAD) on $(date -u +%Y-%m-%d)"
