@@ -13,19 +13,19 @@
 <div class="drawer-overlay" data-drawer-close></div>
 <div class="article-layout" style="--pc: {{ product.color }}">
   <aside class="sidebar">
-    <a class="wordmark drawer-wordmark" href="/">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
-    <p class="sidebar-topic"><a href="{{ book.path | safe }}" aria-current="page">{{ book.short or book.title }}</a></p>
-    <nav data-book-nav="{{ book.path | safe }}">
+    <a class="wordmark drawer-wordmark" href="{{ '/' | url }}">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
+    <p class="sidebar-topic"><a href="{{ book.path | url }}" aria-current="page">{{ book.short or book.title }}</a></p>
+    <nav data-book-nav="{{ book.path | url }}">
       {{ nav(book.children, book.path) }}
     </nav>
   </aside>
 
   <article class="article-body" data-pagefind-body data-pagefind-meta="crumbs:{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %}">
     <nav class="crumbs" data-pagefind-ignore>
-      <a href="{{ product.path | safe }}">{{ product.title }}</a>
+      <a href="{{ product.path | url }}">{{ product.title }}</a>
       {%- for ancestor in anthologies %}
       <span>/</span>
-      <a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+      <a href="{{ ancestor.path | url }}">{{ ancestor.title }}</a>
       {%- endfor %}
     </nav>
     {%- if book.short %}

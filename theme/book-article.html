@@ -2,8 +2,8 @@
 {% from "book-nav.html" import nav %}
 
 {% block sidebar %}
-<p class="sidebar-topic"><a href="{{ book.path | safe }}">{{ book.short or book.title }}</a></p>
-<nav data-book-nav="{{ book.path | safe }}">
+<p class="sidebar-topic"><a href="{{ book.path | url }}">{{ book.short or book.title }}</a></p>
+<nav data-book-nav="{{ book.path | url }}">
   {{ nav(book.children, article.path) }}
 </nav>
 {% endblock %}
@@ -13,15 +13,15 @@
 {% block heading %}<h1><span class="heading-number">{% if article.appendix %}Appendix {% endif %}{{ article.number }}</span> {{ article.title }}</h1>{% endblock %}
 
 {% block crumbs %}
-<a href="{{ product.path | safe }}">{{ product.title }}</a>
+<a href="{{ product.path | url }}">{{ product.title }}</a>
 {%- for ancestor in anthologies %}
 <span>/</span>
-<a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+<a href="{{ ancestor.path | url }}">{{ ancestor.title }}</a>
 {%- endfor %}
 <span>/</span>
-<a href="{{ book.path | safe }}">{{ book.short or book.title }}</a>
+<a href="{{ book.path | url }}">{{ book.short or book.title }}</a>
 {%- for chapter in chapters %}
 <span>/</span>
-<a href="{{ chapter.entry | safe }}">{{ chapter.title }}</a>
+<a href="{{ chapter.entry | url }}">{{ chapter.title }}</a>
 {%- endfor %}
 {% endblock %}

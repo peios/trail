@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
+use minijinja::value::Value;
 use minijinja::{Environment, context};
 
+use crate::build::BuildOptions;
 use crate::markdown;
 use crate::site::{Anthology, Article, Book, Chapter, Product, Site, Topic, TopicFolder};
 
@@ -53,7 +55,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(live_reload: bool) -> Result<Renderer> {
+    pub fn new(options: &BuildOptions) -> Result<Renderer> {
         let mut env = Environment::new();
         // Reading times are stored as minutes; pages say them in words.
         env.add_filter("duration", |minutes: u32| {
@@ -63,11 +65,51 @@ impl Renderer {
                 (hours, minutes) => format!("{hours} hr {minutes} min"),
             }
         });
+        // Every link a template emits goes through `| url`: it adds the
+        // build's base (empty for the site itself, "/<cbpath>" for the
+        // cache-busting copy) to site-absolute paths and leaves anything
+        // else — external hrefs, fragments — alone. It also marks the
+        // result safe, which the raw paths needed anyway: minijinja's HTML
+        // escaper turns "/" into "&#x2f;".
+        let base = options.base.clone();
+        env.add_filter("url", move |path: Option<&str>| -> Value {
+            let Some(path) = path else {
+                return Value::from(());
+            };
+            if path.starts_with('/') && !path.starts_with("//") {
+                Value::from_safe_string(format!("{base}{path}"))
+            } else {
+                Value::from_safe_string(path.to_string())
+            }
+        });
+        env.add_global("base", options.base.clone());
+        env.add_global("cachebust", options.cachebust.clone());
+        // What the page's own scripts need to know about this build, as a
+        // JSON literal. "<" is escaped so no value can end the <script>
+        // element it sits in.
+        env.add_global(
+            "build_config",
+            Value::from_safe_string(
+                serde_json::json!({
+                    "base": options.base,
+                    "cachebust": options.cachebust,
+                })
+                .to_string()
+                .replace('<', "\\u003c"),
+            ),
+        );
+        // The copy duplicates the whole site at a path that changes every
+        // deploy. Its pages name the real page as their canonical, and
+        // this keeps them out of the index besides.
+        env.add_global("is_copy", !options.base.is_empty());
         for (name, source) in TEMPLATES {
             env.add_template(name, source)
                 .with_context(|| format!("parsing template {name}"))?;
         }
-        Ok(Renderer { env, live_reload })
+        Ok(Renderer {
+            env,
+            live_reload: options.live_reload,
+        })
     }
 
     pub fn index(&self, site: &Site) -> Result<String> {
@@ -440,6 +482,19 @@ fn split_sitename(name: &str) -> (&str, Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain production build: no live reload, no base, no copy.
+    fn plain() -> BuildOptions {
+        BuildOptions::default()
+    }
+
+    /// The dev server's build.
+    fn reloading() -> BuildOptions {
+        BuildOptions {
+            live_reload: true,
+            ..BuildOptions::default()
+        }
+    }
     use crate::site::{self, Site};
 
     fn fixture_site() -> (tempfile::TempDir, Site) {
@@ -452,7 +507,7 @@ mod tests {
     #[test]
     fn renders_site_and_product_data_on_the_front_page() {
         let (_dir, site) = fixture_site();
-        let html = Renderer::new(false).unwrap().index(&site).unwrap();
+        let html = Renderer::new(&plain()).unwrap().index(&site).unwrap();
 
         assert!(html.contains("<title>Test Learn</title>"));
         assert!(html.contains("Docs for testing"));
@@ -468,7 +523,7 @@ mod tests {
     fn renders_anthology_cards_on_the_product_page() {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
-        let html = Renderer::new(false).unwrap().product(&site, alpha).unwrap();
+        let html = Renderer::new(&plain()).unwrap().product(&site, alpha).unwrap();
 
         assert!(html.contains("<title>Alpha — Test Learn</title>"));
         assert!(html.contains("Acorn Docs"));
@@ -487,7 +542,7 @@ mod tests {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
         let acorn = alpha.anthologies().find(|d| d.slug == "acorn").unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .anthology(&site, alpha, &[], acorn)
             .unwrap();
@@ -512,7 +567,7 @@ mod tests {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
         let manual = alpha.books().find(|b| b.slug == "manual").unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .book(&site, alpha, &[], manual)
             .unwrap();
@@ -561,7 +616,7 @@ mod tests {
             },
         )
         .unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .book_article(
                 &site,
@@ -610,7 +665,7 @@ mod tests {
             },
         )
         .unwrap();
-        let glossary_html = Renderer::new(false)
+        let glossary_html = Renderer::new(&plain())
             .unwrap()
             .book_article(
                 &site,
@@ -659,7 +714,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .article(
                 &site,
@@ -702,7 +757,7 @@ mod tests {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
         let manual = alpha.books().find(|b| b.slug == "manual").unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .book(&site, alpha, &[], manual)
             .unwrap();
@@ -727,7 +782,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .article(
                 &site,
@@ -763,7 +818,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .article(
                 &site,
@@ -795,7 +850,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .article(
                 &site,
@@ -831,7 +886,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .article(
                 &site,
@@ -864,7 +919,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(false)
+        let html = Renderer::new(&plain())
             .unwrap()
             .article(
                 &site,
@@ -886,7 +941,7 @@ mod tests {
     #[test]
     fn pages_carry_the_search_modal_and_indexing_attributes() {
         let (_dir, site) = fixture_site();
-        let renderer = Renderer::new(false).unwrap();
+        let renderer = Renderer::new(&plain()).unwrap();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
 
         // Every page gets the modal and the lazy search script.
@@ -965,8 +1020,8 @@ mod tests {
     #[test]
     fn live_reload_script_is_dev_server_only() {
         let (_dir, site) = fixture_site();
-        let with = Renderer::new(true).unwrap().index(&site).unwrap();
-        let without = Renderer::new(false).unwrap().index(&site).unwrap();
+        let with = Renderer::new(&reloading()).unwrap().index(&site).unwrap();
+        let without = Renderer::new(&plain()).unwrap().index(&site).unwrap();
 
         assert!(with.contains("EventSource(\"/~trail/reload\")"));
         assert!(!without.contains("EventSource"));

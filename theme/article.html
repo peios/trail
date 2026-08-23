@@ -14,26 +14,26 @@
   <aside class="sidebar">
     {#- The drawer covers the header, so it carries its own wordmark
         (home link) at the top; hidden whenever the sidebar is a column. #}
-    <a class="wordmark drawer-wordmark" href="/">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
+    <a class="wordmark drawer-wordmark" href="{{ '/' | url }}">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
     {%- block sidebar %}
-    <p class="sidebar-topic"><a href="{{ topic.entry | safe }}">{{ topic.title }}</a></p>
+    <p class="sidebar-topic"><a href="{{ topic.entry | url }}">{{ topic.title }}</a></p>
     <ul class="sidebar-list">
       {%- for child in topic.children %}
       {%- if child.kind == "folder" %}
       {%- if child.entry %}
       <li class="sidebar-folder">
         <details{% if article.path is startingwith(child.path ~ "/") %} open{% endif %}>
-          <summary><a href="{{ child.entry | safe }}">{{ child.title }}</a></summary>
+          <summary><a href="{{ child.entry | url }}">{{ child.title }}</a></summary>
           <ul class="sidebar-list">
             {%- for entry in child.articles %}
-            <li><a href="{{ entry.path | safe }}"{% if entry.path == article.path %} class="current" aria-current="page"{% endif %}>{{ entry.title }}</a></li>
+            <li><a href="{{ entry.path | url }}"{% if entry.path == article.path %} class="current" aria-current="page"{% endif %}>{{ entry.title }}</a></li>
             {%- endfor %}
           </ul>
         </details>
       </li>
       {%- endif %}
       {%- else %}
-      <li><a href="{{ child.path | safe }}"{% if child.path == article.path %} class="current" aria-current="page"{% endif %}>{{ child.title }}</a></li>
+      <li><a href="{{ child.path | url }}"{% if child.path == article.path %} class="current" aria-current="page"{% endif %}>{{ child.title }}</a></li>
       {%- endif %}
       {%- endfor %}
     </ul>
@@ -55,20 +55,20 @@
   <article class="article-body" data-pagefind-body data-pagefind-meta="crumbs:{% block search_crumbs %}{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %} / {{ topic.title }}{% if folder %} / {{ folder.title }}{% endif %}{% endblock %}">
     <nav class="crumbs" data-pagefind-ignore>
       {%- block crumbs %}
-      <a href="{{ product.path | safe }}">{{ product.title }}</a>
+      <a href="{{ product.path | url }}">{{ product.title }}</a>
       {%- for ancestor in anthologies %}
       <span>/</span>
-      <a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+      <a href="{{ ancestor.path | url }}">{{ ancestor.title }}</a>
       {%- endfor %}
       <span>/</span>
-      <a href="{{ topic.entry | safe }}">{{ topic.title }}</a>
+      <a href="{{ topic.entry | url }}">{{ topic.title }}</a>
       {%- if folder %}
       <span>/</span>
-      <a href="{{ folder.entry | safe }}">{{ folder.title }}</a>
+      <a href="{{ folder.entry | url }}">{{ folder.title }}</a>
       {%- endif %}
       {%- endblock %}
       {%- if print_url %}
-      <a class="print-link" href="{{ print_url | safe }}" title="Everything here on one page, opened at this article">
+      <a class="print-link" href="{{ print_url | url }}" title="Everything here on one page, opened at this article">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4v-6h16v6h-2M8 14h8v7H8z"/></svg>
         <span>Single page</span>
       </a>
@@ -88,7 +88,7 @@
       <h2 class="related-label">Related Content</h2>
       <ul class="related-list">
         {%- for link in related %}
-        <li><a href="{{ link.path | safe }}">{{ link.title }}</a></li>
+        <li><a href="{{ link.path | url }}">{{ link.title }}</a></li>
         {%- endfor %}
       </ul>
     </section>
@@ -96,13 +96,13 @@
     {%- if previous or next %}
     <nav class="pager" data-pagefind-ignore aria-label="Nearby pages">
       {%- if previous %}
-      <a class="pager-previous" href="{{ previous.path | safe }}">
+      <a class="pager-previous" href="{{ previous.path | url }}">
         <span class="pager-label">Previous</span>
         <span class="pager-title">{{ previous.title }}</span>
       </a>
       {%- endif %}
       {%- if next %}
-      <a class="pager-next" href="{{ next.path | safe }}">
+      <a class="pager-next" href="{{ next.path | url }}">
         <span class="pager-label">Next</span>
         <span class="pager-title">{{ next.title }}</span>
       </a>

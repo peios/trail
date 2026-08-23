@@ -45,6 +45,15 @@ pub struct BuildArgs {
     /// llms.txt (which always points at print.md).
     #[arg(long)]
     pub render_llms_full: bool,
+
+    /// Publish a second copy of the whole site under this path, with every
+    /// link inside it rewritten to stay in the copy. Give it a name that
+    /// changes on every deploy — a commit hash — and the copy's URLs have
+    /// never been requested before, so nothing can serve them from a cache.
+    /// The copy is `noindex` and stays out of sitemap.xml; the real site is
+    /// unchanged apart from learning the path, which its /cb command uses.
+    #[arg(long, value_name = "PATH")]
+    pub cbpath: Option<String>,
 }
 
 impl BuildArgs {

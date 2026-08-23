@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::cli::BuildArgs;
 use crate::export;
@@ -64,7 +64,7 @@ struct PageSink {
 }
 
 /// How a build behaves, beyond the site itself.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
     /// Inject the dev-server auto-reload script into every page;
     /// plain `trail build` output never carries it.
@@ -75,6 +75,95 @@ pub struct BuildOptions {
     pub strict: bool,
     /// Emit llms-full.txt copies of the print.md bundles.
     pub render_llms_full: bool,
+    /// Prefix every link this build emits with this path — "" for the
+    /// site itself, "/<cbpath>" for the cache-busting copy. It never
+    /// affects where a file is written: the copy is built into its own
+    /// output directory, so a page's path stays the page's path and only
+    /// the URLs pointing at it grow the prefix.
+    pub base: String,
+    /// The cache-busting copy's path, if one is being published. Both the
+    /// site and the copy carry it, so the /cb command works from either.
+    pub cachebust: Option<String>,
+}
+
+impl BuildOptions {
+    /// The options for building the cache-busting copy of a site built
+    /// with these ones: same behaviour, every link prefixed.
+    fn cachebust_copy(&self, cbpath: &str) -> BuildOptions {
+        BuildOptions {
+            base: format!("/{cbpath}"),
+            ..self.clone()
+        }
+    }
+}
+
+/// Build the site, and — when one is configured — its cache-busting copy.
+/// Returns the number of pages in the site itself; the copy has the same
+/// number and is reported separately.
+pub fn build_all(site: &Site, out: &Path, options: &BuildOptions) -> Result<usize> {
+    if let Some(cbpath) = &options.cachebust {
+        validate_cbpath(cbpath, site)?;
+    }
+    let pages = build_site(site, out, options)?;
+    if let Some(cbpath) = &options.cachebust {
+        build_site(
+            site,
+            &out.join(cbpath),
+            &options.cachebust_copy(cbpath),
+        )?;
+    }
+    Ok(pages)
+}
+
+/// A cache-busting path has to be a single plain path segment that does
+/// not collide with anything the site itself publishes at the top level —
+/// otherwise the copy would bury a product, an asset directory, or the
+/// search bundle. Checked against the site rather than the output
+/// directory so a stale `dist/` cannot make a good path look taken.
+fn validate_cbpath(cbpath: &str, site: &Site) -> Result<()> {
+    ensure!(!cbpath.is_empty(), "--cbpath cannot be empty");
+    ensure!(
+        !cbpath.contains('/'),
+        "--cbpath '{cbpath}' must be a single path segment, with no '/'"
+    );
+    ensure!(
+        !cbpath.starts_with('.'),
+        "--cbpath '{cbpath}' cannot start with a dot"
+    );
+    ensure!(
+        cbpath
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
+        "--cbpath '{cbpath}' must be made of letters, digits, '-', '_' and '.'"
+    );
+    let mut taken: Vec<String> = vec![
+        "index.html".into(),
+        "404.html".into(),
+        "assets".into(),
+        "pagefind".into(),
+        "llms.txt".into(),
+        "site.json".into(),
+        "robots.txt".into(),
+        "sitemap.xml".into(),
+    ];
+    for product in &site.products {
+        taken.push(product.slug.clone());
+        taken.push(format!("{}.md", product.slug));
+    }
+    taken.extend(
+        [&site.config.custom_css, &site.config.favicon, &site.config.head_html]
+            .into_iter()
+            .flatten()
+            .chain(&site.config.passthrough)
+            .filter_map(|path| Path::new(path).components().next())
+            .map(|component| component.as_os_str().to_string_lossy().into_owned()),
+    );
+    ensure!(
+        !taken.iter().any(|name| name == cbpath),
+        "--cbpath '{cbpath}' is already a path in the site; \
+         the copy would bury it — pick a name the site does not use"
+    );
+    Ok(())
 }
 
 pub fn run(args: &BuildArgs) -> Result<()> {
@@ -85,8 +174,10 @@ pub fn run(args: &BuildArgs) -> Result<()> {
         allow_dangling_links: args.allow_dangling_links,
         strict: args.strict,
         render_llms_full: args.render_llms_full,
+        base: String::new(),
+        cachebust: args.cbpath.clone(),
     };
-    let pages = build_site(&site, &out, options)?;
+    let pages = build_all(&site, &out, &options)?;
     let products = site.products.len();
     println!(
         "built {} page{} ({} product{}) → {}",
@@ -96,13 +187,16 @@ pub fn run(args: &BuildArgs) -> Result<()> {
         if products == 1 { "" } else { "s" },
         out.display()
     );
+    if let Some(cbpath) = &args.cbpath {
+        println!("cache-busting copy → {}/{}/", out.display(), cbpath);
+    }
     Ok(())
 }
 
 /// Build the whole site into `out`, returning the number of pages written.
-pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usize> {
+pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usize> {
     let out = &Output::new(out);
-    let renderer = Renderer::new(options.live_reload)?;
+    let renderer = Renderer::new(options)?;
     let links = LinkIndex::new(site);
     let images = ImageIndex::new(&site.images);
     let refs = InlineRefIndex::new(site)?;
@@ -138,7 +232,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
     let mut sink = PageSink::default();
     for product in &site.products {
         let html = renderer.product(site, product)?;
-        write_page(&mut sink, out, &product.path, html)?;
+        write_page(&mut sink, out, options, &product.path, html)?;
         pages += 1;
         for item in product.items() {
             match item {
@@ -206,14 +300,7 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
     }
     // The AI-facing surface: markdown mirrors, /print bundles, llms.txt,
     // site.json, sitemap, robots. Print pages are pages; the rest are not.
-    pages += export::write_ai_surface(
-        site,
-        &links,
-        &images,
-        &renderer,
-        out,
-        options.render_llms_full,
-    )?;
+    pages += export::write_ai_surface(site, &links, &images, &renderer, out, options)?;
     // Referenced images ship at their published URLs; an image nothing
     // references stays out of the output — a warning, not an error, so a
     // file added ahead of its article doesn't block the build.
@@ -273,7 +360,7 @@ fn write_articles(
     links: &LinkIndex,
     images: &ImageIndex,
     refs: &InlineRefIndex,
-    options: BuildOptions,
+    options: &BuildOptions,
     site: &Site,
     product: &Product,
     anthologies: &[&Anthology],
@@ -307,6 +394,7 @@ fn write_articles(
                     page: &article.path,
                     book: None,
                 }),
+                base: &options.base,
                 ..markdown::RenderOptions::default()
             },
         )
@@ -329,7 +417,7 @@ fn write_articles(
             // search index — the canonical article covers the content.
             out.write(&page_path(out.dir(), &article.path), html.as_bytes())?;
         } else {
-            write_page(sink, out, &article.path, html)?;
+            write_page(sink, out, options, &article.path, html)?;
         }
         Ok(rendered.has_mermaid)
     };
@@ -358,7 +446,7 @@ fn write_anthology(
     links: &LinkIndex,
     images: &ImageIndex,
     refs: &InlineRefIndex,
-    options: BuildOptions,
+    options: &BuildOptions,
     site: &Site,
     product: &Product,
     parents: &[&Anthology],
@@ -367,7 +455,7 @@ fn write_anthology(
     sink: &mut PageSink,
 ) -> Result<(usize, bool)> {
     let html = renderer.anthology(site, product, parents, anthology)?;
-    write_page(sink, out, &anthology.path, html)?;
+    write_page(sink, out, options, &anthology.path, html)?;
     let mut pages = 1;
     let mut uses_mermaid = false;
     let mut trail: Vec<&Anthology> = parents.to_vec();
@@ -397,7 +485,7 @@ fn write_book(
     links: &LinkIndex,
     images: &ImageIndex,
     refs: &InlineRefIndex,
-    options: BuildOptions,
+    options: &BuildOptions,
     site: &Site,
     product: &Product,
     anthologies: &[&Anthology],
@@ -406,7 +494,7 @@ fn write_book(
     sink: &mut PageSink,
 ) -> Result<(usize, bool)> {
     let html = renderer.book(site, product, anthologies, book)?;
-    write_page(sink, out, &book.path, html)?;
+    write_page(sink, out, options, &book.path, html)?;
     let mut pages = 1;
     let mut uses_mermaid = false;
     let entries = book.articles();
@@ -430,6 +518,7 @@ fn write_book(
                     page: &article.path,
                     book: Some(&book.path),
                 }),
+                base: &options.base,
                 ..markdown::RenderOptions::default()
             },
         )
@@ -453,7 +542,7 @@ fn write_book(
             // search index — the canonical article covers the content.
             out.write(&page_path(out.dir(), &article.path), html.as_bytes())?;
         } else {
-            write_page(sink, out, &article.path, html)?;
+            write_page(sink, out, options, &article.path, html)?;
         }
         pages += 1;
     }
@@ -489,7 +578,7 @@ fn pager(order: &[(&str, &str)], article: &crate::site::Article, unit_path: &str
 fn resolve_related(
     article: &crate::site::Article,
     links: &LinkIndex,
-    options: BuildOptions,
+    options: &BuildOptions,
     sink: &mut PageSink,
 ) -> Vec<PageLink> {
     let mut related = Vec::new();
@@ -549,10 +638,19 @@ fn report_links(
     }
 }
 
-fn write_page(sink: &mut PageSink, out: &Output, url_path: &str, html: String) -> Result<()> {
+fn write_page(
+    sink: &mut PageSink,
+    out: &Output,
+    options: &BuildOptions,
+    url_path: &str,
+    html: String,
+) -> Result<()> {
     out.write(&page_path(out.dir(), url_path), html.as_bytes())?;
+    // The file lands at the page's own path inside this build's output;
+    // the search result has to link to it through the base, since a copy's
+    // index is what its own pages search.
     sink.search.push(SearchPage {
-        url: format!("{url_path}/"),
+        url: format!("{}{url_path}/", options.base),
         html,
     });
     Ok(())
@@ -651,11 +749,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();
@@ -704,11 +803,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();
@@ -759,11 +859,12 @@ mod tests {
         let err = build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap_err();
@@ -774,11 +875,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: true,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();
@@ -807,11 +909,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();
@@ -861,11 +964,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();
@@ -893,11 +997,12 @@ mod tests {
         .unwrap();
         let out = dir.path().join("dist");
         let site = Site::load(dir.path(), &out).unwrap();
-        let options = BuildOptions {
+        let options = &BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
             strict: false,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
 
         let err = build_site(&site, &out, options).unwrap_err();
@@ -913,15 +1018,175 @@ mod tests {
         let err = build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 allow_dangling_links: true,
-                ..options
+                ..options.clone()
             },
         )
         .unwrap_err();
         let message = format!("{err:#}");
         assert!(!message.contains("~alpha/nope"));
         assert!(message.contains("link '~alpha/a1' is ambiguous"));
+    }
+
+    #[test]
+    fn the_cachebust_copy_is_the_whole_site_with_every_link_prefixed() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_all(
+            &site,
+            &out,
+            &BuildOptions {
+                cachebust: Some("deadbeef".into()),
+                ..BuildOptions::default()
+            },
+        )
+        .unwrap();
+
+        // The copy is a whole site, not a landing page: pages, mirrors,
+        // bundles, assets and its own search index.
+        assert!(out.join("deadbeef/index.html").is_file());
+        assert!(out.join("deadbeef/alpha/acorn/wide/a1/index.html").is_file());
+        assert!(out.join("deadbeef/alpha/acorn/wide/a1.md").is_file());
+        assert!(out.join("deadbeef/alpha/print/index.html").is_file());
+        assert!(out.join("deadbeef/assets/style.css").is_file());
+        assert!(out.join("deadbeef/pagefind/pagefind.js").is_file());
+        assert!(out.join("deadbeef/llms.txt").is_file());
+        assert!(out.join("deadbeef/site.json").is_file());
+
+        let copy = fs::read_to_string(out.join("deadbeef/alpha/acorn/wide/a1/index.html")).unwrap();
+        // Every link inside the copy stays inside it — the whole point:
+        // one that escaped would be served from the cache the copy exists
+        // to defeat.
+        assert!(copy.contains("href=\"/deadbeef/assets/style.css\""));
+        assert!(copy.contains("src=\"/deadbeef/assets/search.js\""));
+        assert!(copy.contains("href=\"/deadbeef/alpha\""));
+        assert!(copy.contains("href=\"/deadbeef/alpha/acorn/wide/a1.md\""));
+        assert!(!copy.contains("href=\"/alpha\""));
+        assert!(!copy.contains("href=\"/assets/"));
+        assert!(!copy.contains("src=\"/assets/"));
+        // The canonical still names the real page, and the duplicate is
+        // kept out of search indexes.
+        assert!(copy.contains("<link rel=\"canonical\" href=\"/alpha/acorn/wide/a1/\">"));
+        assert!(copy.contains("name=\"robots\" content=\"noindex"));
+        // Crawler instructions belong to the site, not to a copy of it.
+        assert!(!out.join("deadbeef/robots.txt").exists());
+        assert!(!out.join("deadbeef/sitemap.xml").exists());
+
+        // The site itself is untouched apart from learning where the copy
+        // is, which is what its /cb command needs.
+        let real = fs::read_to_string(out.join("alpha/acorn/wide/a1/index.html")).unwrap();
+        assert!(real.contains("href=\"/assets/style.css\""));
+        assert!(!real.contains("/deadbeef/"));
+        assert!(!real.contains("noindex"));
+        assert!(real.contains(r#""cachebust":"deadbeef""#));
+        assert!(copy.contains(r#""base":"/deadbeef""#));
+
+        // The mirrors an agent follows are prefixed too, or the first
+        // link would walk it straight back out of the copy.
+        let mirror = fs::read_to_string(out.join("deadbeef/alpha.md")).unwrap();
+        assert!(mirror.contains("(/deadbeef/alpha/print.md)"));
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(out.join("deadbeef/site.json")).unwrap())
+                .unwrap();
+        let alpha = json["products"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|product| product["slug"] == "alpha")
+            .unwrap();
+        assert_eq!(alpha["path"], "/deadbeef/alpha");
+        assert_eq!(alpha["md"], "/deadbeef/alpha.md");
+        assert_eq!(alpha["items"][0]["path"], "/deadbeef/alpha/acorn");
+        assert_eq!(json["llms"], "/deadbeef/llms.txt");
+        let llms = fs::read_to_string(out.join("deadbeef/llms.txt")).unwrap();
+        assert!(llms.contains("(/deadbeef/alpha/print.md)"));
+        assert!(llms.contains("/deadbeef/site.json"));
+
+        // The sweep that matters: not one URL anywhere in the copy points
+        // outside it. Spot-checks above name the surfaces a person thinks
+        // of; this catches the one nobody did.
+        let mut escaped = Vec::new();
+        for file in walk_files(&out.join("deadbeef")) {
+            let Ok(text) = fs::read_to_string(&file) else {
+                continue;
+            };
+            let name = file.strip_prefix(&out).unwrap().display().to_string();
+            let markers: &[(&str, &str)] = if name.ends_with(".html") {
+                &[("href=\"", "\""), ("src=\"", "\"")]
+            } else if name.ends_with(".md") || name.ends_with(".txt") {
+                &[("](", ")")]
+            } else {
+                continue;
+            };
+            for (open, close) in markers {
+                for (at, _) in text.match_indices(open) {
+                    let from = at + open.len();
+                    let Some(end) = text[from..].find(close) else {
+                        continue;
+                    };
+                    let url = &text[from..from + end];
+                    if !url.starts_with('/') || url.starts_with("/deadbeef/") {
+                        continue;
+                    }
+                    // The one deliberate exception: a copy's page names the
+                    // real page as its canonical.
+                    if text[..at].ends_with("<link rel=\"canonical\" ") {
+                        continue;
+                    }
+                    escaped.push(format!("{name}: {url}"));
+                }
+            }
+        }
+        escaped.sort();
+        escaped.dedup();
+        assert!(escaped.is_empty(), "links escaping the copy:\n{}", escaped.join("\n"));
+    }
+
+    /// Every file under a directory, recursively.
+    fn walk_files(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let Ok(entries) = fs::read_dir(dir) else {
+            return files;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(walk_files(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn a_cachebust_path_cannot_bury_the_site_it_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        let refused = |cbpath: &str| {
+            validate_cbpath(cbpath, &site)
+                .unwrap_err()
+                .to_string()
+        };
+        // A product, its mirror, and the generated directories are all
+        // real paths the copy would sit on top of.
+        assert!(refused("alpha").contains("already a path in the site"));
+        assert!(refused("alpha.md").contains("already a path in the site"));
+        assert!(refused("assets").contains("already a path in the site"));
+        assert!(refused("pagefind").contains("already a path in the site"));
+        assert!(refused("site.json").contains("already a path in the site"));
+        // And it has to be one plain segment.
+        assert!(refused("").contains("cannot be empty"));
+        assert!(refused("a/b").contains("single path segment"));
+        assert!(refused(".well-known").contains("cannot start with a dot"));
+        assert!(refused("a b").contains("letters, digits"));
+        // A commit hash, which is what this is for.
+        validate_cbpath("0a1b2c3d4e5f", &site).unwrap();
     }
 
     #[test]
@@ -946,11 +1211,12 @@ mod tests {
         .unwrap();
 
         let out = dir.path().join("dist");
-        let options = BuildOptions {
+        let options = &BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
             strict: false,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
         let site = Site::load(dir.path(), &out).unwrap();
         build_site(&site, &out, options).unwrap();
@@ -989,11 +1255,12 @@ mod tests {
         .unwrap();
         fs::write(dir.path().join("custom.css"), ":root { --bg: #000 }").unwrap();
         let out = dir.path().join("dist");
-        let options = BuildOptions {
+        let options = &BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
             strict: false,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
         let site = Site::load(dir.path(), &out).unwrap();
         build_site(&site, &out, options).unwrap();
@@ -1053,11 +1320,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         site::write_fixture(dir.path());
         let out = dir.path().join("dist");
-        let options = BuildOptions {
+        let options = &BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
             strict: false,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
         let site = Site::load(dir.path(), &out).unwrap();
         build_site(&site, &out, options).unwrap();
@@ -1124,11 +1392,12 @@ mod tests {
         .unwrap();
         let out = dir.path().join("dist");
         let site = Site::load(dir.path(), &out).unwrap();
-        let strict = BuildOptions {
+        let strict = &BuildOptions {
             live_reload: false,
             allow_dangling_links: true,
             strict: true,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
         let err = build_site(&site, &out, strict).unwrap_err().to_string();
         assert!(err.contains("without a description"));
@@ -1138,9 +1407,9 @@ mod tests {
         assert!(err.contains("'/alpha/manual/setup/install'"));
 
         // The default build doesn't care.
-        let lax = BuildOptions {
+        let lax = &BuildOptions {
             strict: false,
-            ..strict
+            ..strict.clone()
         };
         build_site(&site, &out, lax).unwrap();
     }
@@ -1154,11 +1423,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();
@@ -1197,11 +1467,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();
@@ -1246,11 +1517,12 @@ mod tests {
         )
         .unwrap();
         let out = dir.path().join("dist");
-        let options = BuildOptions {
+        let options = &BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
             strict: false,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
         let site = Site::load(dir.path(), &out).unwrap();
         build_site(&site, &out, options).unwrap();
@@ -1311,11 +1583,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         site::write_fixture(dir.path());
         let out = dir.path().join("dist");
-        let options = BuildOptions {
+        let options = &BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
             strict: false,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
         let site = Site::load(dir.path(), &out).unwrap();
         build_site(&site, &out, options).unwrap();
@@ -1357,11 +1630,12 @@ mod tests {
         let err = build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap_err();
@@ -1390,11 +1664,12 @@ mod tests {
         let err = build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap_err();
@@ -1411,11 +1686,12 @@ mod tests {
         site::write_fixture(dir.path());
         let out = dir.path().join("dist");
         let site = Site::load(dir.path(), &out).unwrap();
-        let options = BuildOptions {
+        let options = &BuildOptions {
             live_reload: false,
             allow_dangling_links: false,
             strict: false,
             render_llms_full: false,
+            ..BuildOptions::default()
         };
         build_site(&site, &out, options).unwrap();
 
@@ -1447,11 +1723,12 @@ mod tests {
         build_site(
             &site,
             &out,
-            BuildOptions {
+            &BuildOptions {
                 live_reload: false,
                 allow_dangling_links: false,
                 strict: false,
                 render_llms_full: false,
+                ..BuildOptions::default()
             },
         )
         .unwrap();

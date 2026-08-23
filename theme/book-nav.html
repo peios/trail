@@ -9,13 +9,13 @@
   {%- for child in children %}
   {%- if child.kind == "chapter" %}
   <li class="sidebar-chapter">
-    <details{% if current is startingwith(child.path ~ "/") %} open{% endif %} data-chapter="{{ child.path | safe }}">
-      <summary><a href="{{ child.entry | safe }}">{% if child.appendix %}<span class="appendix-number">Appendix {{ child.number }}</span>{% else %}<span class="section-number">{{ child.number }}</span>{% endif %}{{ child.title }}</a></summary>
+    <details{% if current is startingwith(child.path ~ "/") %} open{% endif %} data-chapter="{{ child.path | url }}">
+      <summary><a href="{{ child.entry | url }}">{% if child.appendix %}<span class="appendix-number">Appendix {{ child.number }}</span>{% else %}<span class="section-number">{{ child.number }}</span>{% endif %}{{ child.title }}</a></summary>
       {{ nav(child.children, current) }}
     </details>
   </li>
   {%- else %}
-  <li><a href="{{ child.path | safe }}"{% if child.path == current %} class="current" aria-current="page"{% endif %}>{% if child.appendix %}<span class="appendix-number">Appendix {{ child.number }}</span>{% else %}<span class="section-number">{{ child.number }}</span>{% endif %}{{ child.title }}</a></li>
+  <li><a href="{{ child.path | url }}"{% if child.path == current %} class="current" aria-current="page"{% endif %}>{% if child.appendix %}<span class="appendix-number">Appendix {{ child.number }}</span>{% else %}<span class="section-number">{{ child.number }}</span>{% endif %}{{ child.title }}</a></li>
   {%- endif %}
   {%- endfor %}
 </ul>

@@ -6,10 +6,10 @@
 {% block content %}
 <section class="hero product-hero" style="--pc: {{ product.color }}" data-pagefind-body data-pagefind-meta="crumbs:{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %}">
   <nav class="crumbs hero-crumbs" data-pagefind-ignore>
-    <a href="{{ product.path | safe }}">{{ product.title }}</a>
+    <a href="{{ product.path | url }}">{{ product.title }}</a>
     {%- for ancestor in anthologies %}
     <span>/</span>
-    <a href="{{ ancestor.path | safe }}">{{ ancestor.title }}</a>
+    <a href="{{ ancestor.path | url }}">{{ ancestor.title }}</a>
     {%- endfor %}
   </nav>
   <h1>{{ anthology.title }}</h1>

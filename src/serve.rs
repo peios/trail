@@ -37,10 +37,12 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         allow_dangling_links: args.build.allow_dangling_links,
         strict: args.build.strict,
         render_llms_full: args.build.render_llms_full,
+        base: String::new(),
+        cachebust: args.build.cbpath.clone(),
     };
     // A broken site shouldn't kill the dev server: report, serve whatever
     // output already exists, and let the watcher rebuild once it's fixed.
-    match Site::load(&root, &out).and_then(|site| build::build_site(&site, &out, options)) {
+    match Site::load(&root, &out).and_then(|site| build::build_all(&site, &out, &options)) {
         Ok(_) => {}
         Err(error) => eprintln!("initial build failed (serving previous output): {error:#}"),
     }
@@ -55,7 +57,8 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         let state = state.clone();
         let root = root.clone();
         let out = out.clone();
-        std::thread::spawn(move || watch_and_rebuild(&root, &out, options, &state));
+        let options = options.clone();
+        std::thread::spawn(move || watch_and_rebuild(&root, &out, &options, &state));
     }
 
     let runtime = tokio::runtime::Runtime::new().context("starting async runtime")?;
@@ -113,7 +116,12 @@ fn as_event(version: u64) -> Result<SseEvent, Infallible> {
     Ok(SseEvent::default().data(version.to_string()))
 }
 
-fn watch_and_rebuild(root: &Path, out: &Path, options: build::BuildOptions, state: &ReloadState) {
+fn watch_and_rebuild(
+    root: &Path,
+    out: &Path,
+    options: &build::BuildOptions,
+    state: &ReloadState,
+) {
     // Event paths arrive absolute; canonicalize for the ignore checks.
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let canonical_out = std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
@@ -145,7 +153,7 @@ fn watch_and_rebuild(root: &Path, out: &Path, options: build::BuildOptions, stat
         if !relevant {
             continue;
         }
-        match Site::load(root, out).and_then(|site| build::build_site(&site, out, options)) {
+        match Site::load(root, out).and_then(|site| build::build_all(&site, out, options)) {
             Ok(pages) => {
                 let version = state.version.fetch_add(1, Ordering::SeqCst) + 1;
                 let _ = state.announce.send(version);

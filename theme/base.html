@@ -5,13 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ site.sitename }}{% endblock %}</title>
 <script>
+  // What this build knows about itself, for the scripts below and for
+  // search.js: `base` is the path prefix every link on this page carries
+  // ("" on the site itself, "/<cbpath>" inside the cache-busting copy),
+  // and `cachebust` is the copy's path when one was published.
+  window.trail = {{ build_config }};
   // Apply the saved theme choice before first paint (no flash).
   try {
     const theme = localStorage.getItem("trail-theme");
     if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
   } catch {}
 </script>
-<link rel="stylesheet" href="/assets/style.css">
+{%- if is_copy %}
+{#- The copy duplicates every page at a path that changes on each deploy;
+    its canonical names the real page, and this keeps the duplicates out
+    of search indexes entirely. #}
+<meta name="robots" content="noindex, follow">
+{%- endif %}
+<link rel="stylesheet" href="{{ '/assets/style.css' | url }}">
 {%- if site.accent %}
 {%- set dark_accent = site.accent_dark or "color-mix(in srgb, " ~ site.accent ~ " 75%, white)" %}
 <style>
@@ -30,13 +41,13 @@
 </style>
 {%- endif %}
 {%- if site.custom_css %}
-<link rel="stylesheet" href="/assets/custom.css">
+<link rel="stylesheet" href="{{ '/assets/custom.css' | url }}">
 {%- endif %}
 {%- if favicon %}
-<link rel="icon" href="{{ favicon | safe }}">
+<link rel="icon" href="{{ favicon | url }}">
 {%- endif %}
 {%- if md_path %}
-<link rel="alternate" type="text/markdown" href="{{ md_path | safe }}">
+<link rel="alternate" type="text/markdown" href="{{ md_path | url }}">
 {%- endif %}
 {%- if meta %}
 {%- if meta.description %}
@@ -61,25 +72,25 @@
 
 <header class="site-header">
   {%- block menu_button %}{% endblock %}
-  <a class="wordmark" href="/">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
+  <a class="wordmark" href="{{ '/' | url }}">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
   <nav class="site-nav">
     <details class="nav-dropdown">
       <summary>Products</summary>
       <div class="menu">
         {%- for product in products %}
-        <a class="menu-item" href="{{ product.path | safe }}" style="--pc: {{ product.color }}"><span class="tile tile-menu">{{ product.monogram }}</span>{{ product.title }}</a>
+        <a class="menu-item" href="{{ product.path | url }}" style="--pc: {{ product.color }}"><span class="tile tile-menu">{{ product.monogram }}</span>{{ product.title }}</a>
         {%- endfor %}
         {%- if site.nav %}
         <div class="menu-links">
           {%- for item in site.nav %}
-          <a class="menu-item menu-nav-link" href="{{ item.url | safe }}">{{ item.label }}</a>
+          <a class="menu-item menu-nav-link" href="{{ item.url | url }}">{{ item.label }}</a>
           {%- endfor %}
         </div>
         {%- endif %}
       </div>
     </details>
     {%- for item in site.nav %}
-    <a class="nav-link" href="{{ item.url | safe }}">{{ item.label }}</a>
+    <a class="nav-link" href="{{ item.url | url }}">{{ item.label }}</a>
     {%- endfor %}
   </nav>
   <button class="theme-toggle" type="button" data-theme-toggle data-theme-state="system" aria-label="Theme: system">
@@ -106,7 +117,7 @@
 </footer>
 
 {%- if has_mermaid %}
-<script src="/assets/mermaid.min.js"></script>
+<script src="{{ '/assets/mermaid.min.js' | url }}"></script>
 <script>
   mermaid.initialize({
     startOnLoad: true,
@@ -133,7 +144,7 @@
     <p class="search-status" role="status"></p>
   </div>
 </dialog>
-<script src="/assets/search.js" defer></script>
+<script src="{{ '/assets/search.js' | url }}" defer></script>
 
 <script>
   // Theme toggle: cycles system → light → dark, persisted per browser.

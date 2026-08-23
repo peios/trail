@@ -1,16 +1,16 @@
 {% macro topic_card(topic, color) %}
     <li class="card topic-card" style="--pc: {{ color }}">
       {%- set count = topic.pages | length %}
-      <h3>{% if topic.entry %}<a href="{{ topic.entry | safe }}">{{ topic.title }}</a>{% else %}{{ topic.title }}{% endif %}</h3>
+      <h3>{% if topic.entry %}<a href="{{ topic.entry | url }}">{{ topic.title }}</a>{% else %}{{ topic.title }}{% endif %}</h3>
       <ul class="article-list">
         {%- for article in topic.pages %}
         {%- if count <= 4 or loop.index <= 3 %}
-        <li><a href="{{ article.path | safe }}">{{ article.title }}</a></li>
+        <li><a href="{{ article.path | url }}">{{ article.title }}</a></li>
         {%- endif %}
         {%- endfor %}
       </ul>
       {%- if count > 4 %}
-      <a class="see-all" href="{{ topic.entry | safe }}">See all {{ count }} articles</a>
+      <a class="see-all" href="{{ topic.entry | url }}">See all {{ count }} articles</a>
       {%- endif %}
       {%- if count %}
       <p class="card-meta">{{ count }} article{{ "" if count == 1 else "s" }} · {{ topic.reading_minutes | duration }}</p>
@@ -19,7 +19,7 @@
 {% endmacro %}
 
 {% macro anthology_card(anthology, color) %}
-    <li><a class="card" href="{{ anthology.path | safe }}" style="--pc: {{ color }}">
+    <li><a class="card" href="{{ anthology.path | url }}" style="--pc: {{ color }}">
       <h3>{{ anthology.title }}</h3>
       <p>{{ anthology.description }}</p>
       {%- if anthology.reading_minutes %}
@@ -29,7 +29,7 @@
 {% endmacro %}
 
 {% macro book_card(book, color) %}
-    <li><a class="card book-card" href="{{ book.path | safe }}" style="--pc: {{ color }}">
+    <li><a class="card book-card" href="{{ book.path | url }}" style="--pc: {{ color }}">
       {%- if book.short %}
       <span class="book-pill">{{ book.short }}</span>
       {%- endif %}

@@ -64,6 +64,12 @@ pub struct RenderOptions<'a> {
     /// absolute. A printed page's links have to work on paper and away
     /// from the site.
     pub print: Option<PrintScope<'a>>,
+    /// Prefix for every site-absolute URL this render emits — resolved
+    /// `~` links, `§` section links, and the published URLs of images
+    /// found in the tree. Empty for the site itself; "/<cbpath>" for the
+    /// cache-busting copy, whose pages must stay inside the copy. URLs
+    /// the author wrote out in full are never touched.
+    pub base: &'a str,
 }
 
 /// Print-bundle link context; see `RenderOptions::print`.
@@ -226,16 +232,21 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                                 None => format!("#{anchor}"),
                             },
                             None => {
-                                let base = scope.base.unwrap_or("");
+                                let site = scope.base.unwrap_or("");
+                                let base = options.base;
                                 match fragment {
-                                    Some(fragment) => format!("{base}{resolved}#{fragment}"),
-                                    None => format!("{base}{resolved}"),
+                                    Some(fragment) => {
+                                        format!("{site}{base}{resolved}#{fragment}")
+                                    }
+                                    None => format!("{site}{base}{resolved}"),
                                 }
                             }
                         },
                         None => match fragment {
-                            Some(fragment) => format!("{resolved}#{fragment}"),
-                            None => resolved,
+                            Some(fragment) => {
+                                format!("{}{resolved}#{fragment}", options.base)
+                            }
+                            None => format!("{}{resolved}", options.base),
                         },
                     };
                     out.push(Event::Start(Tag::Link {
@@ -615,12 +626,13 @@ fn enrich_text(
             text,
             scope,
             options.allow_dangling,
+            options.base,
             &mut spans,
             dangling,
             broken,
         );
         if let Some(book) = scope.book {
-            bare_section_spans(text, scope, book, &mut spans);
+            bare_section_spans(text, scope, book, options.base, &mut spans);
         }
     }
     rfc_keyword_spans(text, &mut spans);
@@ -645,6 +657,7 @@ fn phrase_spans(
     text: &str,
     scope: &RefScope,
     allow_dangling: bool,
+    base: &str,
     spans: &mut Vec<(std::ops::Range<usize>, String)>,
     dangling: &mut Vec<String>,
     broken: &mut Vec<String>,
@@ -663,13 +676,13 @@ fn phrase_spans(
                 if path == scope.page {
                     continue;
                 }
-                path.clone()
+                format!("{base}{path}")
             }
             PhraseTarget::Book(book) => match section_suffix(&text[end..]) {
                 Some((consumed, label)) => match scope.index.section(book, label) {
                     Some(target) => {
                         end += consumed;
-                        match section_href(target, scope.page) {
+                        match section_href(target, scope.page, base) {
                             Some(href) => href,
                             // The section is this very page: leave it plain.
                             None => continue,
@@ -689,14 +702,14 @@ fn phrase_spans(
                         if book == scope.page {
                             continue;
                         }
-                        book.clone()
+                        format!("{base}{book}")
                     }
                 },
                 None => {
                     if book == scope.page {
                         continue;
                     }
-                    book.clone()
+                    format!("{base}{book}")
                 }
             },
         };
@@ -713,6 +726,7 @@ fn bare_section_spans(
     text: &str,
     scope: &RefScope,
     book: &str,
+    base: &str,
     spans: &mut Vec<(std::ops::Range<usize>, String)>,
 ) {
     for (at, _) in text.match_indices('§') {
@@ -726,7 +740,7 @@ fn bare_section_spans(
         };
         let end = at + '§'.len_utf8() + label.len();
         if let Some(target) = scope.index.section(book, label)
-            && let Some(href) = section_href(target, scope.page)
+            && let Some(href) = section_href(target, scope.page, base)
         {
             spans.push((at..end, ref_link(&href, &text[at..end])));
         }
@@ -775,12 +789,12 @@ fn rfc_keyword_spans(text: &str, spans: &mut Vec<(std::ops::Range<usize>, String
 /// The href for a section target, from the referencing page: a same-page
 /// section links by fragment alone; a same-page reference with no
 /// fragment has nowhere to go (None — the text stays plain).
-fn section_href(target: &SectionTarget, page: &str) -> Option<String> {
+fn section_href(target: &SectionTarget, page: &str, base: &str) -> Option<String> {
     match (&target.fragment, target.path == page) {
         (Some(fragment), true) => Some(format!("#{fragment}")),
         (None, true) => None,
-        (Some(fragment), false) => Some(format!("{}#{fragment}", target.path)),
-        (None, false) => Some(target.path.clone()),
+        (Some(fragment), false) => Some(format!("{base}{}#{fragment}", target.path)),
+        (None, false) => Some(format!("{base}{}", target.path)),
     }
 }
 
@@ -892,7 +906,10 @@ fn classify_image(dest: &str, options: &RenderOptions) -> ImageFate {
         return ImageFate::PassThrough;
     };
     match scope.index.resolve(scope.dir, dest) {
-        Some(info) => ImageFate::Local(info.clone()),
+        Some(info) => ImageFate::Local(ImageInfo {
+            url: format!("{}{}", options.base, info.url),
+            ..info.clone()
+        }),
         None => {
             let message =
                 format!("image '{dest}' not found (resolved relative to the article's folder)");
@@ -1004,6 +1021,7 @@ pub fn rewrite_source(
     links: &LinkIndex,
     numbering: Option<&str>,
     images: Option<ImageScope>,
+    base: &str,
 ) -> String {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut counter = SectionCounter::default();
@@ -1019,8 +1037,8 @@ pub fn rewrite_source(
                     continue;
                 };
                 let new_dest = match fragment {
-                    Some(fragment) => format!("{resolved}.md#{fragment}"),
-                    None => format!("{resolved}.md"),
+                    Some(fragment) => format!("{base}{resolved}.md#{fragment}"),
+                    None => format!("{base}{resolved}.md"),
                 };
                 if let Some(dest_range) = inline_dest_range(markdown, &range, &dest_url) {
                     edits.push((dest_range, new_dest));
@@ -1040,7 +1058,7 @@ pub fn rewrite_source(
                     continue;
                 };
                 if let Some(dest_range) = inline_dest_range(markdown, &range, &dest_url) {
-                    edits.push((dest_range, info.url.clone()));
+                    edits.push((dest_range, format!("{base}{}", info.url)));
                 }
             }
             Event::Start(Tag::Heading { level, .. }) if numbering.is_some() => {
@@ -1188,6 +1206,41 @@ mod tests {
     }
 
     #[test]
+    fn a_base_moves_the_links_the_tree_owns_and_nothing_else() {
+        let (_dir, index) = fixture_index();
+        let rendered = super::render(
+            "See [a2](~alpha/a2#part), [the spec](https://example.com/spec) \
+             and [the root](/elsewhere).",
+            &index,
+            RenderOptions {
+                base: "/deadbeef",
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        // A ~reference names a page in this tree, so it follows the copy.
+        assert!(
+            rendered
+                .html
+                .contains("<a href=\"/deadbeef/alpha/acorn/wide/a2#part\">a2</a>")
+        );
+        // A URL the author wrote out is emitted exactly as written —
+        // prefixing it would break an external link and second-guess a
+        // deliberate absolute one.
+        assert!(rendered.html.contains("https://example.com/spec"));
+        assert!(rendered.html.contains("<a href=\"/elsewhere\">"));
+        // And the mirrors move with it.
+        let rewritten = super::rewrite_source(
+            "See [a2](~alpha/a2).\n",
+            &index,
+            None,
+            None,
+            "/deadbeef",
+        );
+        assert!(rewritten.contains("(/deadbeef/alpha/acorn/wide/a2.md)"));
+    }
+
+    #[test]
     fn unresolvable_tilde_links_are_collected_as_broken() {
         let (_dir, index) = fixture_index();
         let rendered = super::render(
@@ -1318,7 +1371,7 @@ mod tests {
         let (_dir, index) = fixture_index();
         let source = "Intro with [a2](~alpha/a2#part) and [missing](~alpha/nope).\n\n\
                       ## First\n\n```\n## not a heading [x](~alpha/a2)\n```\n\n### Sub\n";
-        let rewritten = super::rewrite_source(source, &index, Some("2.1"), None);
+        let rewritten = super::rewrite_source(source, &index, Some("2.1"), None, "");
         assert!(rewritten.contains("[a2](/alpha/acorn/wide/a2.md#part)"));
         // Unresolvable links and code-block contents stay untouched.
         assert!(rewritten.contains("[missing](~alpha/nope)"));
@@ -1331,7 +1384,7 @@ mod tests {
     fn rewrite_source_without_numbering_leaves_headings_alone() {
         let (_dir, index) = fixture_index();
         let rewritten =
-            super::rewrite_source("## Plain\n\nSee [a2](~alpha/a2).\n", &index, None, None);
+            super::rewrite_source("## Plain\n\nSee [a2](~alpha/a2).\n", &index, None, None, "");
         assert!(rewritten.contains("## Plain"));
         assert!(rewritten.contains("[a2](/alpha/acorn/wide/a2.md)"));
     }
@@ -1548,7 +1601,7 @@ mod tests {
             dir: &topic,
         });
         let source = "![Alt](wiring.png \"Cap\")\n\n![B](wiring.png)\n\n![C](gone.png)\n";
-        let rewritten = super::rewrite_source(source, &LinkIndex::default(), None, scope);
+        let rewritten = super::rewrite_source(source, &LinkIndex::default(), None, scope, "");
         assert!(rewritten.contains("![Alt](/alpha/topic/wiring.png \"Cap\")"));
         assert!(rewritten.contains("![B](/alpha/topic/wiring.png)"));
         // Unresolvable destinations stay untouched, like links.

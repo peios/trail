@@ -17,6 +17,7 @@ use crate::images::{ImageIndex, ImageScope};
 use crate::links::LinkIndex;
 use crate::markdown;
 use crate::render::{PrintSection, Renderer};
+use crate::build::BuildOptions;
 use crate::site::{
     Anthology, AnthologyItem, Article, Book, BookChild, Product, ProductItem, Site, Topic,
     TopicChild,
@@ -42,20 +43,21 @@ pub fn write_ai_surface(
     images: &ImageIndex,
     renderer: &Renderer,
     out: &Output,
-    llms_full: bool,
+    options: &BuildOptions,
 ) -> Result<usize> {
+    let url_base = options.base.as_str();
     let mut pages = 0;
     for product in &site.products {
         out.write(
             &mirror_path(out.dir(), &product.path),
-            product_mirror(product).as_bytes(),
+            product_mirror(product, url_base).as_bytes(),
         )?;
         let base = vec![product.title.clone()];
         for item in product.items() {
             match item {
                 ProductItem::Anthology { anthology } => {
                     pages += export_anthology(
-                        site, links, images, renderer, out, llms_full, product, &base, anthology,
+                        site, links, images, renderer, out, options, product, &base, anthology,
                     )?;
                 }
                 ProductItem::Topic { topic } => {
@@ -67,13 +69,13 @@ pub fn write_ai_surface(
                         out,
                         product,
                         &topic_unit(&base, topic),
-                        llms_full,
+                        options,
                     )?;
                 }
                 ProductItem::Book { book } => {
                     out.write(
                         &mirror_path(out.dir(), &book.path),
-                        book_mirror(book).as_bytes(),
+                        book_mirror(book, url_base).as_bytes(),
                     )?;
                     pages += write_bundle(
                         site,
@@ -83,7 +85,7 @@ pub fn write_ai_surface(
                         out,
                         product,
                         &book_unit(&base, book),
-                        llms_full,
+                        options,
                     )?;
                 }
             }
@@ -96,18 +98,27 @@ pub fn write_ai_surface(
             out,
             product,
             &product_unit(product),
-            llms_full,
+            options,
         )?;
     }
-    write_article_mirrors(site, links, images, out)?;
-    out.write(&out.dir().join("llms.txt"), llms_txt(site).as_bytes())?;
+    write_article_mirrors(site, links, images, out, url_base)?;
+    out.write(&out.dir().join("llms.txt"), llms_txt(site, url_base).as_bytes())?;
+    let mut json = site_json(site, links);
+    prefix_paths(&mut json, url_base);
     out.write(
         &out.dir().join("site.json"),
-        serde_json::to_string_pretty(&site_json(site, links))?.as_bytes(),
+        serde_json::to_string_pretty(&json)?.as_bytes(),
     )?;
-    out.write(&out.dir().join("robots.txt"), robots_txt(site).as_bytes())?;
-    if site.config.url.is_some() {
-        out.write(&out.dir().join("sitemap.xml"), sitemap_xml(site).as_bytes())?;
+    // Crawler instructions belong to the site, not to a copy of it: only
+    // the site root's robots.txt is ever read, and the cache-busting copy
+    // stays out of the sitemap so its duplicate URLs are never offered
+    // for indexing (its pages are noindex and name the real page as their
+    // canonical besides).
+    if url_base.is_empty() {
+        out.write(&out.dir().join("robots.txt"), robots_txt(site).as_bytes())?;
+        if site.config.url.is_some() {
+            out.write(&out.dir().join("sitemap.xml"), sitemap_xml(site).as_bytes())?;
+        }
     }
     Ok(pages)
 }
@@ -121,14 +132,15 @@ fn export_anthology(
     images: &ImageIndex,
     renderer: &Renderer,
     out: &Output,
-    llms_full: bool,
+    options: &BuildOptions,
     product: &Product,
     base: &[String],
     anthology: &Anthology,
 ) -> Result<usize> {
+    let url_base = options.base.as_str();
     out.write(
         &mirror_path(out.dir(), &anthology.path),
-        anthology_mirror(anthology).as_bytes(),
+        anthology_mirror(anthology, url_base).as_bytes(),
     )?;
     let mut child_base = base.to_vec();
     child_base.push(anthology.title.clone());
@@ -144,13 +156,13 @@ fn export_anthology(
                     out,
                     product,
                     &topic_unit(&child_base, topic),
-                    llms_full,
+                    options,
                 )?;
             }
             AnthologyItem::Book { book } => {
                 out.write(
                     &mirror_path(out.dir(), &book.path),
-                    book_mirror(book).as_bytes(),
+                    book_mirror(book, url_base).as_bytes(),
                 )?;
                 pages += write_bundle(
                     site,
@@ -160,7 +172,7 @@ fn export_anthology(
                     out,
                     product,
                     &book_unit(&child_base, book),
-                    llms_full,
+                    options,
                 )?;
             }
             AnthologyItem::Anthology { anthology } => {
@@ -170,7 +182,7 @@ fn export_anthology(
                     images,
                     renderer,
                     out,
-                    llms_full,
+                    options,
                     product,
                     &child_base,
                     anthology,
@@ -186,7 +198,7 @@ fn export_anthology(
         out,
         product,
         &anthology_unit(base, anthology),
-        llms_full,
+        options,
     )?;
     Ok(pages)
 }
@@ -315,13 +327,14 @@ fn write_bundle(
     out: &Output,
     product: &Product,
     unit: &Unit,
-    llms_full: bool,
+    options: &BuildOptions,
 ) -> Result<usize> {
     if unit.entries.is_empty() {
         return Ok(0);
     }
 
-    let markdown = bundle_markdown(links, images, unit);
+    let url_base = options.base.as_str();
+    let markdown = bundle_markdown(links, images, unit, url_base);
     let md_url = format!("{}/print.md", unit.path);
     // Every page in this bundle, by the anchor that reaches it here.
     let anchors: HashMap<String, String> = unit
@@ -341,7 +354,7 @@ fn write_bundle(
         &mirror_path(out.dir(), &format!("{}/print", unit.path)),
         markdown.as_bytes(),
     )?;
-    if llms_full {
+    if options.render_llms_full {
         out.write(
             &out.dir().join(format!(
                 "{}/llms-full.txt",
@@ -373,6 +386,7 @@ fn write_bundle(
                     index: images,
                     dir: &article.source_dir,
                 }),
+                base: url_base,
             },
         )?;
         has_mermaid |= rendered.has_mermaid;
@@ -406,7 +420,7 @@ fn write_bundle(
 }
 
 /// The whole unit as one markdown document, in reading order.
-fn bundle_markdown(links: &LinkIndex, images: &ImageIndex, unit: &Unit) -> String {
+fn bundle_markdown(links: &LinkIndex, images: &ImageIndex, unit: &Unit, base: &str) -> String {
     let mut out = format!("# {}\n", unit.title);
     if let Some(description) = unit.description {
         let _ = write!(out, "\n> {description}\n");
@@ -415,7 +429,7 @@ fn bundle_markdown(links: &LinkIndex, images: &ImageIndex, unit: &Unit) -> Strin
         let _ = write!(
             out,
             "\n---\n\n{}",
-            article_markdown(links, images, &crumbs.join(" / "), article)
+            article_markdown(links, images, &crumbs.join(" / "), article, base)
         );
     }
     out
@@ -429,6 +443,7 @@ fn article_markdown(
     images: &ImageIndex,
     crumbs: &str,
     article: &Article,
+    base: &str,
 ) -> String {
     let mut out = String::from("# ");
     if let Some(number) = &article.number {
@@ -450,6 +465,7 @@ fn article_markdown(
             index: images,
             dir: &article.source_dir,
         }),
+        base,
     );
     let _ = write!(out, "\n{}", body.trim_end());
     out.push('\n');
@@ -474,10 +490,12 @@ fn write_article_mirrors(
     links: &LinkIndex,
     images: &ImageIndex,
     out: &Output,
+    base: &str,
 ) -> Result<()> {
     for product in &site.products {
         for (crumbs, article) in product_unit(product).entries {
-            let mut markdown = article_markdown(links, images, &crumbs.join(" / "), article);
+            let mut markdown =
+                article_markdown(links, images, &crumbs.join(" / "), article, base);
             // Standalone mirrors carry the Related Content list the page
             // shows, pointing at the targets' own mirrors. Bundles skip
             // it — a linear document doesn't want per-article footers.
@@ -485,7 +503,7 @@ fn write_article_mirrors(
             if !related.is_empty() {
                 markdown.push_str("\nRelated content:\n\n");
                 for (path, title) in &related {
-                    let _ = writeln!(markdown, "- [{title}]({path}.md)");
+                    let _ = writeln!(markdown, "- [{title}]({base}{path}.md)");
                 }
             }
             out.write(&mirror_path(out.dir(), &article.path), markdown.as_bytes())?;
@@ -494,13 +512,13 @@ fn write_article_mirrors(
     Ok(())
 }
 
-fn product_mirror(product: &Product) -> String {
+fn product_mirror(product: &Product, base: &str) -> String {
     let mut out = format!("# {}\n\n> {}\n", product.title, product.description);
     let _ = write!(
         out,
         "\nAll of {} as one markdown file: [{path}/print.md]({path}/print.md)\n",
         product.title,
-        path = product.path
+        path = format_args!("{base}{}", product.path)
     );
     for section in product.sections() {
         if let Some(title) = section.title {
@@ -512,14 +530,14 @@ fn product_mirror(product: &Product) -> String {
                 ProductItem::Anthology { anthology } => {
                     let _ = writeln!(
                         out,
-                        "- [{}]({}.md): {}",
+                        "- [{}]({base}{}.md): {}",
                         anthology.title, anthology.path, anthology.description
                     );
                 }
                 ProductItem::Topic { topic } => {
                     let _ = writeln!(
                         out,
-                        "- [{}]({}/print.md): {} articles",
+                        "- [{}]({base}{}/print.md): {} articles",
                         topic.title,
                         topic.path,
                         topic.pages().count()
@@ -528,7 +546,7 @@ fn product_mirror(product: &Product) -> String {
                 ProductItem::Book { book } => {
                     let _ = writeln!(
                         out,
-                        "- [{}]({}.md): {}",
+                        "- [{}]({base}{}.md): {}",
                         book.title, book.path, book.description
                     );
                 }
@@ -538,24 +556,24 @@ fn product_mirror(product: &Product) -> String {
     out
 }
 
-fn anthology_mirror(anthology: &Anthology) -> String {
+fn anthology_mirror(anthology: &Anthology, base: &str) -> String {
     let mut out = format!("# {}\n\n> {}\n", anthology.title, anthology.description);
     let _ = write!(
         out,
         "\nAll of {} as one markdown file: [{path}/print.md]({path}/print.md)\n",
         anthology.title,
-        path = anthology.path
+        path = format_args!("{base}{}", anthology.path)
     );
     // Nested anthologies and books first, as an annotated list...
     let mut listed = false;
     for item in anthology.items() {
         let line = match item {
             AnthologyItem::Anthology { anthology } => Some(format!(
-                "- [{}]({}.md): {}",
+                "- [{}]({base}{}.md): {}",
                 anthology.title, anthology.path, anthology.description
             )),
             AnthologyItem::Book { book } => Some(format!(
-                "- [{}]({}.md): {}",
+                "- [{}]({base}{}.md): {}",
                 book.title, book.path, book.description
             )),
             AnthologyItem::Topic { .. } => None,
@@ -574,7 +592,7 @@ fn anthology_mirror(anthology: &Anthology) -> String {
         for article in topic.pages() {
             let _ = writeln!(
                 out,
-                "- [{}]({}.md): {}",
+                "- [{}]({base}{}.md): {}",
                 article.title,
                 article.path,
                 article.description.as_deref().unwrap_or_default()
@@ -584,7 +602,7 @@ fn anthology_mirror(anthology: &Anthology) -> String {
     out
 }
 
-fn book_mirror(book: &Book) -> String {
+fn book_mirror(book: &Book, base: &str) -> String {
     let mut out = String::from("# ");
     match &book.short {
         Some(short) => {
@@ -599,9 +617,9 @@ fn book_mirror(book: &Book) -> String {
         out,
         "\nThe whole book as one markdown file: [{path}/print.md]({path}/print.md)\n\
          \nContents:\n\n",
-        path = book.path
+        path = format_args!("{base}{}", book.path)
     );
-    fn contents(out: &mut String, children: &[BookChild], depth: usize) {
+    fn contents(out: &mut String, children: &[BookChild], depth: usize, base: &str) {
         for child in children {
             let indent = "    ".repeat(depth);
             match child {
@@ -610,7 +628,7 @@ fn book_mirror(book: &Book) -> String {
                     let label = if article.appendix { "Appendix " } else { "" };
                     let _ = writeln!(
                         out,
-                        "{indent}- {label}{number} [{}]({}.md)",
+                        "{indent}- {label}{number} [{}]({base}{}.md)",
                         article.title, article.path
                     );
                 }
@@ -618,15 +636,15 @@ fn book_mirror(book: &Book) -> String {
                     let label = if chapter.appendix { "Appendix " } else { "" };
                     let _ = writeln!(
                         out,
-                        "{indent}- {label}{} [{}]({}.md)",
+                        "{indent}- {label}{} [{}]({base}{}.md)",
                         chapter.number, chapter.title, chapter.entry
                     );
-                    contents(out, &chapter.children, depth + 1);
+                    contents(out, &chapter.children, depth + 1, base);
                 }
             }
         }
     }
-    contents(&mut out, &book.children, 0);
+    contents(&mut out, &book.children, 0, base);
     out
 }
 
@@ -634,11 +652,11 @@ fn book_mirror(book: &Book) -> String {
 
 /// The llms.txt convention (llmstxt.org): a curated markdown map of the
 /// site for AI consumers, linking the markdown mirrors and bundles.
-fn llms_txt(site: &Site) -> String {
-    fn anthology_lines(out: &mut String, anthology: &Anthology) {
+fn llms_txt(site: &Site, base: &str) -> String {
+    fn anthology_lines(out: &mut String, anthology: &Anthology, base: &str) {
         let _ = writeln!(
             out,
-            "- [{}]({}/print.md): {}",
+            "- [{}]({base}{}/print.md): {}",
             anthology.title, anthology.path, anthology.description
         );
         for item in anthology.items() {
@@ -646,11 +664,11 @@ fn llms_txt(site: &Site) -> String {
                 AnthologyItem::Book { book } => {
                     let _ = writeln!(
                         out,
-                        "- [{}]({}/print.md): {}",
+                        "- [{}]({base}{}/print.md): {}",
                         book.title, book.path, book.description
                     );
                 }
-                AnthologyItem::Anthology { anthology } => anthology_lines(out, anthology),
+                AnthologyItem::Anthology { anthology } => anthology_lines(out, anthology, base),
                 AnthologyItem::Topic { .. } => {}
             }
         }
@@ -660,32 +678,36 @@ fn llms_txt(site: &Site) -> String {
         "# {}\n\n> {}\n",
         site.config.sitename, site.config.description
     );
-    out.push_str(
+    let _ = write!(
+        out,
         "\nEvery page on this site is also available as markdown at the same URL \
          with `.md` appended. Each section below links whole units as single \
-         markdown files. The full machine-readable structure is at /site.json.\n",
+         markdown files. The full machine-readable structure is at \
+         {base}/site.json.\n",
     );
     for product in &site.products {
         let _ = write!(out, "\n## {}\n\n", product.title);
         let _ = writeln!(
             out,
-            "- [{} overview]({}.md): {}",
+            "- [{} overview]({base}{}.md): {}",
             product.title, product.path, product.description
         );
         let _ = writeln!(
             out,
-            "- [All {} docs in one file]({}/print.md)",
+            "- [All {} docs in one file]({base}{}/print.md)",
             product.title, product.path
         );
         for item in product.items() {
             match item {
-                ProductItem::Anthology { anthology } => anthology_lines(&mut out, anthology),
+                ProductItem::Anthology { anthology } => {
+                    anthology_lines(&mut out, anthology, base)
+                }
                 ProductItem::Topic { topic } => {
                     let count = topic.pages().count();
                     if count > 0 {
                         let _ = writeln!(
                             out,
-                            "- [{}]({}/print.md): {count} articles",
+                            "- [{}]({base}{}/print.md): {count} articles",
                             topic.title, topic.path
                         );
                     }
@@ -693,7 +715,7 @@ fn llms_txt(site: &Site) -> String {
                 ProductItem::Book { book } => {
                     let _ = writeln!(
                         out,
-                        "- [{}]({}/print.md): {}",
+                        "- [{}]({base}{}/print.md): {}",
                         book.title, book.path, book.description
                     );
                 }
@@ -830,6 +852,49 @@ fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
     })
 }
 
+/// Prefix every site-absolute path in the site.json tree with the build's
+/// base. The keys are listed rather than inferred: site.json holds slugs,
+/// titles and descriptions alongside the paths, and only these carry URLs.
+fn prefix_paths(value: &mut serde_json::Value, base: &str) {
+    const PATH_KEYS: &[&str] = &["path", "md", "print", "entry", "original", "llms", "related"];
+    if base.is_empty() {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if PATH_KEYS.contains(&key.as_str()) {
+                    prefix_in_place(child, base);
+                } else {
+                    prefix_paths(child, base);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                prefix_paths(item, base);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Prefix a string, or every string in an array, leaving anything else
+/// (a null `original`, a missing `entry`) alone.
+fn prefix_in_place(value: &mut serde_json::Value, base: &str) {
+    match value {
+        serde_json::Value::String(path) if path.starts_with('/') => {
+            *path = format!("{base}{path}");
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                prefix_in_place(item, base);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn robots_txt(site: &Site) -> String {
     let mut out = String::from("User-agent: *\nAllow: /\n");
     if let Some(url) = &site.config.url {
@@ -960,10 +1025,14 @@ mod tests {
         let site = Site::load(root, &out).unwrap();
         let links = LinkIndex::new(&site);
         let images = ImageIndex::new(&site.images);
-        let renderer = Renderer::new(false).unwrap();
+        let options = crate::build::BuildOptions {
+            render_llms_full: llms_full,
+            ..Default::default()
+        };
+        let renderer = Renderer::new(&options).unwrap();
         let output = Output::new(&out);
         let pages =
-            write_ai_surface(&site, &links, &images, &renderer, &output, llms_full).unwrap();
+            write_ai_surface(&site, &links, &images, &renderer, &output, &options).unwrap();
         (out, pages)
     }
 

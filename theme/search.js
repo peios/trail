@@ -1,6 +1,7 @@
 // Search: a ⌘K modal over the Pagefind bundle that `trail build` writes
-// to /pagefind/. The engine and its index chunks load lazily on the first
-// open, so pages carry no search cost until someone actually searches.
+// to <base>/pagefind/. The engine and its index chunks load lazily on the
+// first open, so pages carry no search cost until someone actually
+// searches.
 (() => {
   const modal = document.getElementById("search-modal");
   if (!modal || typeof modal.showModal !== "function") return;
@@ -15,10 +16,14 @@
     });
   }
 
+  // What the build told the page about itself; see base.html. Defaulted
+  // so the script still works on a page built before the config existed.
+  const site = () => window.trail || { base: "", cachebust: null };
+
   let pagefind = null;
   const engine = async () => {
     if (!pagefind) {
-      pagefind = await import("/pagefind/pagefind.js");
+      pagefind = await import(site().base + "/pagefind/pagefind.js");
       await pagefind.init();
     }
     return pagefind;

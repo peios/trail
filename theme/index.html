@@ -14,7 +14,7 @@
   <h2>Products</h2>
   <ul class="card-grid">
     {%- for product in featured %}
-    <li><a class="card" href="{{ product.path | safe }}" style="--pc: {{ product.color }}">
+    <li><a class="card" href="{{ product.path | url }}" style="--pc: {{ product.color }}">
       <span class="tile">{{ product.monogram }}</span>
       <h3>{{ product.title }}</h3>
       <p>{{ product.description }}</p>
