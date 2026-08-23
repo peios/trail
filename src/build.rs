@@ -257,6 +257,12 @@ pub fn build_site(site: &Site, out: &Path, options: BuildOptions) -> Result<usiz
             out.write(&out.dir().join(rel), contents)?;
         }
     }
+    // Last, so a passthrough named after something trail generates
+    // replaces it rather than being quietly overwritten by it.
+    for entry in &site.config.passthrough {
+        copy_passthrough(&site.root.join(entry), &out.dir().join(entry), out)
+            .with_context(|| format!("copying passthrough '{entry}'"))?;
+    }
     out.prune()?;
     Ok(pages)
 }
@@ -505,6 +511,24 @@ fn resolve_related(
         }
     }
     related
+}
+
+/// Copy one `passthrough` entry into the output, recursing through
+/// directories. Everything goes through the build's tracked writer, so
+/// passed-through files survive the prune like any other output.
+fn copy_passthrough(source: &Path, destination: &Path, out: &Output) -> Result<()> {
+    if source.is_dir() {
+        for entry in fs::read_dir(source)
+            .with_context(|| format!("reading {}", source.display()))?
+        {
+            let entry = entry?;
+            copy_passthrough(&entry.path(), &destination.join(entry.file_name()), out)?;
+        }
+        return Ok(());
+    }
+    let contents =
+        fs::read(source).with_context(|| format!("reading {}", source.display()))?;
+    out.write(destination, &contents)
 }
 
 /// Write one page to disk and queue it for search indexing under its
@@ -898,6 +922,59 @@ mod tests {
         let message = format!("{err:#}");
         assert!(!message.contains("~alpha/nope"));
         assert!(message.contains("link '~alpha/a1' is ambiguous"));
+    }
+
+    #[test]
+    fn passthrough_entries_are_copied_and_survive_the_prune() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let config = fs::read_to_string(dir.path().join("trail.toml")).unwrap();
+        fs::write(
+            dir.path().join("trail.toml"),
+            // robots.txt is one trail generates itself: naming it as a
+            // passthrough has to replace the generated one, not lose to it.
+            format!("passthrough = [\"CNAME\", \".well-known\", \"robots.txt\"]\n{config}"),
+        )
+        .unwrap();
+        fs::write(dir.path().join("CNAME"), "learn.example.org\n").unwrap();
+        fs::write(dir.path().join("robots.txt"), "User-agent: *\nDisallow: /x\n").unwrap();
+        fs::create_dir_all(dir.path().join(".well-known")).unwrap();
+        fs::write(
+            dir.path().join(".well-known/security.txt"),
+            "Contact: mailto:security@example.org\n",
+        )
+        .unwrap();
+
+        let out = dir.path().join("dist");
+        let options = BuildOptions {
+            live_reload: false,
+            allow_dangling_links: false,
+            strict: false,
+            render_llms_full: false,
+        };
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(out.join("CNAME")).unwrap(),
+            "learn.example.org\n"
+        );
+        // Directories are copied through, nesting included.
+        assert_eq!(
+            fs::read_to_string(out.join(".well-known/security.txt")).unwrap(),
+            "Contact: mailto:security@example.org\n"
+        );
+        // The author's file wins over the generated one.
+        assert_eq!(
+            fs::read_to_string(out.join("robots.txt")).unwrap(),
+            "User-agent: *\nDisallow: /x\n"
+        );
+
+        // A second build must not prune what the first passed through.
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+        assert!(out.join("CNAME").exists());
+        assert!(out.join(".well-known/security.txt").exists());
     }
 
     #[test]

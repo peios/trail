@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,14 @@ pub struct SiteConfig {
     /// Links shown in the site header next to the products menu.
     #[serde(default)]
     pub nav: Vec<NavItem>,
+    /// Root entries trail neither builds nor understands, copied into
+    /// the output verbatim: a CNAME, a `.well-known/` directory, a
+    /// verification file. Naming one is also what makes it legal to
+    /// keep in the site root, exactly as `favicon` and friends do.
+    /// They are copied last, so a passthrough deliberately named after
+    /// something trail generates (`robots.txt`) replaces it.
+    #[serde(default)]
+    pub passthrough: Vec<String>,
     /// Per-product tinting (cards, tiles, sidebar highlights take each
     /// product's color). Off, everything tints from the site accent.
     #[serde(default = "default_true")]
@@ -893,11 +901,15 @@ impl Site {
                  article's source path"
             );
         }
+        for entry in &config.passthrough {
+            validate_passthrough(entry, root, out)?;
+        }
         // Configured root files (or the directories holding them) are
         // content the root scan below must tolerate.
         let keep_entries: Vec<String> = [&config.custom_css, &config.favicon, &config.head_html]
             .into_iter()
             .flatten()
+            .chain(&config.passthrough)
             .filter_map(|path| Path::new(path).components().next())
             .map(|component| component.as_os_str().to_string_lossy().into_owned())
             .collect();
@@ -2388,6 +2400,29 @@ fn validate_color(color: &str) -> Result<()> {
     Ok(())
 }
 
+/// A `passthrough` entry: a plain relative path naming something that
+/// exists in the site root. Absolute paths and `..` are rejected — a
+/// passthrough copies what it names into the output, so it must not be
+/// able to reach outside the site to do it.
+fn validate_passthrough(entry: &str, root: &Path, out: &Path) -> Result<()> {
+    ensure!(!entry.is_empty(), "passthrough entries cannot be empty");
+    let path = Path::new(entry);
+    ensure!(
+        path.components().all(|c| matches!(c, Component::Normal(_))),
+        "passthrough '{entry}' must be a plain relative path inside the site root"
+    );
+    let source = root.join(path);
+    ensure!(
+        source.exists(),
+        "passthrough names '{entry}', which does not exist in the site root"
+    );
+    ensure!(
+        !is_same_path(&source, out),
+        "passthrough '{entry}' is the build output directory"
+    );
+    Ok(())
+}
+
 fn is_same_path(a: &Path, b: &Path) -> bool {
     match (fs::canonicalize(a), fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -3234,6 +3269,43 @@ mod tests {
         fs::write(dir.path().join("custom.css"), "body { color: red }").unwrap();
         let site = load(dir.path()).unwrap();
         assert!(site.custom_css.as_ref().unwrap().ends_with("custom.css"));
+    }
+
+    #[test]
+    fn passthrough_tolerates_and_validates_root_entries() {
+        let add_config = |dir: &Path, extra: &str| {
+            let config = fs::read_to_string(dir.join("trail.toml")).unwrap();
+            fs::write(dir.join("trail.toml"), format!("{extra}\n{config}")).unwrap();
+        };
+
+        // Naming something absent is an error, like favicon and friends.
+        let dir = fixture();
+        add_config(dir.path(), "passthrough = [\"CNAME\"]");
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("does not exist in the site root"));
+
+        // A passthrough must not reach outside the site to copy.
+        let dir = fixture();
+        add_config(dir.path(), "passthrough = [\"../secrets\"]");
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("plain relative path"));
+
+        // Nor name the output directory, which it would recurse into.
+        let dir = fixture();
+        add_config(dir.path(), "passthrough = [\"dist\"]");
+        fs::create_dir_all(dir.path().join("dist")).unwrap();
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("the build output directory"));
+
+        // Present, it loads — and the root scan tolerates both the file
+        // and the directory, which would otherwise be unexpected entries.
+        let dir = fixture();
+        add_config(dir.path(), "passthrough = [\"CNAME\", \"static\"]");
+        fs::write(dir.path().join("CNAME"), "learn.example.org\n").unwrap();
+        fs::create_dir_all(dir.path().join("static/nested")).unwrap();
+        fs::write(dir.path().join("static/nested/robots-extra.txt"), "x").unwrap();
+        let site = load(dir.path()).unwrap();
+        assert_eq!(site.config.passthrough, ["CNAME", "static"]);
     }
 
     #[test]
