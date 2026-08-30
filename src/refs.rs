@@ -60,6 +60,9 @@ pub struct Citation {
     /// The source block the anchor sits in. Block context, not the
     /// statement — an anchor is a locator and delimits nothing.
     pub context: String,
+    /// True when the anchor names a whole section rather than one
+    /// statement inside it.
+    pub section: bool,
 }
 
 #[derive(Debug, Default)]
@@ -334,6 +337,7 @@ impl Builder {
                     article: article.path.clone(),
                     number: article.number.clone(),
                     context: anchor.context,
+                    section: anchor.section,
                 });
             }
         }

@@ -1165,11 +1165,21 @@ body.drawer-open { overflow: hidden; }
   text-decoration: none;
   vertical-align: baseline;
 }
+/* The glyph lives here rather than in the markup: an anchor on a heading
+   would otherwise contribute a text node to the heading's id and its
+   table-of-contents title. */
+.citation-anchor sup::before {
+  content: "\201D";
+}
 .citation-anchor sup {
   position: absolute;
-  top: -0.55em;
-  left: 0.1em;
-  font-size: 0.62em;
+  /* The anchor is a zero-height inline-block aligned on the baseline, so
+     its top and bottom edges are both *on* the baseline. Offsetting from
+     `top` therefore hangs the glyph below the line — anchor from `bottom`
+     instead, which raises it. */
+  bottom: 0.15em;
+  left: 0.08em;
+  font-size: 0.8em;
   line-height: 1;
   font-weight: 600;
   color: var(--muted, #888);

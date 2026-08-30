@@ -1201,6 +1201,11 @@ pub struct CitationAnchor {
     /// one, and a block holding several anchors gives each the same
     /// context. Split the block if that is too coarse.
     pub context: String,
+    /// True when the anchor sits on a heading, naming the whole section
+    /// rather than one statement inside it. A consumer wants the
+    /// difference: an uncovered section is a different-sized gap from
+    /// an uncovered sentence.
+    pub section: bool,
 }
 
 /// A citation name: lowercase alphanumerics in dot- or hyphen-separated
@@ -1316,9 +1321,14 @@ pub fn citation_anchors(markdown: &str) -> Vec<CitationAnchor> {
     let spans = citation_spans(markdown);
     spans
         .iter()
-        .map(|(range, name)| CitationAnchor {
-            name: name.clone(),
-            context: block_context(markdown, range.start, &spans),
+        .map(|(range, name)| {
+            let context = block_context(markdown, range.start, &spans);
+            let heading = context.starts_with('#');
+            CitationAnchor {
+                name: name.clone(),
+                context: context.trim_start_matches('#').trim_start().to_string(),
+                section: heading,
+            }
         })
         .collect()
 }
@@ -1351,6 +1361,11 @@ fn block_context(markdown: &str, at: usize, spans: &[(std::ops::Range<usize>, St
 /// that targets itself, so a citation resolves to the exact statement
 /// rather than the top of the article. `qualified` composes the full
 /// citation string shown on the marker ("Kernel TRM *name").
+///
+/// The marker carries **no text**: its glyph comes from CSS. An anchor
+/// may sit on a heading, and a heading's id and table-of-contents title
+/// are built from its text events — a glyph in the markup would leak
+/// into both.
 pub(crate) fn expand_citation_anchors(markdown: &str, book_short: Option<&str>) -> String {
     let spans = citation_spans(markdown);
     if spans.is_empty() {
@@ -1367,7 +1382,7 @@ pub(crate) fn expand_citation_anchors(markdown: &str, book_short: Option<&str>) 
         out.push_str(&format!(
             "<a class=\"citation-anchor\" id=\"cite-{name}\" href=\"#cite-{name}\" \
              data-citation=\"{full}\" title=\"{full}\" aria-label=\"Citation {full}\">\
-             <sup>\u{00a7}</sup></a>",
+             <sup></sup></a>",
             name = escape_attr(name),
             full = escape_attr(&full),
         ));
@@ -1914,6 +1929,26 @@ mod tests {
                     ```\n[*fenced.example]\n```\n";
         let names: Vec<_> = citation_anchors(body).into_iter().map(|a| a.name).collect();
         assert_eq!(names, vec!["real.anchor"]);
+    }
+
+    #[test]
+    fn an_anchor_on_a_heading_names_the_section() {
+        let body = "## The provider [*resolution.provider]\n\nProse below.\n";
+        let anchors = citation_anchors(body);
+        assert_eq!(anchors.len(), 1);
+        assert!(anchors[0].section, "heading anchor should be a section anchor");
+        // The `#` markers are not part of the section's name-in-prose.
+        assert_eq!(anchors[0].context, "The provider");
+
+        // The heading's own id and ToC title stay clean: the marker is
+        // inline HTML by the time the parser sees it, so it never
+        // reaches the slug.
+        let rendered = render(body);
+        assert!(rendered.html.contains("<h2 id=\"the-provider\""), "{}", rendered.html);
+        assert_eq!(rendered.toc[0].title, "The provider ");
+
+        // An anchor in ordinary prose is not a section anchor.
+        assert!(!citation_anchors("A rule. [*a.rule]\n")[0].section);
     }
 
     #[test]

@@ -755,6 +755,7 @@ fn citations_json(refs: &crate::refs::InlineRefIndex, url_base: &str) -> serde_j
                 "article": format!("{url_base}{}", citation.article),
                 "url": format!("{url_base}{}#cite-{}", citation.article, citation.name),
                 "context": citation.context,
+                "kind": if citation.section { "section" } else { "statement" },
             });
             if let Some(number) = &citation.number {
                 value["section"] = json!(number);
