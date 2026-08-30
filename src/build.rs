@@ -300,7 +300,7 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
     }
     // The AI-facing surface: markdown mirrors, /print bundles, llms.txt,
     // site.json, sitemap, robots. Print pages are pages; the rest are not.
-    pages += export::write_ai_surface(site, &links, &images, &renderer, out, options)?;
+    pages += export::write_ai_surface(site, &links, &images, &refs, &renderer, out, options)?;
     // Referenced images ship at their published URLs; an image nothing
     // references stays out of the output — a warning, not an error, so a
     // file added ahead of its article doesn't block the build.
@@ -393,6 +393,7 @@ fn write_articles(
                     index: refs,
                     page: &article.path,
                     book: None,
+                    book_short: None,
                 }),
                 base: &options.base,
                 ..markdown::RenderOptions::default()
@@ -517,6 +518,7 @@ fn write_book(
                     index: refs,
                     page: &article.path,
                     book: Some(&book.path),
+                    book_short: book.short.as_deref(),
                 }),
                 base: &options.base,
                 ..markdown::RenderOptions::default()

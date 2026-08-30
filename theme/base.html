@@ -366,6 +366,49 @@
   })();
 </script>
 
+<script>
+  // Citation anchors: clicking one copies the full citation string
+  // ("Kernel TRM *copy-up.preserves-ownership") rather than navigating,
+  // because copying it into a test is the whole reason it is there. The
+  // href still points at the anchor, so middle-click and "copy link"
+  // behave normally and the page is usable without JS.
+  (() => {
+    const KEY = "trail:citations-hidden";
+    const body = document.body;
+    try {
+      if (localStorage.getItem(KEY) === "1") body.classList.add("citations-hidden");
+    } catch (_) {}
+
+    document.addEventListener("click", (event) => {
+      const anchor = event.target.closest(".citation-anchor");
+      if (!anchor) return;
+      const citation = anchor.dataset.citation;
+      if (!citation) return;
+      event.preventDefault();
+      history.replaceState(null, "", anchor.getAttribute("href"));
+      const done = () => {
+        anchor.classList.add("copied");
+        setTimeout(() => anchor.classList.remove("copied"), 1400);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(citation).then(done, done);
+      } else {
+        done();
+      }
+    });
+
+    // Exposed for a future settings control; usable from the console
+    // meanwhile. Persisted per reader, per origin.
+    window.trailToggleCitations = () => {
+      const hidden = body.classList.toggle("citations-hidden");
+      try {
+        localStorage.setItem(KEY, hidden ? "1" : "0");
+      } catch (_) {}
+      return hidden;
+    };
+  })();
+</script>
+
 {%- if live_reload %}
 <script>
   (() => {

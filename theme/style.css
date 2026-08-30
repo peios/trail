@@ -1151,6 +1151,66 @@ body.drawer-open { overflow: hidden; }
   color: var(--pc, var(--accent));
 }
 
+/* ---- citation anchors ------------------------------------------------ */
+
+/* A `[*name]` marker locates one statement for a test to cite. It sits
+   in the text, so it must not disturb it: zero-width line box (the sup
+   is absolutely positioned out of flow), so line height and wrapping
+   are exactly as they would be without it. */
+.citation-anchor {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 0;
+  text-decoration: none;
+  vertical-align: baseline;
+}
+.citation-anchor sup {
+  position: absolute;
+  top: -0.55em;
+  left: 0.1em;
+  font-size: 0.62em;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--muted, #888);
+  opacity: 0.55;
+  transition: opacity 0.12s ease, color 0.12s ease;
+  user-select: none;
+}
+.citation-anchor:hover sup,
+.citation-anchor:focus-visible sup {
+  opacity: 1;
+  color: var(--pc, var(--accent));
+}
+.citation-anchor:target sup {
+  opacity: 1;
+  color: var(--pc, var(--accent));
+}
+/* The reader toggle. Suppressed entirely rather than merely faded: a
+   dense chapter should read as if the anchors were never there. */
+body.citations-hidden .citation-anchor {
+  display: none;
+}
+/* Copy confirmation, anchored to the marker. */
+.citation-anchor::after {
+  content: attr(data-citation);
+  position: absolute;
+  left: 0.6em;
+  top: -0.7em;
+  z-index: 20;
+  display: none;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 0.2em 0.5em;
+  border-radius: 0.3em;
+  background: var(--fg, #222);
+  color: var(--bg, #fff);
+}
+.citation-anchor.copied::after {
+  display: block;
+}
+
 /* ---- 404 ------------------------------------------------------------- */
 
 .not-found {

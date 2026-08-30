@@ -41,6 +41,7 @@ pub fn write_ai_surface(
     site: &Site,
     links: &LinkIndex,
     images: &ImageIndex,
+    refs: &crate::refs::InlineRefIndex,
     renderer: &Renderer,
     out: &Output,
     options: &BuildOptions,
@@ -108,6 +109,10 @@ pub fn write_ai_surface(
     out.write(
         &out.dir().join("site.json"),
         serde_json::to_string_pretty(&json)?.as_bytes(),
+    )?;
+    out.write(
+        &out.dir().join("citations.json"),
+        serde_json::to_string_pretty(&citations_json(refs, url_base))?.as_bytes(),
     )?;
     // Crawler instructions belong to the site, not to a copy of it: only
     // the site root's robots.txt is ever read, and the cache-busting copy
@@ -726,6 +731,39 @@ fn llms_txt(site: &Site, base: &str) -> String {
 }
 
 /// The whole model as JSON, for tools that want structure, not prose.
+/// The citation index: every `[*name]` anchor in the corpus, flat.
+///
+/// Deliberately its own file rather than a corner of `site.json` —
+/// site.json is a tree of the whole site, and the consumers here (a
+/// test suite asking "which citations have no test", a coverage
+/// reporter) want a list they can read without walking it.
+///
+/// `context` is the source block the anchor sits in, not the statement
+/// it marks: an anchor is a locator and delimits nothing. A block
+/// holding several anchors gives each the same context, and the fix for
+/// that is to split the block.
+///
+/// One citation may legitimately have many tests. Coverage is "does
+/// this citation have at least one passing test", never a 1:1 mapping.
+fn citations_json(refs: &crate::refs::InlineRefIndex, url_base: &str) -> serde_json::Value {
+    json!({
+        "citations": refs.citations().iter().map(|citation| {
+            let mut value = json!({
+                "name": citation.name,
+                "citation": citation.qualified,
+                "book": format!("{url_base}{}", citation.book),
+                "article": format!("{url_base}{}", citation.article),
+                "url": format!("{url_base}{}#cite-{}", citation.article, citation.name),
+                "context": citation.context,
+            });
+            if let Some(number) = &citation.number {
+                value["section"] = json!(number);
+            }
+            value
+        }).collect::<Vec<_>>(),
+    })
+}
+
 fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
     fn article_json(article: &Article, links: &LinkIndex) -> serde_json::Value {
         let mut value = json!({
@@ -1031,8 +1069,9 @@ mod tests {
         };
         let renderer = Renderer::new(&options).unwrap();
         let output = Output::new(&out);
+        let refs = crate::refs::InlineRefIndex::new(&site).unwrap();
         let pages =
-            write_ai_surface(&site, &links, &images, &renderer, &output, &options).unwrap();
+            write_ai_surface(&site, &links, &images, &refs, &renderer, &output, &options).unwrap();
         (out, pages)
     }
 
@@ -1165,6 +1204,26 @@ mod tests {
         // llms.txt keeps pointing at the canonical print.md either way.
         let llms = fs::read_to_string(out.join("llms.txt")).unwrap();
         assert!(!llms.contains("llms-full"));
+    }
+
+    #[test]
+    fn citations_json_lists_every_anchor_with_a_deep_link() {
+        let (dir, _out, _pages) = fixture_surface();
+        let raw = std::fs::read_to_string(dir.path().join("dist/citations.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let list = value["citations"].as_array().unwrap();
+        let entry = list
+            .iter()
+            .find(|c| c["name"] == "install.preserves-ownership")
+            .expect("fixture anchor");
+        assert_eq!(entry["citation"], "AM *install.preserves-ownership");
+        assert_eq!(entry["section"], "2.1");
+        // The url resolves to the statement, not the top of the article.
+        assert_eq!(
+            entry["url"],
+            "/alpha/manual/setup/install#cite-install.preserves-ownership"
+        );
+        assert!(entry["context"].as_str().unwrap().contains("preserves ownership"));
     }
 
     #[test]

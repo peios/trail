@@ -91,6 +91,9 @@ pub struct RefScope<'a> {
     /// The path of the book this page belongs to, enabling bare `§`
     /// references to the book's own sections.
     pub book: Option<&'a str>,
+    /// The book's short name ("PGSS", "Kernel TRM"), used to compose the
+    /// full citation string a `[*name]` anchor displays.
+    pub book_short: Option<&'a str>,
 }
 
 /// Render article markdown to HTML. Every heading gets a slugified,
@@ -100,6 +103,12 @@ pub struct RefScope<'a> {
 /// through the link index.
 pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
     let markdown = expand_tab_groups(markdown)?;
+    // Before parsing: `[*name]` anchors become inline HTML, so the `*`
+    // can never pair with an emphasis marker elsewhere in the block.
+    let markdown = expand_citation_anchors(
+        &markdown,
+        options.refs.and_then(|scope| scope.book_short),
+    );
     let events: Vec<Event> = Parser::new_ext(&markdown, parser_options()).collect();
 
     let mut out = Vec::with_capacity(events.len());
@@ -1165,6 +1174,216 @@ fn unique_id(used: &mut HashMap<String, usize>, base: String) -> String {
     }
 }
 
+// ---------------------------------------------------------------------
+// Named Citations: `[*name]` anchors on an individual statement.
+//
+// An anchor is a *locator*, not a delimiter: it names a place in the
+// prose so a test, a code comment or a coverage report can point at it.
+// It carries no notion of where the statement it marks begins or ends —
+// see the Named Citations documentation for why extent is deliberately
+// not modelled.
+//
+// Anchors are expanded before the markdown is parsed. The `*` in
+// `[*name]` is left-flanking and can therefore be closed by an emphasis
+// `*` elsewhere in the same paragraph, which would swallow the anchor
+// into an <em> and lose it. Rewriting to inline HTML up front means the
+// parser never sees the asterisk. Fenced blocks and inline code are
+// skipped so documentation *about* the syntax stays literal.
+// ---------------------------------------------------------------------
+
+/// One `[*name]` anchor found in an article's source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitationAnchor {
+    /// The declared name, e.g. `copy-up.preserves-ownership`.
+    pub name: String,
+    /// The source block the anchor sits in, anchors removed. This is
+    /// *block context*, not the statement: an anchor does not delimit
+    /// one, and a block holding several anchors gives each the same
+    /// context. Split the block if that is too coarse.
+    pub context: String,
+}
+
+/// A citation name: lowercase alphanumerics in dot- or hyphen-separated
+/// segments, starting and ending alphanumeric. Enforced rather than
+/// merely conventional — a corpus this size otherwise drifts into
+/// three naming styles, and the name is what every citation greps for.
+pub(crate) fn citation_name(text: &str) -> Option<&str> {
+    let end = text
+        .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'))
+        .unwrap_or(text.len());
+    let name = &text[..end];
+    if name.is_empty() {
+        return None;
+    }
+    let first = name.as_bytes()[0];
+    let last = name.as_bytes()[name.len() - 1];
+    if !first.is_ascii_alphanumeric() || !last.is_ascii_alphanumeric() {
+        return None;
+    }
+    if name.contains("..") || name.contains("--") || name.contains(".-") || name.contains("-.") {
+        return None;
+    }
+    Some(name)
+}
+
+/// Byte ranges of every `[*name]` anchor in `markdown`, with its name.
+/// Fenced code blocks and inline code spans are skipped.
+pub(crate) fn citation_spans(markdown: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let mut found = Vec::new();
+    if !markdown.contains("[*") {
+        return found;
+    }
+    let mut fence: Option<&str> = None;
+    let mut offset = 0usize;
+    for line in markdown.split_inclusive('\n') {
+        let trimmed = line.trim();
+        match fence {
+            Some(open) => {
+                if trimmed.starts_with(open) {
+                    fence = None;
+                }
+                offset += line.len();
+                continue;
+            }
+            None => {
+                if let Some(marker) = ["```", "~~~"]
+                    .into_iter()
+                    .find(|marker| trimmed.starts_with(marker))
+                {
+                    fence = Some(marker);
+                    offset += line.len();
+                    continue;
+                }
+            }
+        }
+        scan_line(line, offset, &mut found);
+        offset += line.len();
+    }
+    found
+}
+
+/// Anchors in one line of prose, skipping inline-code spans. A backtick
+/// run opens a span that the next run of the same length closes; an
+/// unclosed run is not a span, so the rest of the line still scans.
+fn scan_line(line: &str, offset: usize, found: &mut Vec<(std::ops::Range<usize>, String)>) {
+    let bytes = line.as_bytes();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if bytes[at] == b'`' {
+            let run = bytes[at..].iter().take_while(|b| **b == b'`').count();
+            let after = at + run;
+            match find_backtick_run(&bytes[after..], run) {
+                Some(rel) => at = after + rel + run,
+                None => at = after,
+            }
+            continue;
+        }
+        if bytes[at] == b'[' && bytes.get(at + 1) == Some(&b'*') {
+            if let Some(name) = citation_name(&line[at + 2..])
+                && line[at + 2 + name.len()..].starts_with(']')
+            {
+                let end = at + 2 + name.len() + 1;
+                found.push((offset + at..offset + end, name.to_string()));
+                at = end;
+                continue;
+            }
+        }
+        at += 1;
+    }
+}
+
+/// Offset of the next backtick run of exactly `len` in `bytes`.
+fn find_backtick_run(bytes: &[u8], len: usize) -> Option<usize> {
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if bytes[at] == b'`' {
+            let run = bytes[at..].iter().take_while(|b| **b == b'`').count();
+            if run == len {
+                return Some(at);
+            }
+            at += run;
+            continue;
+        }
+        at += 1;
+    }
+    None
+}
+
+/// Every anchor in `markdown`, each with the source block it sits in.
+/// Blocks are separated by blank lines, which is what the parser does
+/// for paragraphs and close enough for list items and table rows.
+pub fn citation_anchors(markdown: &str) -> Vec<CitationAnchor> {
+    let spans = citation_spans(markdown);
+    spans
+        .iter()
+        .map(|(range, name)| CitationAnchor {
+            name: name.clone(),
+            context: block_context(markdown, range.start, &spans),
+        })
+        .collect()
+}
+
+/// The blank-line-delimited block containing `at`, with every anchor
+/// removed and whitespace collapsed.
+fn block_context(markdown: &str, at: usize, spans: &[(std::ops::Range<usize>, String)]) -> String {
+    let start = markdown[..at]
+        .rfind("\n\n")
+        .map(|i| i + 2)
+        .unwrap_or(0);
+    let end = markdown[at..]
+        .find("\n\n")
+        .map(|i| at + i)
+        .unwrap_or(markdown.len());
+    let mut text = String::with_capacity(end - start);
+    let mut cursor = start;
+    for (range, _) in spans {
+        if range.start < start || range.end > end {
+            continue;
+        }
+        text.push_str(&markdown[cursor..range.start]);
+        cursor = range.end;
+    }
+    text.push_str(&markdown[cursor..end]);
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Rewrite every `[*name]` into its rendered marker: a superscript link
+/// that targets itself, so a citation resolves to the exact statement
+/// rather than the top of the article. `qualified` composes the full
+/// citation string shown on the marker ("Kernel TRM *name").
+pub(crate) fn expand_citation_anchors(markdown: &str, book_short: Option<&str>) -> String {
+    let spans = citation_spans(markdown);
+    if spans.is_empty() {
+        return markdown.to_string();
+    }
+    let mut out = String::with_capacity(markdown.len() + spans.len() * 96);
+    let mut cursor = 0usize;
+    for (range, name) in &spans {
+        out.push_str(&markdown[cursor..range.start]);
+        let full = match book_short {
+            Some(short) => format!("{short} *{name}"),
+            None => format!("*{name}"),
+        };
+        out.push_str(&format!(
+            "<a class=\"citation-anchor\" id=\"cite-{name}\" href=\"#cite-{name}\" \
+             data-citation=\"{full}\" title=\"{full}\" aria-label=\"Citation {full}\">\
+             <sup>\u{00a7}</sup></a>",
+            name = escape_attr(name),
+            full = escape_attr(&full),
+        ));
+        cursor = range.end;
+    }
+    out.push_str(&markdown[cursor..]);
+    out
+}
+
+fn escape_attr(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1653,6 +1872,71 @@ mod tests {
         assert_eq!(outline, rendered.toc);
         assert_eq!(outline[2].id, "a-2");
         assert_eq!(outline[2].number.as_deref(), Some("2.1.2"));
+    }
+
+    #[test]
+    fn citation_names_are_lowercase_dotted_segments() {
+        assert_eq!(citation_name("copy-up.preserves-ownership]"), Some("copy-up.preserves-ownership"));
+        assert_eq!(citation_name("a1]"), Some("a1"));
+        // Must start and end alphanumeric, and carry no doubled or
+        // adjacent separators.
+        assert_eq!(citation_name(".leading]"), None);
+        assert_eq!(citation_name("trailing.]"), None);
+        assert_eq!(citation_name("double..dot]"), None);
+        assert_eq!(citation_name("mixed-.sep]"), None);
+        // Uppercase is rejected rather than folded: one spelling only.
+        assert_eq!(citation_name("Upper]"), None);
+        assert_eq!(citation_name("]"), None);
+    }
+
+    #[test]
+    fn citation_anchors_survive_emphasis_in_the_same_block() {
+        // The hazard the pre-parse pass exists for: the `*` inside
+        // `[*name]` is left-flanking, so an emphasis `*` later in the
+        // block could close it and swallow the anchor into an <em>.
+        let body = "Ownership is preserved. [*copy-up.owner] And *emphasis* follows.\n";
+        let anchors = citation_anchors(body);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].name, "copy-up.owner");
+
+        let html = render(body).html;
+        assert!(html.contains("id=\"cite-copy-up.owner\""), "{html}");
+        // The emphasis still renders as emphasis, and no stray asterisk
+        // or raw marker survives into the output.
+        assert!(html.contains("<em>emphasis</em>"), "{html}");
+        assert!(!html.contains("[*copy-up.owner]"), "{html}");
+    }
+
+    #[test]
+    fn citation_anchors_skip_code_fences_and_inline_code() {
+        let body = "Prose. [*real.anchor]\n\n\
+                    Inline `[*inline.example]` stays literal.\n\n\
+                    ```\n[*fenced.example]\n```\n";
+        let names: Vec<_> = citation_anchors(body).into_iter().map(|a| a.name).collect();
+        assert_eq!(names, vec!["real.anchor"]);
+    }
+
+    #[test]
+    fn citation_context_is_the_block_with_markers_removed() {
+        let body = "First block.\n\n\
+                    Ownership [*one] is preserved\nacross lines. [*two]\n\n\
+                    Third block.\n";
+        let anchors = citation_anchors(body);
+        assert_eq!(anchors.len(), 2);
+        // Both anchors in one block share its context, and neither the
+        // markers nor the line break survive into it.
+        assert_eq!(anchors[0].context, "Ownership is preserved across lines.");
+        assert_eq!(anchors[0].context, anchors[1].context);
+    }
+
+    #[test]
+    fn a_citation_marker_renders_as_a_self_targeting_superscript() {
+        let body = "Ownership is preserved. [*copy-up.owner]\n";
+        let html = render(body).html;
+        // Self-targeting so a citation resolves to the statement, not
+        // the top of the article.
+        assert!(html.contains("href=\"#cite-copy-up.owner\""), "{html}");
+        assert!(html.contains("<sup>"), "{html}");
     }
 
     #[test]

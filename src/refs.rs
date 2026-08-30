@@ -42,6 +42,26 @@ pub struct SectionTarget {
     pub fragment: Option<String>,
 }
 
+/// One `[*name]` citation anchor, resolved against the tree.
+#[derive(Debug, Clone)]
+pub struct Citation {
+    /// The declared name, unique within its book.
+    pub name: String,
+    /// The full citation string a test or code comment writes, e.g.
+    /// `Kernel TRM *copy-up.preserves-ownership`. Falls back to the
+    /// book's title where it declares no short name.
+    pub qualified: String,
+    /// Site-absolute path of the book's cover.
+    pub book: String,
+    /// Site-absolute path of the article the anchor sits in.
+    pub article: String,
+    /// The article's section number ("4.6") where it has one.
+    pub number: Option<String>,
+    /// The source block the anchor sits in. Block context, not the
+    /// statement — an anchor is a locator and delimits nothing.
+    pub context: String,
+}
+
 #[derive(Debug, Default)]
 pub struct InlineRefIndex {
     /// Leftmost-longest matcher over every phrase; None when no phrase
@@ -53,6 +73,8 @@ pub struct InlineRefIndex {
     /// Built for every book, phrases declared or not — bare `§`
     /// references work in any book.
     sections: HashMap<String, HashMap<String, SectionTarget>>,
+    /// Every citation anchor in the site, in tree order.
+    citations: Vec<Citation>,
 }
 
 impl InlineRefIndex {
@@ -88,6 +110,11 @@ impl InlineRefIndex {
     pub fn section(&self, book: &str, number: &str) -> Option<&SectionTarget> {
         self.sections.get(book)?.get(number)
     }
+
+    /// Every citation anchor in the site, in tree order.
+    pub fn citations(&self) -> &[Citation] {
+        &self.citations
+    }
 }
 
 #[derive(Default)]
@@ -96,6 +123,7 @@ struct Builder {
     /// phrase → declarer, for duplicate reports.
     claimed: HashMap<String, String>,
     sections: HashMap<String, HashMap<String, SectionTarget>>,
+    citations: Vec<Citation>,
 }
 
 impl Builder {
@@ -163,7 +191,10 @@ impl Builder {
         }
         for child in &topic.children {
             match child {
-                TopicChild::Article { article } => self.article(article)?,
+                TopicChild::Article { article } => {
+                    Self::reject_citations(article)?;
+                    self.article(article)?;
+                }
                 TopicChild::Folder { folder } => {
                     if !folder.inline_refs.is_empty() {
                         let Some(entry) = &folder.entry else {
@@ -180,10 +211,26 @@ impl Builder {
                         )?;
                     }
                     for article in &folder.articles {
+                        Self::reject_citations(article)?;
                         self.article(article)?;
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Citation anchors are addressed as "<book> *<name>", so a book is
+    /// the only thing that can carry one. An anchor in a task-doc topic
+    /// would be unreachable and silently uncovered — fail instead.
+    fn reject_citations(article: &Article) -> Result<()> {
+        if let Some(anchor) = markdown::citation_anchors(&article.body).first() {
+            bail!(
+                "article '{}' declares citation '*{}', but citation anchors \
+                 are only valid inside a book",
+                article.path,
+                anchor.name
+            );
         }
         Ok(())
     }
@@ -251,6 +298,45 @@ impl Builder {
         }
         chapter_numbers(&book.children, &mut sections);
         self.sections.insert(book.path.clone(), sections);
+        self.book_citations(book)?;
+        Ok(())
+    }
+
+    /// Collect the book's `[*name]` anchors, enforcing that a name is
+    /// unique within its book. Uniqueness is per book rather than
+    /// site-wide (as inline_ref phrases are): names like
+    /// `copy-up.preserves-ownership` are naturally book-scoped, and a
+    /// citation from outside the corpus is qualified by the book's
+    /// short name anyway.
+    fn book_citations(&mut self, book: &Book) -> Result<()> {
+        let short = book.short.clone().unwrap_or_else(|| book.title.clone());
+        let mut seen: HashMap<String, String> = HashMap::new();
+        for (_, article) in book.articles() {
+            if article.original.is_some() {
+                // Aliases re-present another article; its anchors are
+                // already collected at the original.
+                continue;
+            }
+            for anchor in markdown::citation_anchors(&article.body) {
+                if let Some(other) = seen.insert(anchor.name.clone(), article.path.clone()) {
+                    bail!(
+                        "citation '*{}' is declared twice in book '{}': \
+                         '{other}' and '{}'",
+                        anchor.name,
+                        book.path,
+                        article.path
+                    );
+                }
+                self.citations.push(Citation {
+                    qualified: format!("{short} *{}", anchor.name),
+                    name: anchor.name,
+                    book: book.path.clone(),
+                    article: article.path.clone(),
+                    number: article.number.clone(),
+                    context: anchor.context,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -287,6 +373,7 @@ impl Builder {
             matcher,
             phrases: self.phrases,
             sections: self.sections,
+            citations: self.citations,
         })
     }
 }
@@ -343,6 +430,63 @@ mod tests {
             PhraseTarget::Page(path) => assert_eq!(path, "/alpha/loose/x2"),
             other => panic!("expected a page target, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn citations_carry_their_book_article_and_context() {
+        let (_dir, index) = fixture_index();
+        let citation = index
+            .citations()
+            .iter()
+            .find(|c| c.name == "install.preserves-ownership")
+            .expect("fixture anchor");
+        // Qualified with the book's short name — the string a test writes.
+        assert_eq!(citation.qualified, "AM *install.preserves-ownership");
+        assert_eq!(citation.book, "/alpha/manual");
+        assert_eq!(citation.article, "/alpha/manual/setup/install");
+        assert_eq!(citation.number.as_deref(), Some("2.1"));
+        // Block context, with the marker gone and the code sample's
+        // lookalike never having been an anchor at all.
+        assert!(citation.context.starts_with("The installer preserves ownership."));
+        // The real marker is stripped; the inline-code lookalike in the
+        // same block is left exactly as written, because it was never an
+        // anchor to begin with.
+        assert!(!citation.context.contains("[*install.preserves-ownership]"));
+        assert!(citation.context.contains("`[*not.an.anchor]`"));
+        assert!(index.citations().iter().all(|c| c.name != "not.an.anchor"));
+    }
+
+    #[test]
+    fn a_name_declared_twice_in_one_book_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::site::write_fixture(dir.path());
+        // A second declaration of the install article's name, from
+        // another article of the same book.
+        let path = dir
+            .path()
+            .join("alpha.product/7--manual.book/1--intro.md");
+        let body = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, body + "\nAgain. [*install.preserves-ownership]\n").unwrap();
+        let site = Site::load(dir.path(), &dir.path().join("dist")).unwrap();
+        let err = InlineRefIndex::new(&site).unwrap_err();
+        assert!(err.to_string().contains("declared twice"), "{err}");
+        assert!(err.to_string().contains("install.preserves-ownership"), "{err}");
+    }
+
+    #[test]
+    fn a_citation_outside_a_book_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::site::write_fixture(dir.path());
+        // A topic article: nothing could ever cite it, since a citation
+        // is addressed through its book.
+        let path = dir
+            .path()
+            .join("alpha.product/2--acorn.antho/100--wide.topic/1--a1.md");
+        let body = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, body + "\nStatement. [*loose.anchor]\n").unwrap();
+        let site = Site::load(dir.path(), &dir.path().join("dist")).unwrap();
+        let err = InlineRefIndex::new(&site).unwrap_err();
+        assert!(err.to_string().contains("only valid inside a book"), "{err}");
     }
 
     #[test]

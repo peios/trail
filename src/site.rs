@@ -2582,7 +2582,10 @@ description = "anthology description"
         manual.join("2--setup/1--install.md"),
         article("install")
             + "\n![Layout again](../layout.png)\n\nSee §2.2.1 and §A for more. \
-               External citations like §9.9 stay plain.\n",
+               External citations like §9.9 stay plain.\n\n\
+               The installer preserves ownership. [*install.preserves-ownership] \
+               And *emphasis* in the same block must not swallow it, nor may \
+               a literal `[*not.an.anchor]` in code.\n",
     )
     .unwrap();
     fs::write(
