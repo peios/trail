@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use anyhow::{Result, bail, ensure};
@@ -27,13 +27,13 @@ pub struct Rendered {
     /// Whether the article contains a mermaid diagram, so its page can pull
     /// in the (otherwise omitted) mermaid script.
     pub has_mermaid: bool,
-    /// Dangling-link warnings — missing targets when `allow_dangling`
-    /// downgrades them.
+    /// Dangling-link warnings — missing targets, missing `#fragment`
+    /// anchors and relative paths when `allow_dangling` downgrades them.
     pub dangling: Vec<String>,
     /// Fatal link problems: ambiguous references (always), and missing
-    /// targets when they aren't allowed. Collected rather than failing
-    /// fast so one build reports every broken link at once; the caller
-    /// decides when to abort.
+    /// targets, missing anchors and relative paths when they aren't
+    /// allowed. Collected rather than failing fast so one build reports
+    /// every broken link at once; the caller decides when to abort.
     pub broken: Vec<String>,
 }
 
@@ -117,6 +117,10 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
     let mut has_mermaid = false;
     let mut dangling = Vec::new();
     let mut broken = Vec::new();
+    // Same-page `#fragment` links, (as written, as emitted): checked
+    // against the page's own ids once the whole body is rendered, since
+    // a link may precede the heading it names.
+    let mut local_fragments: Vec<(String, String)> = Vec::new();
     // Tracks open blockquotes: true = admonition we opened as an <aside>.
     let mut blockquotes = Vec::new();
     // Section-number counters, used only when `numbering` is set.
@@ -140,14 +144,7 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
             attrs,
         }) = &events[i]
         {
-            let mut title = String::new();
-            for event in &events[i + 1..] {
-                match event {
-                    Event::End(TagEnd::Heading(_)) => break,
-                    Event::Text(text) | Event::Code(text) => title.push_str(text),
-                    _ => {}
-                }
-            }
+            let title = heading_text(&events[i + 1..]);
             let mut base = match id {
                 Some(explicit) => explicit.to_string(),
                 None => slugify(&title),
@@ -231,6 +228,22 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
             };
             match links.resolve(target) {
                 Ok(mut resolved) => {
+                    // The page exists; does the anchor? Only pages with
+                    // a body are known to the index — a product or
+                    // anthology page is not checked.
+                    if let Some(fragment) = fragment
+                        && links.has_anchor(&resolved, fragment) == Some(false)
+                    {
+                        let message = format!(
+                            "link '~{reference}' names anchor '#{fragment}', \
+                             which page '{resolved}' does not have"
+                        );
+                        if options.allow_dangling {
+                            dangling.push(message);
+                        } else {
+                            broken.push(message);
+                        }
+                    }
                     resolved = match options.print {
                         // Inside a print bundle: same-bundle pages become
                         // anchors (their headings keep the page's id
@@ -281,6 +294,43 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                     out.push(events[i].clone());
                 }
             }
+        } else if let Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) = &events[i]
+            && let Some(fragment) = dest_url.strip_prefix('#')
+        {
+            link_depth += 1;
+            // A same-page anchor. Inside a print bundle this page's ids
+            // carry its prefix, so the link must too; either way the
+            // fragment is checked against the page's own ids at the end.
+            let dest = match options.id_prefix {
+                Some(prefix) => format!("#{prefix}--{fragment}"),
+                None => dest_url.to_string(),
+            };
+            local_fragments.push((fragment.to_string(), dest[1..].to_string()));
+            out.push(Event::Start(Tag::Link {
+                link_type: *link_type,
+                dest_url: dest.into(),
+                title: title.clone(),
+                id: id.clone(),
+            }));
+        } else if let Event::Start(Tag::Link { dest_url, .. }) = &events[i]
+            && is_relative(dest_url)
+        {
+            link_depth += 1;
+            let message = format!(
+                "link '{dest_url}' is a relative path, which no page can serve \
+                 — use a ~ reference to the page you mean"
+            );
+            if options.allow_dangling {
+                dangling.push(message);
+            } else {
+                broken.push(message);
+            }
+            out.push(events[i].clone());
         } else if let Event::Start(Tag::Image {
             dest_url, title, ..
         }) = &events[i]
@@ -386,6 +436,20 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
 
     let mut rendered = String::new();
     html::push_html(&mut rendered, out.into_iter());
+    if !local_fragments.is_empty() {
+        let ids: HashSet<String> = html_ids(&rendered).collect();
+        for (written, expected) in local_fragments {
+            if ids.contains(&expected) {
+                continue;
+            }
+            let message = format!("link '#{written}' names an anchor this page does not have");
+            if options.allow_dangling {
+                dangling.push(message);
+            } else {
+                broken.push(message);
+            }
+        }
+    }
     Ok(Rendered {
         html: rendered,
         toc,
@@ -591,14 +655,7 @@ pub fn heading_outline(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry>
         let Event::Start(Tag::Heading { level, id, .. }) = event else {
             continue;
         };
-        let mut title = String::new();
-        for event in &events[i + 1..] {
-            match event {
-                Event::End(TagEnd::Heading(_)) => break,
-                Event::Text(text) | Event::Code(text) => title.push_str(text),
-                _ => {}
-            }
-        }
+        let title = heading_text(&events[i + 1..]);
         let base = match id {
             Some(explicit) => explicit.to_string(),
             None => slugify(&title),
@@ -1141,6 +1198,76 @@ fn escape_attribute(text: &str) -> String {
     escape_text(text).replace('"', "&quot;")
 }
 
+/// The text of the heading whose start event precedes `events`, as its
+/// id and ToC title see it: text and code runs, nothing else.
+fn heading_text(events: &[Event]) -> String {
+    let mut title = String::new();
+    for event in events {
+        match event {
+            Event::End(TagEnd::Heading(_)) => break,
+            Event::Text(text) | Event::Code(text) => title.push_str(text),
+            _ => {}
+        }
+    }
+    title
+}
+
+/// Every `id="…"` value in a run of HTML.
+fn html_ids(html: &str) -> impl Iterator<Item = String> + '_ {
+    html.match_indices(" id=\"").filter_map(|(at, marker)| {
+        html[at + marker.len()..]
+            .split('"')
+            .next()
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// Every anchor id an article body defines — heading ids exactly as
+/// `render` assigns them (an explicit `{#id}` or the slugified text,
+/// deduplicated in order), `[*name]` citation anchors, and ids written
+/// in raw HTML. The link index collects these so a `#fragment` on a
+/// reference can be checked against the page it names.
+pub fn anchor_ids(markdown: &str) -> HashSet<String> {
+    let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
+    let expanded = expand_citation_anchors(&expanded, None);
+    let events: Vec<Event> = Parser::new_ext(&expanded, parser_options()).collect();
+    let mut ids = HashSet::new();
+    let mut used_ids = HashMap::new();
+    for (i, event) in events.iter().enumerate() {
+        match event {
+            Event::Start(Tag::Heading { id, .. }) => {
+                let base = match id {
+                    Some(explicit) => explicit.to_string(),
+                    None => slugify(&heading_text(&events[i + 1..])),
+                };
+                ids.insert(unique_id(&mut used_ids, base));
+            }
+            Event::Html(html) | Event::InlineHtml(html) => ids.extend(html_ids(html)),
+            _ => {}
+        }
+    }
+    ids
+}
+
+/// A link destination in none of the forms a page can serve: not a `~`
+/// reference, not site-absolute, not a same-page fragment, and not a URL
+/// with a scheme. A page's URL comes from its slugs, not its file, so a
+/// path relative to the source file points at nothing.
+fn is_relative(dest: &str) -> bool {
+    if dest.starts_with(['~', '/', '#']) {
+        return false;
+    }
+    let Some(colon) = dest.find(':') else {
+        return true;
+    };
+    let scheme = &dest[..colon];
+    let well_formed = scheme.chars().enumerate().all(|(i, c)| {
+        c.is_ascii_alphabetic() || (i > 0 && (c.is_ascii_digit() || matches!(c, '+' | '-' | '.')))
+    });
+    scheme.is_empty() || !well_formed
+}
+
 fn slugify(text: &str) -> String {
     let mut out = String::new();
     let mut previous_was_dash = true;
@@ -1427,7 +1554,7 @@ mod tests {
     fn tilde_links_resolve_through_the_index() {
         let (_dir, index) = fixture_index();
         let rendered = super::render(
-            "See [a2](~alpha/a2#part).",
+            "See [a2](~alpha/a2#first-section-of-a2).",
             &index,
             RenderOptions::default(),
         )
@@ -1435,15 +1562,99 @@ mod tests {
         assert!(
             rendered
                 .html
-                .contains("<a href=\"/alpha/acorn/wide/a2#part\">a2</a>")
+                .contains("<a href=\"/alpha/acorn/wide/a2#first-section-of-a2\">a2</a>")
         );
+    }
+
+    #[test]
+    fn fragments_are_checked_against_the_target_page() {
+        let (_dir, index) = fixture_index();
+        let rendered = super::render(
+            "See [a2](~alpha/a2#nope).",
+            &index,
+            RenderOptions::default(),
+        )
+        .unwrap();
+        // The link still renders — one bad anchor must not blank a page —
+        // but the build hears about it.
+        assert!(rendered.html.contains("href=\"/alpha/acorn/wide/a2#nope\""));
+        assert_eq!(rendered.broken.len(), 1, "{:?}", rendered.broken);
+        assert!(rendered.broken[0].contains("names anchor '#nope'"));
+        assert!(rendered.broken[0].contains("/alpha/acorn/wide/a2"));
+        // Downgradable, like a missing page.
+        let rendered = super::render("See [a2](~alpha/a2#nope).", &index, allow_dangling()).unwrap();
+        assert!(rendered.broken.is_empty());
+        assert_eq!(rendered.dangling.len(), 1);
+        // A page whose anchors the index cannot know — a product page has
+        // no body — is not checked.
+        let rendered = super::render(
+            "See [alpha](~alpha#anything).",
+            &index,
+            RenderOptions::default(),
+        )
+        .unwrap();
+        assert!(rendered.broken.is_empty());
+    }
+
+    #[test]
+    fn same_page_fragments_are_checked_against_the_pages_own_ids() {
+        let rendered = render(
+            "[ok](#real) [cited](#cite-note) [raw](#by-hand) [bad](#missing)\n\n\
+             ## Real\n\n[*note] A claim.\n\n<span id=\"by-hand\"></span>\n",
+        );
+        assert_eq!(rendered.broken.len(), 1, "{:?}", rendered.broken);
+        assert!(rendered.broken[0].contains("'#missing' names an anchor this page does not have"));
+    }
+
+    #[test]
+    fn print_bundles_namespace_same_page_fragments() {
+        let rendered = super::render(
+            "[up](#overview)\n\n## Overview\n",
+            &LinkIndex::default(),
+            RenderOptions {
+                id_prefix: Some("wide-a1"),
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(rendered.html.contains("href=\"#wide-a1--overview\""));
+        assert!(rendered.broken.is_empty(), "{:?}", rendered.broken);
+    }
+
+    #[test]
+    fn relative_destinations_are_broken_links() {
+        let rendered = render(
+            "[a](../410--policy.md) [b](sibling.md#part) [c](https://example.com/x.md) \
+             [d](/print) [e](mailto:docs@example.com)\n\n## Part\n",
+        );
+        assert_eq!(rendered.broken.len(), 2, "{:?}", rendered.broken);
+        assert!(rendered.broken[0].contains("'../410--policy.md' is a relative path"));
+        assert!(rendered.broken[1].contains("'sibling.md#part' is a relative path"));
+        let rendered =
+            super::render("[a](../x.md)", &LinkIndex::default(), allow_dangling()).unwrap();
+        assert!(rendered.broken.is_empty());
+        assert_eq!(rendered.dangling.len(), 1);
+    }
+
+    #[test]
+    fn anchor_ids_match_what_render_assigns() {
+        let source = "## Overview\n\n## Overview\n\n### When it's hex\n\n\
+                      [*claim] Words.\n\n<a id=\"manual\"></a>\n";
+        let ids = super::anchor_ids(source);
+        for expected in ["overview", "overview-2", "when-it-s-hex", "cite-claim", "manual"] {
+            assert!(ids.contains(expected), "missing {expected}: {ids:?}");
+        }
+        let html = render(source).html;
+        for id in &ids {
+            assert!(html.contains(&format!("id=\"{id}\"")), "render lacks {id}");
+        }
     }
 
     #[test]
     fn a_base_moves_the_links_the_tree_owns_and_nothing_else() {
         let (_dir, index) = fixture_index();
         let rendered = super::render(
-            "See [a2](~alpha/a2#part), [the spec](https://example.com/spec) \
+            "See [a2](~alpha/a2#first-section-of-a2), [the spec](https://example.com/spec) \
              and [the root](/elsewhere).",
             &index,
             RenderOptions {
@@ -1456,7 +1667,7 @@ mod tests {
         assert!(
             rendered
                 .html
-                .contains("<a href=\"/deadbeef/alpha/acorn/wide/a2#part\">a2</a>")
+                .contains("<a href=\"/deadbeef/alpha/acorn/wide/a2#first-section-of-a2\">a2</a>")
         );
         // A URL the author wrote out is emitted exactly as written —
         // prefixing it would break an external link and second-guess a
@@ -1603,10 +1814,10 @@ mod tests {
     #[test]
     fn rewrite_source_resolves_links_to_mirrors_and_numbers_headings() {
         let (_dir, index) = fixture_index();
-        let source = "Intro with [a2](~alpha/a2#part) and [missing](~alpha/nope).\n\n\
+        let source = "Intro with [a2](~alpha/a2#first-section-of-a2) and [missing](~alpha/nope).\n\n\
                       ## First\n\n```\n## not a heading [x](~alpha/a2)\n```\n\n### Sub\n";
         let rewritten = super::rewrite_source(source, &index, Some("2.1"), None, "");
-        assert!(rewritten.contains("[a2](/alpha/acorn/wide/a2.md#part)"));
+        assert!(rewritten.contains("[a2](/alpha/acorn/wide/a2.md#first-section-of-a2)"));
         // Unresolvable links and code-block contents stay untouched.
         assert!(rewritten.contains("[missing](~alpha/nope)"));
         assert!(rewritten.contains("## not a heading [x](~alpha/a2)"));

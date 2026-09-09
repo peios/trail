@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::site::{Anthology, AnthologyItem, Book, ProductItem, Site, Topic, TopicChild};
@@ -33,6 +33,11 @@ impl std::error::Error for ResolveError {}
 #[derive(Debug, Default)]
 pub struct LinkIndex {
     products: HashMap<String, ProductIndex>,
+    /// Page path → the anchor ids its body defines (heading ids, `[*name]`
+    /// citation anchors, raw HTML ids), so a `#fragment` on a reference
+    /// can be checked. Only articles have bodies; product and anthology
+    /// pages are absent and their fragments go unchecked.
+    anchors: HashMap<String, HashSet<String>>,
 }
 
 #[derive(Debug)]
@@ -186,7 +191,24 @@ impl LinkIndex {
                 },
             );
         }
-        LinkIndex { products }
+        let anchors = site
+            .articles()
+            .into_iter()
+            .map(|article| {
+                (
+                    article.path.clone(),
+                    crate::markdown::anchor_ids(&article.body),
+                )
+            })
+            .collect();
+        LinkIndex { products, anchors }
+    }
+
+    /// Whether the page at `path` defines the anchor `fragment`. None when
+    /// the page's anchors are unknown — a product or anthology page, or an
+    /// index built without a site — and the caller should not judge.
+    pub fn has_anchor(&self, path: &str, fragment: &str) -> Option<bool> {
+        self.anchors.get(path).map(|ids| ids.contains(fragment))
     }
 
     /// Resolve a reference with its leading `~` already stripped.
@@ -257,6 +279,19 @@ mod tests {
         let (_dir, index) = index();
         assert_eq!(index.resolve("alpha/a2").unwrap(), "/alpha/acorn/wide/a2");
         assert_eq!(index.resolve("alpha/x1").unwrap(), "/alpha/loose/x1");
+    }
+
+    #[test]
+    fn anchors_are_known_for_articles_only() {
+        let (_dir, index) = index();
+        assert_eq!(
+            index.has_anchor("/alpha/acorn/wide/a2", "first-section-of-a2"),
+            Some(true)
+        );
+        assert_eq!(index.has_anchor("/alpha/acorn/wide/a2", "nope"), Some(false));
+        // Product and anthology pages have no body to define anchors in.
+        assert_eq!(index.has_anchor("/alpha", "anything"), None);
+        assert_eq!(index.has_anchor("/alpha/acorn", "anything"), None);
     }
 
     #[test]

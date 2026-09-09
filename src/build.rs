@@ -889,6 +889,54 @@ mod tests {
     }
 
     #[test]
+    fn bad_anchors_and_relative_paths_break_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        fs::write(
+            dir.path().join("alpha.product/5--loose.topic/1--x1.md"),
+            "---\ntitle: Article x1\ntype: concept\ndescription: about x1\n---\n\n\
+             See [a2](~alpha/a2#nope), [x2](../2--x2.md) and [below](#nowhere).\n",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        let err = build_site(
+            &site,
+            &out,
+            &BuildOptions {
+                live_reload: false,
+                allow_dangling_links: false,
+                strict: false,
+                render_llms_full: false,
+                ..BuildOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("names anchor '#nope'"), "{err}");
+        assert!(err.contains("'../2--x2.md' is a relative path"), "{err}");
+        assert!(
+            err.contains("'#nowhere' names an anchor this page does not have"),
+            "{err}"
+        );
+
+        // Downgradable, like any dangling reference.
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(
+            &site,
+            &out,
+            &BuildOptions {
+                live_reload: false,
+                allow_dangling_links: true,
+                strict: false,
+                render_llms_full: false,
+                ..BuildOptions::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn referenced_images_ship_and_orphans_stay_home() {
         let dir = tempfile::tempdir().unwrap();
         site::write_fixture(dir.path());
