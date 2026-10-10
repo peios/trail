@@ -382,6 +382,7 @@ fn write_bundle(
             links,
             markdown::RenderOptions {
                 allow_dangling: true,
+                strict: false,
                 numbering: article.number.as_deref(),
                 id_prefix: Some(&id),
                 refs: None,
