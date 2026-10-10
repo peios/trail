@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
+use lol_html::{HtmlRewriter, RewriteStrSettings, Settings, element, rewrite_str};
 use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
 use serde::Serialize;
 
@@ -48,7 +49,7 @@ pub struct RenderOptions<'a> {
     /// copyable, unlike CSS counters — while ids and ToC titles stay
     /// clean of it.
     pub numbering: Option<&'a str>,
-    /// Namespace for heading anchor ids, for pages that concatenate many
+    /// Namespace for all HTML anchor ids, for pages that concatenate many
     /// articles (print pages) where slugs would otherwise collide.
     pub id_prefix: Option<&'a str>,
     /// Where relative `![](...)` destinations resolve: the site's image
@@ -145,13 +146,10 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
         }) = &events[i]
         {
             let title = heading_text(&events[i + 1..]);
-            let mut base = match id {
+            let base = match id {
                 Some(explicit) => explicit.to_string(),
                 None => slugify(&title),
             };
-            if let Some(prefix) = options.id_prefix {
-                base = format!("{prefix}--{base}");
-            }
             let unique = unique_id(&mut used_ids, base);
             heading_id = Some(unique.clone());
             let level_number = *level as u8;
@@ -159,7 +157,7 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
             if (2..=3).contains(&level_number) {
                 toc.push(TocEntry {
                     level: level_number,
-                    id: unique.clone(),
+                    id: prefixed_id(options.id_prefix, &unique),
                     title,
                     number: number.clone(),
                 });
@@ -249,9 +247,12 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                         // anchors (their headings keep the page's id
                         // prefix), others go absolute.
                         Some(scope) => match scope.anchors.get(&resolved) {
-                            Some(anchor) => match fragment {
-                                Some(fragment) => format!("#{anchor}--{fragment}"),
-                                None => format!("#{anchor}"),
+                            // Keep the canonical page path until the final
+                            // HTML pass. That pass can then distinguish this
+                            // cross-article link from an author's local href.
+                            Some(_) => match fragment {
+                                Some(fragment) => format!("{resolved}#{fragment}"),
+                                None => resolved,
                             },
                             None => {
                                 let site = scope.base.unwrap_or("");
@@ -306,14 +307,13 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
             // A same-page anchor. Inside a print bundle this page's ids
             // carry its prefix, so the link must too; either way the
             // fragment is checked against the page's own ids at the end.
-            let dest = match options.id_prefix {
-                Some(prefix) => format!("#{prefix}--{fragment}"),
-                None => dest_url.to_string(),
-            };
-            local_fragments.push((fragment.to_string(), dest[1..].to_string()));
+            local_fragments.push((
+                fragment.to_string(),
+                prefixed_id(options.id_prefix, fragment),
+            ));
             out.push(Event::Start(Tag::Link {
                 link_type: *link_type,
-                dest_url: dest.into(),
+                dest_url: dest_url.clone(),
                 title: title.clone(),
                 id: id.clone(),
             }));
@@ -436,8 +436,11 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
 
     let mut rendered = String::new();
     html::push_html(&mut rendered, out.into_iter());
+    if options.id_prefix.is_some() || options.print.is_some() {
+        rendered = namespace_html(&rendered, &options)?;
+    }
     if !local_fragments.is_empty() {
-        let ids: HashSet<String> = html_ids(&rendered).collect();
+        let ids = html_ids(&rendered)?;
         for (written, expected) in local_fragments {
             if ids.contains(&expected) {
                 continue;
@@ -1212,15 +1215,95 @@ fn heading_text(events: &[Event]) -> String {
     title
 }
 
-/// Every `id="…"` value in a run of HTML.
-fn html_ids(html: &str) -> impl Iterator<Item = String> + '_ {
-    html.match_indices(" id=\"").filter_map(|(at, marker)| {
-        html[at + marker.len()..]
-            .split('"')
-            .next()
-            .filter(|id| !id.is_empty())
-            .map(str::to_string)
-    })
+/// Apply one namespace to the complete rendered article, including raw
+/// HTML and citation markers. Parsing the whole body preserves HTML context
+/// across markdown events (multiline tags, comments and script/raw-text
+/// contents); matching attributes avoids rewriting code or quoted examples.
+fn namespace_html(html: &str, options: &RenderOptions) -> Result<String> {
+    rewrite_str(
+        html,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("[id], [href]", |element| {
+                if let Some(id) = element.get_attribute("id") {
+                    let id = html_escape::decode_html_entities(&id);
+                    if !id.is_empty() && options.id_prefix.is_some() {
+                        element.set_attribute(
+                            "id",
+                            &escape_attribute(&prefixed_id(options.id_prefix, &id)),
+                        )?;
+                    }
+                }
+                if let Some(href) = element.get_attribute("href") {
+                    let href = html_escape::decode_html_entities(&href);
+                    let destination = if let Some(fragment) = href.strip_prefix('#') {
+                        // A bare '#' still points at the document top.
+                        (!fragment.is_empty() && options.id_prefix.is_some())
+                            .then(|| format!("#{}", prefixed_id(options.id_prefix, fragment)))
+                    } else {
+                        // Only exact canonical page paths are scoped. Full
+                        // URLs, query strings and out-of-bundle paths retain
+                        // their authored meaning. This also handles raw HTML
+                        // links to another article in the same bundle.
+                        let (path, fragment) = href
+                            .split_once('#')
+                            .map_or((href.as_ref(), None), |(path, fragment)| {
+                                (path, Some(fragment))
+                            });
+                        options
+                            .print
+                            .and_then(|scope| scope.anchors.get(path))
+                            .map(|anchor| match fragment {
+                                Some(fragment) if !fragment.is_empty() => {
+                                    format!("#{anchor}--{fragment}")
+                                }
+                                _ => format!("#{anchor}"),
+                            })
+                    };
+                    if let Some(destination) = destination {
+                        element.set_attribute("href", &escape_attribute(&destination))?;
+                    }
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .context("could not namespace print article HTML")
+}
+
+fn prefixed_id(prefix: Option<&str>, id: &str) -> String {
+    match prefix {
+        Some(prefix) => format!("{prefix}--{id}"),
+        None => id.to_string(),
+    }
+}
+
+/// Actual element IDs, including quoted/unquoted attributes and entities.
+/// Unlike a substring search, comments and raw-text examples are not anchors.
+fn html_ids(html: &str) -> Result<HashSet<String>> {
+    let mut ids = HashSet::new();
+    let mut rewriter = HtmlRewriter::new(
+        Settings {
+            element_content_handlers: vec![element!("[id]", |element| {
+                if let Some(id) = element.get_attribute("id") {
+                    let id = html_escape::decode_html_entities(&id);
+                    if !id.is_empty() {
+                        ids.insert(id.into_owned());
+                    }
+                }
+                Ok(())
+            })],
+            ..Settings::default()
+        },
+        |_: &[u8]| {},
+    );
+    rewriter
+        .write(html.as_bytes())
+        .context("could not collect article HTML anchors")?;
+    rewriter
+        .end()
+        .context("could not collect article HTML anchors")?;
+    Ok(ids)
 }
 
 /// Every anchor id an article body defines — heading ids exactly as
@@ -1243,10 +1326,16 @@ pub fn anchor_ids(markdown: &str) -> HashSet<String> {
                 };
                 ids.insert(unique_id(&mut used_ids, base));
             }
-            Event::Html(html) | Event::InlineHtml(html) => ids.extend(html_ids(html)),
             _ => {}
         }
     }
+    // Parse the complete HTML rather than isolated raw events, which can
+    // split a tag or a comment over several lines. If HTML is malformed in
+    // a way the rewriter cannot handle, do not index unverifiable raw ids;
+    // rendering with local links or a print scope reports the parse error.
+    let mut html = String::new();
+    html::push_html(&mut html, events.into_iter());
+    ids.extend(html_ids(&html).unwrap_or_default());
     ids
 }
 
@@ -1619,6 +1708,225 @@ mod tests {
         .unwrap();
         assert!(rendered.html.contains("href=\"#wide-a1--overview\""));
         assert!(rendered.broken.is_empty(), "{:?}", rendered.broken);
+    }
+
+    /// Inspect the emitted HTML independently of the renderer's link checks.
+    fn assert_local_hrefs_exist(html: &str) {
+        let mut ids = HashSet::new();
+        let mut hrefs = Vec::new();
+        rewrite_str(
+            html,
+            RewriteStrSettings {
+                element_content_handlers: vec![element!("*", |element| {
+                    if let Some(id) = element.get_attribute("id") {
+                        ids.insert(html_escape::decode_html_entities(&id).into_owned());
+                    }
+                    if let Some(href) = element.get_attribute("href") {
+                        hrefs.push(html_escape::decode_html_entities(&href).into_owned());
+                    }
+                    Ok(())
+                })],
+                ..RewriteStrSettings::default()
+            },
+        )
+        .unwrap();
+        for href in hrefs {
+            if let Some(fragment) = href.strip_prefix('#').filter(|id| !id.is_empty()) {
+                assert!(ids.contains(fragment), "missing target {href}: {html}");
+            }
+        }
+    }
+
+    #[test]
+    fn print_namespaces_raw_ids_local_links_and_citation_markers() {
+        let body = r##"[dotted](#field.dot) [heading](#field-dot) [block](#block-id)
+
+## <a id="field.dot"></a>`field.dot`
+
+<section
+ ID = 'block-id'>
+<a HREF = '#field.dot'>raw local</a>
+<span id=unquoted></span><a href=#unquoted>unquoted</a>
+</section>
+
+[*claim.one] Citation.
+
+[claim](#cite-claim.one)
+
+<a id="article--authored" href="#article--authored">Already looks prefixed</a>
+"##;
+        let rendered = super::render(
+            body,
+            &LinkIndex::default(),
+            RenderOptions {
+                id_prefix: Some("article"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rendered.broken.is_empty(), "{:?}", rendered.broken);
+        let ids = html_ids(&rendered.html).unwrap();
+        for id in [
+            "field.dot",
+            "field-dot",
+            "block-id",
+            "unquoted",
+            "cite-claim.one",
+            "article--authored",
+        ] {
+            assert!(ids.contains(&format!("article--{id}")), "missing {id}");
+            assert!(
+                !ids.contains(id),
+                "legacy raw aliases must not collide across articles"
+            );
+        }
+        assert_eq!(rendered.toc[0].id, "article--field-dot");
+        assert_local_hrefs_exist(&rendered.html);
+    }
+
+    #[test]
+    fn print_html_rewriting_preserves_comments_raw_text_attributes_and_code() {
+        let body = r##"<!-- <a id="comment" href="#comment">comment</a> -->
+
+<script>
+const example = '<a id="script" href="#script">';
+</script>
+
+<style>
+.example::after { content: '<a id="style" href="#style">'; }
+</style>
+
+<textarea><a id="textarea" href="#textarea"></textarea>
+
+<span id="real" title='example id="attribute" href="#attribute"'>real</span>
+
+`<a id="inline-code" href="#inline-code">`
+
+```html
+<a id="fenced-code" href="#fenced-code">
+```
+
+<a href="#real">real</a>
+<a href="#">top</a>
+<a href="https://example.test/#real">external</a>
+<a href="/elsewhere#real">outside</a>
+"##;
+        let plain = render(body);
+        let printed = super::render(
+            body,
+            &LinkIndex::default(),
+            RenderOptions {
+                id_prefix: Some("article"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for unchanged in [
+            "<!-- <a id=\"comment\" href=\"#comment\">comment</a> -->",
+            "const example = '<a id=\"script\" href=\"#script\">';",
+            ".example::after { content: '<a id=\"style\" href=\"#style\">'; }",
+            "<textarea><a id=\"textarea\" href=\"#textarea\"></textarea>",
+            "title='example id=\"attribute\" href=\"#attribute\"'",
+            "href=\"#\"",
+            "href=\"https://example.test/#real\"",
+            "href=\"/elsewhere#real\"",
+        ] {
+            assert!(
+                printed.html.contains(unchanged),
+                "rewrote {unchanged}: {}",
+                printed.html
+            );
+        }
+        // Both code forms are escaped/highlighted exactly as on an ordinary page.
+        for tag in ["<code>", "<pre"] {
+            let start = plain.html.find(tag).unwrap();
+            let end_tag = if tag == "<code>" { "</code>" } else { "</pre>" };
+            let end = start + plain.html[start..].find(end_tag).unwrap() + end_tag.len();
+            assert!(printed.html.contains(&plain.html[start..end]));
+        }
+        assert_eq!(
+            html_ids(&printed.html).unwrap(),
+            HashSet::from(["article--real".to_string()])
+        );
+        assert_local_hrefs_exist(&printed.html);
+    }
+
+    #[test]
+    fn raw_anchor_entities_are_decoded_once_and_escaped_when_rewritten() {
+        let body = r##"<a id='a&amp;b&quot;c' href='&#35;a&amp;b&quot;c'>entity</a>
+
+<a id='literal&amp;amp;' href='#literal&amp;amp;'>literal entity spelling</a>
+"##;
+        let printed = super::render(
+            body,
+            &LinkIndex::default(),
+            RenderOptions {
+                id_prefix: Some("article"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(printed.html.contains("id=\"article--a&amp;b&quot;c\""));
+        assert!(printed.html.contains("href=\"#article--a&amp;b&quot;c\""));
+        assert!(
+            html_ids(&printed.html)
+                .unwrap()
+                .contains("article--literal&amp;")
+        );
+        assert_local_hrefs_exist(&printed.html);
+        assert!(anchor_ids(body).contains("a&b\"c"));
+    }
+
+    #[test]
+    fn standalone_raw_ids_and_fragments_keep_their_authored_spelling() {
+        let body = r##"[raw](#field.dot) [heading](#field-dot) [single](#single) [bare](#bare)
+
+## <a id="field.dot"></a>`field.dot`
+
+<span id='single'></span> <span ID=bare></span>
+
+<a href='#field.dot'>raw</a>
+
+[*claim.one] Citation.
+"##;
+        let plain = render(body);
+        assert!(plain.broken.is_empty(), "{:?}", plain.broken);
+        for literal in [
+            "id=\"field.dot\"",
+            "id=\"field-dot\"",
+            "id='single'",
+            "ID=bare",
+            "href='#field.dot'",
+            "href=\"#cite-claim.one\"",
+        ] {
+            assert!(
+                plain.html.contains(literal),
+                "changed {literal}: {}",
+                plain.html
+            );
+        }
+        for id in ["field.dot", "field-dot", "single", "bare", "cite-claim.one"] {
+            assert!(anchor_ids(body).contains(id), "source index lacks {id}");
+        }
+        assert_local_hrefs_exist(&plain.html);
+    }
+
+    #[test]
+    fn raw_anchor_index_ignores_fake_ids_in_non_element_contexts() {
+        let body = r##"<!-- <a id="comment"></a> -->
+
+<script>
+const html = '<a id="script"></a>';
+</script>
+
+<div
+ id='real&amp;one' title=' id="fake"'></div>
+
+`<a id="code"></a>`
+"##;
+        assert_eq!(anchor_ids(body), HashSet::from(["real&one".to_string()]));
+        let rendered = render(&format!("[bad](#comment) [also bad](#script)\n\n{body}"));
+        assert_eq!(rendered.broken.len(), 2);
     }
 
     #[test]

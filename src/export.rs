@@ -1345,6 +1345,103 @@ mod tests {
     }
 
     #[test]
+    fn print_raw_anchors_resolve_in_nested_scopes_without_article_collisions() {
+        use lol_html::{RewriteStrSettings, element, rewrite_str};
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        crate::site::write_fixture(dir.path());
+        let topic = dir
+            .path()
+            .join("alpha.product/2--acorn.antho/500--inner.antho/1--deep.topic");
+        for (name, other) in [("d1", "d2"), ("d2", "d1")] {
+            fs::write(topic.join(format!("{}--{name}.md", if name == "d1" { 1 } else { 2 })), format!(
+                "---\ntitle: Article {name}\ntype: concept\ndescription: raw anchor fixture\n---\n\n\
+                 ## <a id=\"field.dot\"></a>`field.dot`\n\n\
+                 <div id='block-id'><a href='#field.dot'>Raw local</a></div>\n\n\
+                 [Local](#field.dot) [Heading](#field-dot) [Block](#block-id)\n\n\
+                 [Other](~alpha/deep/{other}#field.dot) [Other block](~alpha/deep/{other}#block-id)\n\n\
+                 [Other heading](~alpha/deep/{other}#field-dot) [Other page](~alpha/deep/{other})\n\n\
+                 <a href='/alpha/acorn/inner/deep/{other}#field.dot'>Raw cross-article</a>\n\n\
+                 <a href='/alpha/acorn/inner/deep/{other}?mode=web#field.dot'>Query</a>\n\n\
+                 <a href='https://docs.example/alpha/acorn/inner/deep/{other}#field.dot'>Full URL</a>\n"
+            )).unwrap();
+        }
+        let site = Site::load(dir.path(), &dir.path().join("dist")).unwrap();
+        let links = LinkIndex::new(&site);
+        let standalone = markdown::render(
+            "[raw](~alpha/deep/d1#field.dot) [single](~alpha/deep/d2#block-id)",
+            &links,
+            markdown::RenderOptions::default(),
+        )
+        .unwrap();
+        assert!(standalone.broken.is_empty(), "{:?}", standalone.broken);
+        let (out, _) = build_surface(dir.path(), false);
+
+        for (bundle, prefix) in [
+            ("alpha/acorn/inner/deep", ""),
+            ("alpha/acorn/inner", "deep-"),
+            ("alpha/acorn", "inner-deep-"),
+            ("alpha", "acorn-inner-deep-"),
+        ] {
+            let html = fs::read_to_string(out.join(format!("{bundle}/print/index.html"))).unwrap();
+            let mut ids = HashMap::<String, usize>::new();
+            let mut hrefs = Vec::new();
+            rewrite_str(
+                &html,
+                RewriteStrSettings {
+                    element_content_handlers: vec![element!("*", |element| {
+                        if let Some(id) = element.get_attribute("id") {
+                            *ids.entry(html_escape::decode_html_entities(&id).into_owned())
+                                .or_default() += 1;
+                        }
+                        if let Some(href) = element.get_attribute("href") {
+                            hrefs.push(html_escape::decode_html_entities(&href).into_owned());
+                        }
+                        Ok(())
+                    })],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for article in ["d1", "d2"] {
+                for fragment in ["field.dot", "field-dot", "block-id"] {
+                    let id = format!("{prefix}{article}--{fragment}");
+                    assert_eq!(ids.get(&id), Some(&1), "{bundle}: {id}");
+                    assert!(
+                        hrefs.contains(&format!("#{id}")),
+                        "{bundle}: no link to {id}"
+                    );
+                    assert!(!ids.contains_key(fragment), "unscoped alias in {bundle}");
+                }
+                assert!(hrefs.contains(&format!("#{prefix}{article}")));
+            }
+            // Check the whole generated bundle's local fragment graph,
+            // rather than only successful rendering or selected strings.
+            for href in &hrefs {
+                if let Some(fragment) = href.strip_prefix('#').filter(|id| !id.is_empty()) {
+                    assert!(ids.contains_key(fragment), "{bundle}: missing {href}");
+                }
+            }
+            assert!(hrefs.contains(&"/alpha/acorn/inner/deep/d2?mode=web#field.dot".into()));
+            assert!(
+                hrefs.contains(&"https://docs.example/alpha/acorn/inner/deep/d2#field.dot".into())
+            );
+        }
+        // Citation declarations are book-only. The existing book fixture's
+        // expanded raw id and self-link must agree in both enclosing scopes.
+        for (bundle, prefix) in [
+            ("alpha/manual", "setup-install"),
+            ("alpha", "manual-setup-install"),
+        ] {
+            let html = fs::read_to_string(out.join(format!("{bundle}/print/index.html"))).unwrap();
+            let citation = format!("{prefix}--cite-install.preserves-ownership");
+            assert!(html.contains(&format!("id=\"{citation}\"")));
+            assert!(html.contains(&format!("href=\"#{citation}\"")));
+        }
+    }
+
+    #[test]
     fn sitemap_needs_a_base_url_and_robots_is_always_there() {
         let (dir, out, _) = fixture_surface();
         let robots = fs::read_to_string(out.join("robots.txt")).unwrap();
