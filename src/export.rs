@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde_json::json;
 
 use crate::build::Output;
@@ -337,6 +337,8 @@ fn write_bundle(
     if unit.entries.is_empty() {
         return Ok(0);
     }
+
+    validate_print_anchors(unit)?;
 
     let url_base = options.base.as_str();
     let markdown = bundle_markdown(links, images, unit, url_base);
@@ -1046,6 +1048,32 @@ pub(crate) fn print_anchor(unit_path: &str, article: &Article) -> String {
         .unwrap_or(&article.slug)
         .replace('/', "-")
 }
+
+/// Keep existing print fragments stable, but never emit a bundle where
+/// distinct article paths flatten to the same anchor. Check each actual
+/// bundle separately: the same anchor is harmless in different documents.
+fn validate_print_anchors(unit: &Unit<'_>) -> Result<()> {
+    let mut paths = HashMap::new();
+    for (_, article) in &unit.entries {
+        let anchor = print_anchor(unit.path, article);
+        if let Some(previous) = paths.insert(anchor.clone(), &article.path) {
+            bail!(
+                "print anchor collision in '{}/print/': articles '{}' and '{}' \
+                 both map to '#{}'; rename an article or parent path to give \
+                 each article a unique print anchor",
+                unit.path,
+                previous,
+                article.path,
+                anchor,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "export_collision_tests.rs"]
+mod collision_tests;
 
 /// Where a page's markdown mirror lands: the page URL with `.md` appended
 /// ("/alpha/acorn" → "<out>/alpha/acorn.md").
