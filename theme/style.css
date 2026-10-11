@@ -98,6 +98,12 @@
 
 * { box-sizing: border-box; }
 
+/* Keep fragment targets below the sticky header, using the same clearance
+   as the sidebar. Only the page scrollport needs this; print has no header. */
+@media screen {
+  html { scroll-padding-top: 4.25rem; }
+}
+
 body {
   margin: 0;
   background: var(--bg);
