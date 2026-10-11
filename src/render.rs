@@ -984,7 +984,9 @@ mod tests {
             .unwrap();
         assert!(html.contains("data-pagefind-body"));
         assert!(html.contains("data-pagefind-meta=\"crumbs:Alpha / Acorn Docs / Wide Topic\""));
-        assert!(html.contains("<nav class=\"crumbs\" data-pagefind-ignore>"));
+        assert!(
+            html.contains("<nav class=\"crumbs\" data-pagefind-ignore aria-label=\"Breadcrumbs\">")
+        );
 
         let manual = alpha.books().find(|b| b.slug == "manual").unwrap();
         let (chapters, article) = manual

@@ -16,14 +16,15 @@
   {%- if section.title %}
   <h3 class="shelf-title">{{ section.title }}</h3>
   {%- endif %}
+  {%- set card_heading_level = 4 if section.title else 3 %}
   <ul class="card-grid anthology-grid">
     {%- for item in section.items %}
     {%- if item.kind == "anthology" %}
-    {{ anthology_card(item, product.color) }}
+    {{ anthology_card(item, product.color, card_heading_level) }}
     {%- elif item.kind == "book" %}
-    {{ book_card(item, product.color) }}
+    {{ book_card(item, product.color, card_heading_level) }}
     {%- else %}
-    {{ topic_card(item, product.color) }}
+    {{ topic_card(item, product.color, card_heading_level) }}
     {%- endif %}
     {%- endfor %}
   </ul>

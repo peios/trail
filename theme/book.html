@@ -12,16 +12,16 @@
 {% block content %}
 <div class="drawer-overlay" data-drawer-close></div>
 <div class="article-layout" style="--pc: {{ product.color }}">
-  <aside class="sidebar">
+  <aside class="sidebar" aria-label="Book navigation">
     <a class="wordmark drawer-wordmark" href="{{ '/' | url }}">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
     <p class="sidebar-topic"><a href="{{ book.path | url }}" aria-current="page">{{ book.short or book.title }}</a></p>
-    <nav data-book-nav="{{ book.path | url }}">
+    <nav data-book-nav="{{ book.path | url }}" aria-label="Book chapters">
       {{ nav(book.children, book.path) }}
     </nav>
   </aside>
 
   <article class="article-body" data-pagefind-body data-pagefind-meta="crumbs:{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %}">
-    <nav class="crumbs" data-pagefind-ignore>
+    <nav class="crumbs" data-pagefind-ignore aria-label="Breadcrumbs">
       <a href="{{ product.path | url }}">{{ product.title }}</a>
       {%- for ancestor in anthologies %}
       <span>/</span>
@@ -42,6 +42,6 @@
     </p>
   </article>
 
-  <aside class="toc"></aside>
+  <div class="toc"></div>
 </div>
 {% endblock %}
