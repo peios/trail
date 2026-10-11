@@ -71,7 +71,8 @@ pub struct BuildOptions {
     pub live_reload: bool,
     /// Downgrade missing ~link targets from errors to warnings.
     pub allow_dangling_links: bool,
-    /// Fail when an article has no `description:` frontmatter.
+    /// Fail when an article has no `description:` frontmatter and warn
+    /// about authored site-absolute links.
     pub strict: bool,
     /// Emit llms-full.txt copies of the print.md bundles.
     pub render_llms_full: bool,
@@ -385,6 +386,7 @@ fn write_articles(
             links,
             markdown::RenderOptions {
                 allow_dangling: options.allow_dangling_links,
+                strict: options.strict,
                 images: Some(ImageScope {
                     index: images,
                     dir: &article.source_dir,
@@ -509,6 +511,7 @@ fn write_book(
             links,
             markdown::RenderOptions {
                 allow_dangling: options.allow_dangling_links,
+                strict: options.strict,
                 numbering: article.number.as_deref(),
                 images: Some(ImageScope {
                     index: images,
@@ -624,14 +627,14 @@ fn copy_passthrough(source: &Path, destination: &Path, out: &Output) -> Result<(
 
 /// Write one page to disk and queue it for search indexing under its
 /// canonical URL (the trailing-slash form the server redirects to).
-/// Print allowed-dangling warnings immediately; queue fatal link
+/// Print advisory and allowed-dangling warnings immediately; queue fatal link
 /// problems on the sink so the build can report them all together.
 fn report_links(
     sink: &mut PageSink,
     article: &crate::site::Article,
     rendered: &markdown::Rendered,
 ) {
-    for warning in &rendered.dangling {
+    for warning in rendered.warnings.iter().chain(&rendered.dangling) {
         eprintln!("warning: in article '{}': {}", article.path, warning);
     }
     for problem in &rendered.broken {

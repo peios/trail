@@ -37,6 +37,7 @@ pub struct BuildArgs {
     /// Fail the build when an article has no `description:` frontmatter.
     /// Descriptions become each page's meta description and social
     /// preview text, and its standfirst in the markdown mirrors.
+    /// Also warn about authored site-absolute links.
     #[arg(long)]
     pub strict: bool,
 

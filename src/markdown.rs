@@ -31,6 +31,8 @@ pub struct Rendered {
     /// Dangling-link warnings — missing targets, missing `#fragment`
     /// anchors and relative paths when `allow_dangling` downgrades them.
     pub dangling: Vec<String>,
+    /// Advisory link warnings that never make a build fail.
+    pub warnings: Vec<String>,
     /// Fatal link problems: ambiguous references (always), and missing
     /// targets, missing anchors and relative paths when they aren't
     /// allowed. Collected rather than failing fast so one build reports
@@ -44,6 +46,8 @@ pub struct RenderOptions<'a> {
     /// Downgrade missing ~link targets from render errors to collected
     /// warnings (ambiguous links always fail — the author has to pick).
     pub allow_dangling: bool,
+    /// Warn about authored site-absolute links, which bypass ~ resolution.
+    pub strict: bool,
     /// The page's section number inside a book ("2.1"): h2/h3 headings
     /// continue the dotted numbering as real text — searchable and
     /// copyable, unlike CSS counters — while ids and ToC titles stay
@@ -117,6 +121,7 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
     let mut used_ids = HashMap::new();
     let mut has_mermaid = false;
     let mut dangling = Vec::new();
+    let mut warnings = Vec::new();
     let mut broken = Vec::new();
     // Same-page `#fragment` links, (as written, as emitted): checked
     // against the page's own ids once the whole body is rendered, since
@@ -410,8 +415,14 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                 ));
             }
             out.push(events[i].clone());
-        } else if let Event::Start(Tag::Link { .. }) = &events[i] {
+        } else if let Event::Start(Tag::Link { dest_url, .. }) = &events[i] {
             link_depth += 1;
+            if options.strict && dest_url.starts_with('/') && !dest_url.starts_with("//") {
+                warnings.push(format!(
+                    "link '{dest_url}' is site-absolute and bypasses page resolution \
+                     — use a ~ reference for pages in this site"
+                ));
+            }
             out.push(events[i].clone());
         } else if let Event::End(TagEnd::Link) = &events[i] {
             link_depth = link_depth.saturating_sub(1);
@@ -458,6 +469,7 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
         toc,
         has_mermaid,
         dangling,
+        warnings,
         broken,
     })
 }
@@ -1942,6 +1954,60 @@ const html = '<a id="script"></a>';
             super::render("[a](../x.md)", &LinkIndex::default(), allow_dangling()).unwrap();
         assert!(rendered.broken.is_empty());
         assert_eq!(rendered.dangling.len(), 1);
+    }
+
+    #[test]
+    fn strict_warns_on_authored_site_absolute_links_without_changing_them() {
+        let source = "[root](/) [print](/print) [query](/guide?q=one#part) \
+                      [reference][guide]\n\n[guide]: /guide/\n";
+        let plain = render(source);
+        assert!(plain.warnings.is_empty());
+        for allow_dangling in [false, true] {
+            let strict = super::render(
+                source,
+                &LinkIndex::default(),
+                RenderOptions {
+                    strict: true,
+                    allow_dangling,
+                    ..RenderOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(strict.html, plain.html);
+            assert!(strict.broken.is_empty());
+            assert!(strict.dangling.is_empty());
+            assert_eq!(strict.warnings.len(), 4);
+            let destinations = ["/", "/print", "/guide?q=one#part", "/guide/"];
+            for (warning, destination) in strict.warnings.iter().zip(destinations) {
+                assert!(warning.contains(&format!("link '{destination}' is site-absolute")));
+                assert!(warning.contains("~ reference"));
+            }
+        }
+    }
+
+    #[test]
+    fn strict_does_not_warn_on_resolved_or_external_links() {
+        let (_dir, index) = fixture_index();
+        let rendered = super::render(
+            "[resolved](~alpha/a2) [external](https://example.com/) \
+             [network](//example.com/path) [mail](mailto:docs@example.com) \
+             [local](#part) ![image](/image.png)\n\n## Part\n",
+            &index,
+            RenderOptions {
+                strict: true,
+                base: "/cache",
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
+        assert!(rendered.broken.is_empty(), "{:?}", rendered.broken);
+        assert!(
+            rendered
+                .html
+                .contains("href=\"/cache/alpha/acorn/wide/a2\"")
+        );
+        assert!(rendered.html.contains("href=\"//example.com/path\""));
     }
 
     #[test]
