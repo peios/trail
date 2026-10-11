@@ -5,7 +5,7 @@
 {% block content %}
 <div class="print-page" style="--pc: {{ product.color }}">
   <header class="print-header">
-    <nav class="crumbs">
+    <nav class="crumbs" aria-label="Breadcrumbs">
       <a href="{{ product.path | url }}">{{ product.title }}</a>
     </nav>
     <h1>{{ title }}</h1>

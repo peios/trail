@@ -1,9 +1,11 @@
 {% extends "article.html" %}
 {% from "book-nav.html" import nav %}
 
+{% block sidebar_label %}Book navigation{% endblock %}
+
 {% block sidebar %}
 <p class="sidebar-topic"><a href="{{ book.path | url }}">{{ book.short or book.title }}</a></p>
-<nav data-book-nav="{{ book.path | url }}">
+<nav data-book-nav="{{ book.path | url }}" aria-label="Book chapters">
   {{ nav(book.children, article.path) }}
 </nav>
 {% endblock %}

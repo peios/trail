@@ -73,7 +73,7 @@
 <header class="site-header">
   {%- block menu_button %}{% endblock %}
   <a class="wordmark" href="{{ '/' | url }}">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
-  <nav class="site-nav">
+  <nav class="site-nav" aria-label="Site navigation">
     <details class="nav-dropdown">
       <summary>Products</summary>
       <div class="menu">

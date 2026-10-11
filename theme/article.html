@@ -11,7 +11,7 @@
 {% block content %}
 <div class="drawer-overlay" data-drawer-close></div>
 <div class="article-layout" style="--pc: {{ product.color }}">
-  <aside class="sidebar">
+  <aside class="sidebar" aria-label="{% block sidebar_label %}Topic navigation{% endblock %}">
     {#- The drawer covers the header, so it carries its own wordmark
         (home link) at the top; hidden whenever the sidebar is a column. #}
     <a class="wordmark drawer-wordmark" href="{{ '/' | url }}">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
@@ -53,7 +53,7 @@
   </aside>
 
   <article class="article-body" data-pagefind-body data-pagefind-meta="crumbs:{% block search_crumbs %}{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %} / {{ topic.title }}{% if folder %} / {{ folder.title }}{% endif %}{% endblock %}">
-    <nav class="crumbs" data-pagefind-ignore>
+    <nav class="crumbs" data-pagefind-ignore aria-label="Breadcrumbs">
       {%- block crumbs %}
       <a href="{{ product.path | url }}">{{ product.title }}</a>
       {%- for ancestor in anthologies %}
@@ -114,7 +114,7 @@
     {%- endif %}
   </article>
 
-  <aside class="toc">
+  <aside class="toc" aria-label="{{ 'On this page' if toc else 'Reading options' }}">
     <div class="reading-size" data-reading-size role="group" aria-label="Text size">
       <button type="button" data-size="sm" aria-pressed="false" aria-label="Small text">A</button>
       <button type="button" data-size="md" aria-pressed="true" aria-label="Medium text">A</button>

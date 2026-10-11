@@ -126,10 +126,10 @@ body::before {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-h1, h2, h3 { line-height: 1.15; margin: 0; }
+h1, h2, h3, .card h4 { line-height: 1.15; margin: 0; }
 
 /* Display face for brand and titles; body stays in Inter. */
-.wordmark, .hero h1, .card h3 {
+.wordmark, .hero h1, .card :is(h3, h4) {
   font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
 }
 
@@ -566,8 +566,8 @@ body.drawer-open { overflow: hidden; }
 
 /* ---- Topic cards --------------------------------------------------------- */
 
-.topic-card h3 a { color: inherit; }
-.topic-card h3 a:hover {
+.topic-card :is(h3, h4) a { color: inherit; }
+.topic-card :is(h3, h4) a:hover {
   color: color-mix(in srgb, var(--pc) var(--tile-fg-mix), var(--text));
   text-decoration: none;
 }
@@ -669,7 +669,7 @@ body.drawer-open { overflow: hidden; }
   margin-bottom: 0.75rem;
 }
 
-.card h3 {
+.card :is(h3, h4) {
   font-size: 1rem;
   font-weight: 620;
   letter-spacing: -0.01em;

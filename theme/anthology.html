@@ -5,7 +5,7 @@
 
 {% block content %}
 <section class="hero product-hero" style="--pc: {{ product.color }}" data-pagefind-body data-pagefind-meta="crumbs:{{ product.title }}{% for ancestor in anthologies %} / {{ ancestor.title }}{% endfor %}">
-  <nav class="crumbs hero-crumbs" data-pagefind-ignore>
+  <nav class="crumbs hero-crumbs" data-pagefind-ignore aria-label="Breadcrumbs">
     <a href="{{ product.path | url }}">{{ product.title }}</a>
     {%- for ancestor in anthologies %}
     <span>/</span>
@@ -22,14 +22,15 @@
   {%- if section.title %}
   <h3 class="shelf-title">{{ section.title }}</h3>
   {%- endif %}
+  {%- set card_heading_level = 4 if section.title else 3 %}
   <ul class="card-grid anthology-grid">
     {%- for item in section.items %}
     {%- if item.kind == "anthology" %}
-    {{ anthology_card(item, product.color) }}
+    {{ anthology_card(item, product.color, card_heading_level) }}
     {%- elif item.kind == "book" %}
-    {{ book_card(item, product.color) }}
+    {{ book_card(item, product.color, card_heading_level) }}
     {%- else %}
-    {{ topic_card(item, product.color) }}
+    {{ topic_card(item, product.color, card_heading_level) }}
     {%- endif %}
     {%- endfor %}
   </ul>
