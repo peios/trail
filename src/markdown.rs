@@ -1081,7 +1081,7 @@ fn image_tag(info: &ImageInfo, alt: &str, title: Option<&str>) -> String {
 }
 
 /// ENABLE_GFM parses `> [!NOTE]`-style blockquote alerts (admonitions).
-fn parser_options() -> Options {
+pub(crate) fn parser_options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_FOOTNOTES

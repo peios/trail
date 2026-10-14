@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -143,12 +144,16 @@ fn watch_and_rebuild(
         eprintln!("cannot watch {}: {error}", canonical_root.display());
         return;
     }
+    let mut watched_dirs = HashSet::new();
+    let mut external = watch_dependencies(&mut watcher, &canonical_root, &mut watched_dirs);
 
     while let Ok(first) = event_rx.recv() {
-        let mut relevant = is_content_change(&first, &canonical_out);
+        let is_change =
+            |event: &notify::Event| is_content_change(event, &canonical_root, &canonical_out, &external);
+        let mut relevant = is_change(&first);
         // Debounce: editors fire bursts; wait for 200ms of quiet.
         while let Ok(event) = event_rx.recv_timeout(Duration::from_millis(200)) {
-            relevant |= is_content_change(&event, &canonical_out);
+            relevant |= is_change(&event);
         }
         if !relevant {
             continue;
@@ -163,18 +168,53 @@ fn watch_and_rebuild(
                 eprintln!("rebuild failed (still serving the last good build): {error:#}")
             }
         }
+        // A rebuild can change what plugins read, failed or not.
+        external = watch_dependencies(&mut watcher, &canonical_root, &mut watched_dirs);
     }
+}
+
+/// Watch the files plugins depend on that live outside the site root (the
+/// root is already watched recursively), returning them for the change
+/// filter. Their directories are watched rather than the files, since
+/// editors save by renaming a new file over the old one.
+fn watch_dependencies(
+    watcher: &mut impl Watcher,
+    root: &Path,
+    watched_dirs: &mut HashSet<PathBuf>,
+) -> HashSet<PathBuf> {
+    let external: HashSet<PathBuf> = crate::plugins::dependencies(root)
+        .into_iter()
+        .filter(|path| !path.starts_with(root))
+        .collect();
+    for path in &external {
+        let Some(dir) = path.parent() else { continue };
+        if watched_dirs.insert(dir.to_path_buf())
+            && let Err(error) = watcher.watch(dir, notify::RecursiveMode::NonRecursive)
+        {
+            eprintln!("cannot watch {}: {error}", dir.display());
+        }
+    }
+    external
 }
 
 /// A change matters unless it is a read (rebuilds read every content file,
 /// and inotify reports those as Access events — reacting to them loops
 /// forever), inside the output directory (our own writes), or under a
-/// dot-entry (.git and friends).
-fn is_content_change(event: &notify::Event, out: &Path) -> bool {
+/// dot-entry (.git and friends). Outside the root, only the files plugins
+/// depend on matter — their directories may be busy with other things.
+fn is_content_change(
+    event: &notify::Event,
+    root: &Path,
+    out: &Path,
+    external: &HashSet<PathBuf>,
+) -> bool {
     if matches!(event.kind, notify::EventKind::Access(_)) {
         return false;
     }
     event.paths.iter().any(|path| {
+        if !path.starts_with(root) {
+            return external.contains(path);
+        }
         !path.starts_with(out)
             && !path
                 .components()

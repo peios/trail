@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::images::{IMAGE_EXTENSIONS, ImageAsset};
+use crate::plugins::PluginConfig;
 
 /// The site model: everything the renderer needs, loaded and validated.
 #[derive(Debug)]
@@ -89,6 +90,10 @@ pub struct SiteConfig {
     pub product_theming: bool,
     #[serde(default = "default_true")]
     pub built_by_trail: bool,
+    /// External commands that expand `{name}` fences in article bodies,
+    /// keyed by the name the fence uses. See `plugins`.
+    #[serde(default, skip_serializing)]
+    pub plugins: BTreeMap<String, PluginConfig>,
 }
 
 /// One header navigation link. The url may be external, or a `~` page
@@ -600,6 +605,10 @@ pub struct Article {
     /// `reading_minutes:` overrides it. Containers add theirs up, so a
     /// book card can say how long the whole thing takes.
     pub reading_minutes: u32,
+    /// Whether `reading_minutes` came from frontmatter, so plugin
+    /// expansion knows not to recount it from the expanded body.
+    #[serde(skip)]
+    pub authored_minutes: bool,
     /// For a page created by a `.link` reference: the path of the
     /// canonical article whose content this page re-renders. Linked
     /// pages stay out of the search index — the original covers it.
@@ -910,6 +919,13 @@ impl Site {
             .into_iter()
             .flatten()
             .chain(&config.passthrough)
+            .chain(
+                config
+                    .plugins
+                    .values()
+                    .filter_map(|plugin| plugin.command.first())
+                    .filter(|program| program.contains('/')),
+            )
             .filter_map(|path| Path::new(path).components().next())
             .map(|component| component.as_os_str().to_string_lossy().into_owned())
             .collect();
@@ -971,6 +987,10 @@ impl Site {
             head_html,
             root: root.to_path_buf(),
         };
+        // Plugin output is ordinary body content from here on: `.link`
+        // aliases copy it, reading times count it, and everything the
+        // build derives from bodies (anchors, mirrors, search) sees it.
+        crate::plugins::expand(&mut site)?;
         resolve_linked_articles(&mut site)?;
         // Reading times and dates roll up from the leaves, so this runs
         // after `.link` aliases have joined their containers.
@@ -1048,6 +1068,59 @@ impl Site {
                         out.extend(book.articles().into_iter().map(|(_, article)| article));
                     }
                     ProductItem::Anthology { anthology } => from_anthology(anthology, &mut out),
+                }
+            }
+        }
+        out
+    }
+
+    /// Every article, mutably, in no particular order. `.link` aliases
+    /// are included only once they have been resolved.
+    pub(crate) fn articles_mut(&mut self) -> Vec<&mut Article> {
+        fn from_topic<'a>(topic: &'a mut Topic, out: &mut Vec<&'a mut Article>) {
+            for child in &mut topic.children {
+                match child {
+                    TopicChild::Article { article } => out.push(article),
+                    TopicChild::Folder { folder } => out.extend(folder.articles.iter_mut()),
+                }
+            }
+        }
+        fn from_book<'a>(children: &'a mut [BookChild], out: &mut Vec<&'a mut Article>) {
+            for child in children {
+                match child {
+                    BookChild::Article { article } => out.push(article),
+                    BookChild::Chapter { chapter } => from_book(&mut chapter.children, out),
+                }
+            }
+        }
+        fn from_anthology<'a>(anthology: &'a mut Anthology, out: &mut Vec<&'a mut Article>) {
+            for child in &mut anthology.children {
+                let items: Box<dyn Iterator<Item = &'a mut AnthologyItem>> = match child {
+                    AnthologyChild::Item(item) => Box::new(std::iter::once(item)),
+                    AnthologyChild::Shelf(shelf) => Box::new(shelf.items.iter_mut()),
+                };
+                for item in items {
+                    match item {
+                        AnthologyItem::Topic { topic } => from_topic(topic, out),
+                        AnthologyItem::Book { book } => from_book(&mut book.children, out),
+                        AnthologyItem::Anthology { anthology } => from_anthology(anthology, out),
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for product in &mut self.products {
+            for child in &mut product.children {
+                let items: Box<dyn Iterator<Item = &mut ProductItem>> = match child {
+                    ProductChild::Item(item) => Box::new(std::iter::once(item)),
+                    ProductChild::Shelf(shelf) => Box::new(shelf.items.iter_mut()),
+                };
+                for item in items {
+                    match item {
+                        ProductItem::Topic { topic } => from_topic(topic, &mut out),
+                        ProductItem::Book { book } => from_book(&mut book.children, &mut out),
+                        ProductItem::Anthology { anthology } => from_anthology(anthology, &mut out),
+                    }
                 }
             }
         }
@@ -1738,6 +1811,7 @@ fn load_article(
         inline_refs,
         updated,
         reading_minutes,
+        authored_minutes: minutes.is_some(),
         original: None,
         body,
         source_dir: file.parent().map(Path::to_path_buf).unwrap_or_default(),
@@ -2087,7 +2161,7 @@ fn resolve_book_links(
 
 /// Estimated reading time for a body, at a middling 200 words a minute.
 /// Code blocks count as prose: they are read, just differently.
-fn reading_minutes(body: &str) -> u32 {
+pub(crate) fn reading_minutes(body: &str) -> u32 {
     (body.split_whitespace().count() as u32)
         .div_ceil(200)
         .max(1)
