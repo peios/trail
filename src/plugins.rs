@@ -98,7 +98,8 @@ struct Response {
     blocks: Vec<ResponseBlock>,
     /// Files the output was derived from, relative to the site root or
     /// absolute. A change to any of them invalidates the cached output,
-    /// and `trail serve` rebuilds when one changes.
+    /// and `trail serve` rebuilds when one changes. A directory stands for
+    /// the set of files beneath it: adding or removing one is a change.
     #[serde(default)]
     depends_on: Vec<String>,
 }
@@ -684,11 +685,39 @@ fn report(errors: &[String]) -> String {
     out
 }
 
+/// A file's content, or for a directory the names of everything beneath
+/// it. A plugin that scans a directory lists the directory, so that a new
+/// file there reruns it, and each file it read, so that edits do.
 fn fingerprint(path: &Path) -> Option<u64> {
-    let bytes = std::fs::read(path).ok()?;
     let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
+    if path.is_dir() {
+        let mut names = Vec::new();
+        list_tree(path, Path::new(""), &mut names);
+        names.sort();
+        ("directory", names).hash(&mut hasher);
+    } else {
+        std::fs::read(path).ok()?.hash(&mut hasher);
+    }
     Some(hasher.finish())
+}
+
+/// The paths beneath `dir`, relative to the directory first given. Dot
+/// entries are skipped: an editor's swap file is not a new input.
+fn list_tree(dir: &Path, relative: &Path, names: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let path = relative.join(&name);
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            list_tree(&entry.path(), &path, names);
+        }
+        names.push(path);
+    }
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -979,6 +1008,42 @@ printf '%s' '{"blocks":[{"id":0,"markdown":"out"}],"depends_on":["../dep.txt"]}'
             "---\ntitle: page\ntype: concept\n---\n\n```{p} changed\n```\n",
         )
         .unwrap();
+        load(&dir).unwrap();
+        assert_eq!(runs(), 3);
+    }
+
+    #[test]
+    fn a_directory_dependency_reruns_when_files_come_or_go() {
+        let dir = site_with_plugin(
+            r#"cat > /dev/null
+echo run >> ../runs
+printf '%s' '{"blocks":[{"id":0,"markdown":"out"}],"depends_on":["../inputs"]}'
+"#,
+            &[("1--page", "```{p}\n```\n")],
+        );
+        let runs = || {
+            fs::read_to_string(dir.path().join("runs"))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        let inputs = dir.path().join("inputs");
+        fs::create_dir_all(inputs.join("sub")).unwrap();
+        fs::write(inputs.join("sub/a"), "one").unwrap();
+        load(&dir).unwrap();
+        assert_eq!(runs(), 1);
+
+        // Contents are the files' own dependencies; swap files are noise.
+        fs::write(inputs.join("sub/a"), "two").unwrap();
+        fs::write(inputs.join("sub/.a.swp"), "").unwrap();
+        load(&dir).unwrap();
+        assert_eq!(runs(), 1);
+
+        fs::write(inputs.join("sub/b"), "new").unwrap();
+        load(&dir).unwrap();
+        assert_eq!(runs(), 2);
+
+        fs::remove_file(inputs.join("sub/a")).unwrap();
         load(&dir).unwrap();
         assert_eq!(runs(), 3);
     }
