@@ -1357,6 +1357,18 @@ pub fn anchor_ids(markdown: &str) -> HashSet<String> {
     ids
 }
 
+/// The anchors an article body names itself: ids in raw HTML, and
+/// citation anchors. Every id except the slugs Trail derives from heading
+/// text, which change whenever a heading is reworded, so these are the
+/// targets other content can rely on.
+pub fn explicit_anchor_ids(markdown: &str) -> HashSet<String> {
+    let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
+    let expanded = expand_citation_anchors(&expanded, None);
+    let mut html = String::new();
+    html::push_html(&mut html, Parser::new_ext(&expanded, parser_options()));
+    html_ids(&html).unwrap_or_default()
+}
+
 /// A link destination in none of the forms a page can serve: not a `~`
 /// reference, not site-absolute, not a same-page fragment, and not a URL
 /// with a scheme. A page's URL comes from its slugs, not its file, so a

@@ -13,7 +13,7 @@
 //! own output (a function name linking to wherever that function is
 //! documented) sees the whole site at once.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write as _;
@@ -40,7 +40,22 @@ pub struct PluginConfig {
     /// containing a `/` is a path relative to the site root; a bare name
     /// is looked up on PATH. The working directory is the site root.
     pub command: Vec<String>,
+    /// Whether requests carry every page's explicit anchors, so the
+    /// plugin can link to targets that authored pages define.
+    #[serde(default)]
+    pub anchors: bool,
+    /// Plugins that run first, whose output's anchors join this plugin's
+    /// anchor index (so it needs `anchors`): a table of a header's symbols
+    /// can then link to where another plugin documents them.
+    #[serde(default)]
+    pub after: Vec<String>,
 }
+
+/// Every page's explicit anchors (see `markdown::explicit_anchor_ids`),
+/// keyed by `~` reference: those the authored bodies define, plus those in
+/// the output of the plugins a plugin names in `after`, and no others, so
+/// what a plugin generates depends on no plugin it did not name.
+type AnchorIndex = BTreeMap<String, BTreeSet<String>>;
 
 /// A `{name}` fence found in an article body.
 #[derive(Debug, PartialEq)]
@@ -73,6 +88,9 @@ struct Request<'a> {
     plugin: &'a str,
     root: String,
     blocks: Vec<RequestBlock<'a>>,
+    /// Sent only to plugins configured with `anchors = true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchors: Option<&'a AnchorIndex>,
 }
 
 #[derive(Serialize)]
@@ -160,6 +178,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
         validate_name(name).with_context(|| format!("in [plugins.{name}]"))?;
         programs.insert(name.clone(), program(&root, name, config)?);
     }
+    let order = run_order(&plugins)?;
 
     let mut articles = site.articles_mut();
     let mut errors = Vec::new();
@@ -195,11 +214,41 @@ pub fn expand(site: &mut Site) -> Result<()> {
         bail!("{}", report(&errors));
     }
 
+    let reference = |article: &Article| article.path.trim_start_matches('/').to_string();
+    let authored_anchors = by_plugin
+        .keys()
+        .any(|name| plugins[name].anchors)
+        .then(|| {
+            articles
+                .iter()
+                .filter_map(|article| {
+                    let ids = crate::markdown::explicit_anchor_ids(&article.body);
+                    (!ids.is_empty()).then(|| (reference(article), ids.into_iter().collect()))
+                })
+                .collect::<AnchorIndex>()
+        });
+
     let canonical_root = canonical(&root);
     let mut dependencies = Vec::new();
     let mut replacements: HashMap<usize, Vec<(Range<usize>, String)>> = HashMap::new();
-    for (name, blocks) in &by_plugin {
+    // Each plugin's output so far, by article, for the plugins after it.
+    let mut generated: HashMap<&str, Vec<(usize, String)>> = HashMap::new();
+    for name in order.iter().filter(|name| by_plugin.contains_key(*name)) {
+        let blocks = &by_plugin[name];
         let config = &plugins[name];
+        let anchor_index = config.anchors.then(|| {
+            let mut index = authored_anchors.clone().unwrap_or_default();
+            for earlier in &config.after {
+                for (article, markdown) in generated.get(earlier.as_str()).into_iter().flatten() {
+                    let ids = crate::markdown::explicit_anchor_ids(markdown);
+                    if !ids.is_empty() {
+                        index.entry(reference(articles[*article])).or_default().extend(ids);
+                    }
+                }
+            }
+            index
+        });
+        let anchors = anchor_index.as_ref();
         let program = &programs[name];
         let request_blocks: Vec<RequestBlock> = blocks
             .iter()
@@ -218,7 +267,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
                 }
             })
             .collect();
-        let outcome = run_cached(&canonical_root, name, config, program, request_blocks)
+        let outcome = run_cached(&canonical_root, name, config, program, request_blocks, anchors)
             .with_context(|| format!("running plugin '{name}'"))?;
         dependencies.extend(outcome.dependencies);
         for (id, result) in outcome.outputs.into_iter().enumerate() {
@@ -227,6 +276,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
                 Ok(markdown) => {
                     let body = &articles[*index].body;
                     let replacement = splice_text(body, &block.range, &markdown);
+                    generated.entry(name).or_default().push((*index, markdown));
                     replacements
                         .entry(*index)
                         .or_default()
@@ -263,6 +313,45 @@ pub fn expand(site: &mut Site) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The order plugins run in: each after the plugins its `after` names,
+/// otherwise by name.
+fn run_order(plugins: &BTreeMap<String, PluginConfig>) -> Result<Vec<String>> {
+    for (name, config) in plugins {
+        if !config.after.is_empty() && !config.anchors {
+            bail!(
+                "in [plugins.{name}]: 'after' adds other plugins' anchors to this plugin's \
+                 anchor index, which it receives only with 'anchors = true'"
+            );
+        }
+        for earlier in &config.after {
+            if !plugins.contains_key(earlier) {
+                bail!("in [plugins.{name}]: 'after' names '{earlier}', which is not a configured plugin");
+            }
+        }
+    }
+    let mut order = Vec::new();
+    let mut waiting: BTreeMap<&str, BTreeSet<&str>> = plugins
+        .iter()
+        .map(|(name, config)| (name.as_str(), config.after.iter().map(String::as_str).collect()))
+        .collect();
+    while !waiting.is_empty() {
+        let Some(next) = waiting
+            .iter()
+            .find(|(_, earlier)| earlier.is_empty())
+            .map(|(name, _)| *name)
+        else {
+            let cycle: Vec<&str> = waiting.keys().copied().collect();
+            bail!("the plugins' 'after' lists form a cycle among: {}", cycle.join(", "));
+        };
+        waiting.remove(next);
+        for earlier in waiting.values_mut() {
+            earlier.remove(next);
+        }
+        order.push(next.to_string());
+    }
+    Ok(order)
 }
 
 /// Find every `{name}` fence in a body. Fences are found by the same
@@ -459,10 +548,12 @@ fn run_cached(
     config: &PluginConfig,
     program: &Path,
     blocks: Vec<RequestBlock>,
+    anchors: Option<&AnchorIndex>,
 ) -> Result<Outcome> {
     let key = {
         let mut hasher = DefaultHasher::new();
         config.command.hash(&mut hasher);
+        anchors.hash(&mut hasher);
         for block in &blocks {
             (
                 block.page,
@@ -499,6 +590,7 @@ fn run_cached(
         plugin: name,
         root: root.display().to_string(),
         blocks,
+        anchors,
     };
     let response = run(root, config, program, &request)?;
     let outputs = check_response(response.blocks, count)?;
@@ -1046,6 +1138,90 @@ printf '%s' '{"blocks":[{"id":0,"markdown":"out"}],"depends_on":["../inputs"]}'
         fs::remove_file(inputs.join("sub/a")).unwrap();
         load(&dir).unwrap();
         assert_eq!(runs(), 3);
+    }
+
+    #[test]
+    fn plugins_that_ask_receive_every_pages_explicit_anchors() {
+        let dir = site_with_plugin(
+            r#"cat > ../request.json
+echo run >> ../runs
+printf '%s' '{"blocks":[{"id":0,"markdown":"<a id=\"generated\"></a>out"}]}'
+"#,
+            &[
+                ("1--page", "```{p}\n```\n"),
+                (
+                    "2--other",
+                    "## Slugged heading\n\n## <a id=\"kept\"></a>Kept\n\n<a id=\"c-thing\"></a>\n",
+                ),
+            ],
+        );
+        let request = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(dir.path().join("request.json")).unwrap())
+                .unwrap()
+        };
+        load(&dir).unwrap();
+        assert!(request().get("anchors").is_none());
+
+        let toml = dir.path().join("site/trail.toml");
+        let config = fs::read_to_string(&toml).unwrap();
+        fs::write(&toml, format!("{config}anchors = true\n")).unwrap();
+        load(&dir).unwrap();
+        // Authored ids only: not heading slugs, and not plugin output.
+        assert_eq!(
+            request()["anchors"],
+            serde_json::json!({"demo/guide/other": ["c-thing", "kept"]})
+        );
+        let runs = || fs::read_to_string(dir.path().join("runs")).unwrap().lines().count();
+        assert_eq!(runs(), 2);
+
+        // A new anchor anywhere can change what the plugin links to.
+        let other = dir.path().join("site/demo.product/1--guide.topic/2--other.md");
+        fs::write(&other, "---\ntitle: other\ntype: concept\n---\n\n<a id=\"new\"></a>\n").unwrap();
+        load(&dir).unwrap();
+        assert_eq!(runs(), 3);
+        assert_eq!(request()["anchors"], serde_json::json!({"demo/guide/other": ["new"]}));
+    }
+
+    #[test]
+    fn a_plugin_after_another_sees_the_anchors_it_generates() {
+        let dir = site_with_plugin(
+            r#"cat > ../request.json
+printf '%s' '{"blocks":[{"id":0,"markdown":"index"}]}'
+"#,
+            &[("1--page", "```{p}\n```\n"), ("2--docs", "```{q}\n```\n")],
+        );
+        let q = dir.path().join("q.sh");
+        fs::write(
+            &q,
+            "#!/bin/sh\ncat > /dev/null\nprintf '%s' '{\"blocks\":[{\"id\":0,\"markdown\":\"<a id=\\\"c-made\\\"></a>made\"}]}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&q, fs::Permissions::from_mode(0o755)).unwrap();
+        let toml = dir.path().join("site/trail.toml");
+        let config = fs::read_to_string(&toml).unwrap();
+        // [plugins.p] is the last table: its keys go at the end.
+        fs::write(
+            &toml,
+            format!("{config}anchors = true\nafter = [\"q\"]\n\n[plugins.q]\ncommand = [\"../q.sh\"]\n"),
+        )
+        .unwrap();
+        load(&dir).unwrap();
+        let request: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("request.json")).unwrap()).unwrap();
+        assert_eq!(request["anchors"], serde_json::json!({"demo/guide/docs": ["c-made"]}));
+
+        let reconfigure = |extra: &str| {
+            fs::write(&toml, format!("{config}{extra}")).unwrap();
+            format!("{:#}", load(&dir).unwrap_err())
+        };
+        let error = reconfigure("after = [\"q\"]\n\n[plugins.q]\ncommand = [\"../q.sh\"]\n");
+        assert!(error.contains("[plugins.p]: 'after'") && error.contains("anchors = true"), "{error}");
+        let error = reconfigure("anchors = true\nafter = [\"r\"]\n");
+        assert!(error.contains("'after' names 'r'"), "{error}");
+        let error = reconfigure(
+            "anchors = true\nafter = [\"q\"]\n\n[plugins.q]\ncommand = [\"../q.sh\"]\nanchors = true\nafter = [\"p\"]\n",
+        );
+        assert!(error.contains("cycle among: p, q"), "{error}");
     }
 
     #[test]
