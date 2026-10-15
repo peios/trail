@@ -10,6 +10,7 @@ mod render;
 mod search;
 mod serve;
 mod site;
+mod titlecase;
 
 use clap::Parser;
 

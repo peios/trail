@@ -2228,19 +2228,9 @@ fn grouping_config(dir: &Path, slug: &str) -> Result<GroupingConfig> {
     })
 }
 
-/// "the-two-gates" → "The Two Gates".
+/// "developing-for-peios" → "Developing for Peios" (Chicago title case).
 fn title_from_slug(slug: &str) -> String {
-    slug.split('-')
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::titlecase::title_from_slug(slug)
 }
 
 /// The subdirectories of a grouping, with files other than trail.toml rejected.
@@ -3632,9 +3622,10 @@ mod tests {
     }
 
     #[test]
-    fn derives_topic_titles_by_capitalising_slug_words() {
+    fn derives_topic_titles_from_slugs_in_title_case() {
         assert_eq!(title_from_slug("identity"), "Identity");
         assert_eq!(title_from_slug("the-two-gates"), "The Two Gates");
+        assert_eq!(title_from_slug("startup-and-shutdown"), "Startup and Shutdown");
         assert_eq!(
             title_from_slug("well-known-principals"),
             "Well Known Principals"
