@@ -38,7 +38,8 @@ const PROTOCOL: u32 = 1;
 pub struct PluginConfig {
     /// The program and its arguments, run without a shell. A program
     /// containing a `/` is a path relative to the site root; a bare name
-    /// is looked up on PATH. The working directory is the site root.
+    /// is looked up on PATH. The working directory is the site root. In a
+    /// merged tree's trail.toml, "the site root" is that tree's root.
     pub command: Vec<String>,
     /// Whether requests carry every page's explicit anchors, so the
     /// plugin can link to targets that authored pages define.
@@ -101,7 +102,8 @@ struct RequestBlock<'a> {
     /// The page as a `~` reference without the `~` ("kernel/driver-api/core"),
     /// the fully qualified form, which always resolves.
     reference: String,
-    /// The article's source file, relative to the site root.
+    /// The article's source file, relative to the root of the tree it is
+    /// in (the site root, or a merged tree's).
     file: String,
     /// The opening fence's line in `file`, from 1. For messages only.
     line: usize,
@@ -172,11 +174,24 @@ pub fn dependencies(root: &Path) -> Vec<PathBuf> {
 /// error for a block — fails the load, with every problem reported at once.
 pub fn expand(site: &mut Site) -> Result<()> {
     let root = site.root.clone();
-    let plugins = site.config.plugins.clone();
+    // Every tree's plugins, each run in the tree that configures it; where
+    // two trees configure one name, the site root's wins, then the first
+    // merged.
+    let mut plugins = BTreeMap::new();
+    let mut plugin_roots = BTreeMap::new();
+    for tree in &site.trees {
+        for (name, config) in &tree.plugins {
+            if !plugins.contains_key(name) {
+                plugins.insert(name.clone(), config.clone());
+                plugin_roots.insert(name.clone(), tree.root.clone());
+            }
+        }
+    }
+    let roots: Vec<PathBuf> = site.trees.iter().map(|tree| tree.root.clone()).collect();
     let mut programs = BTreeMap::new();
     for (name, config) in &plugins {
         validate_name(name).with_context(|| format!("in [plugins.{name}]"))?;
-        programs.insert(name.clone(), program(&root, name, config)?);
+        programs.insert(name.clone(), program(&plugin_roots[name], name, config)?);
     }
     let order = run_order(&plugins)?;
 
@@ -196,7 +211,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
         let offset = body_line_offset(article);
         line_offsets.insert(index, offset);
         for error in block_errors {
-            errors.push(located(&root, article, offset + error.line, &error.message));
+            errors.push(located(&roots, article, offset + error.line, &error.message));
         }
         for block in blocks {
             if plugins.contains_key(&block.name) {
@@ -206,7 +221,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
                     .push((index, block));
             } else {
                 let message = unknown_plugin(&block.name, &plugins);
-                errors.push(located(&root, article, offset + block.line, &message));
+                errors.push(located(&roots, article, offset + block.line, &message));
             }
         }
     }
@@ -259,7 +274,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
                     id,
                     page: &article.path,
                     reference: article.path.trim_start_matches('/').to_string(),
-                    file: relative_file(&root, article),
+                    file: relative_file(&roots, article),
                     line: line_offsets[index] + block.line,
                     argument: &block.argument,
                     options: &block.options,
@@ -267,7 +282,8 @@ pub fn expand(site: &mut Site) -> Result<()> {
                 }
             })
             .collect();
-        let outcome = run_cached(&canonical_root, name, config, program, request_blocks, anchors)
+        let plugin_root = canonical(&plugin_roots[name]);
+        let outcome = run_cached(&plugin_root, name, config, program, request_blocks, anchors)
             .with_context(|| format!("running plugin '{name}'"))?;
         dependencies.extend(outcome.dependencies);
         for (id, result) in outcome.outputs.into_iter().enumerate() {
@@ -283,7 +299,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
                         .push((block.range.clone(), replacement));
                 }
                 Err(message) => errors.push(located(
-                    &root,
+                    &roots,
                     articles[*index],
                     line_offsets[index] + block.line,
                     &format!("{name}: {message}"),
@@ -736,17 +752,19 @@ fn body_line_offset(article: &Article) -> usize {
         })
 }
 
-fn relative_file(root: &Path, article: &Article) -> String {
-    article
-        .source_file
-        .strip_prefix(root)
-        .unwrap_or(&article.source_file)
+/// The article's source file relative to the root of its tree, as it
+/// would be if that tree were built alone.
+fn relative_file(roots: &[PathBuf], article: &Article) -> String {
+    let file = &article.source_file;
+    crate::site::deepest_root(roots.iter().map(PathBuf::as_path), file)
+        .and_then(|index| file.strip_prefix(&roots[index]).ok())
+        .unwrap_or(file)
         .display()
         .to_string()
 }
 
-fn located(root: &Path, article: &Article, line: usize, message: &str) -> String {
-    format!("{}:{line}: {message}", relative_file(root, article))
+fn located(roots: &[PathBuf], article: &Article, line: usize, message: &str) -> String {
+    format!("{}:{line}: {message}", relative_file(roots, article))
 }
 
 fn unknown_plugin(name: &str, plugins: &BTreeMap<String, PluginConfig>) -> String {
@@ -991,6 +1009,80 @@ printf '%s' '{"blocks":[{"id":0,"markdown":"Generated <a id=\"c-thing\"></a>\n\n
         let deps = dependencies(&dir.path().join("site"));
         assert!(deps.contains(&canonical(&dir.path().join("dep.txt"))));
         assert!(deps.contains(&canonical(&dir.path().join("plugin.sh"))));
+    }
+
+    #[test]
+    fn merged_trees_run_their_plugins_where_they_configure_them() {
+        // `<tmp>/site` merges `<tmp>/kernel`, which configures `k` as a
+        // path relative to itself. Both trees use it.
+        let dir = site_with_plugin("cat > /dev/null\n", &[("1--page", "```{k}\n```\n")]);
+        let site_config = dir.path().join("site/trail.toml");
+        let config = fs::read_to_string(&site_config).unwrap();
+        fs::write(&site_config, format!("{config}\n[[merge]]\npath = \"../kernel\"\n")).unwrap();
+        let kernel = dir.path().join("kernel");
+        let topic = kernel.join("kern.product/1--ref.topic");
+        fs::create_dir_all(&topic).unwrap();
+        fs::create_dir_all(kernel.join("bin")).unwrap();
+        fs::write(
+            kernel.join("trail.toml"),
+            "sitename = \"K\"\ntitle = \"K\"\ndescription = \"d\"\nfooter = \"f\"\n\n\
+             [plugins.k]\ncommand = [\"bin/k.sh\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            kernel.join("kern.product/trail.toml"),
+            "title = \"Kern\"\nmonogram = \"K\"\ncolor = \"#3b82f6\"\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        fs::write(topic.join("trail.toml"), "title = \"Ref\"\n").unwrap();
+        fs::write(
+            topic.join("1--api.md"),
+            "---\ntitle: api\ntype: concept\n---\n\n```{k}\n```\n",
+        )
+        .unwrap();
+        let script = kernel.join("bin/k.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\npwd > ../cwd.txt\ncat > ../request.json\n\
+             printf '%s' '{\"blocks\":[{\"id\":0,\"markdown\":\"from k\"},{\"id\":1,\"markdown\":\"from k\"}]}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let site = load(&dir).unwrap();
+        assert_eq!(body(&site, "page").trim(), "from k");
+        assert_eq!(body(&site, "api").trim(), "from k");
+        // It ran in its own tree, which is the root it was sent, and each
+        // file is relative to its own tree, as if that tree were built alone.
+        let cwd = fs::read_to_string(dir.path().join("cwd.txt")).unwrap();
+        assert_eq!(Path::new(cwd.trim()), canonical(&kernel));
+        let request: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("request.json")).unwrap())
+                .unwrap();
+        assert_eq!(request["root"], canonical(&kernel).display().to_string());
+        let mut files: Vec<&str> = request["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["file"].as_str().unwrap())
+            .collect();
+        files.sort();
+        assert_eq!(
+            files,
+            ["demo.product/1--guide.topic/1--page.md", "kern.product/1--ref.topic/1--api.md"]
+        );
+
+        // Where both trees configure a name, the site root's wins.
+        let config = fs::read_to_string(&site_config).unwrap();
+        fs::write(&site_config, config.replace("[plugins.p]", "[plugins.k]")).unwrap();
+        fs::write(
+            dir.path().join("plugin.sh"),
+            "#!/bin/sh\ncat > /dev/null\n\
+             printf '%s' '{\"blocks\":[{\"id\":0,\"markdown\":\"from site\"},{\"id\":1,\"markdown\":\"from site\"}]}'\n",
+        )
+        .unwrap();
+        let site = load(&dir).unwrap();
+        assert_eq!(body(&site, "api").trim(), "from site");
     }
 
     #[test]

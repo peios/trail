@@ -419,13 +419,14 @@ pub struct Pager {
     pub print_url: Option<String>,
 }
 
-/// The "Edit this page" URL for an article, from the site's edit_url
+/// The "Edit this page" URL for an article, from its tree's edit_url
 /// template: "{path}" becomes the article's source path relative to
-/// the site root. An alias keeps its original's file, so editing the
+/// that tree's root. An alias keeps its original's file, so editing the
 /// alias edits the real source.
 fn edit_link(site: &Site, article: &Article) -> Option<String> {
-    let template = site.config.edit_url.as_ref()?;
-    let relative = article.source_file.strip_prefix(&site.root).ok()?;
+    let tree = site.tree_of(&article.source_file);
+    let template = tree.edit_url.as_ref()?;
+    let relative = article.source_file.strip_prefix(&tree.root).ok()?;
     Some(template.replace("{path}", &relative.to_string_lossy().replace('\\', "/")))
 }
 

@@ -155,7 +155,7 @@ fn validate_cbpath(cbpath: &str, site: &Site) -> Result<()> {
         [&site.config.custom_css, &site.config.favicon, &site.config.head_html]
             .into_iter()
             .flatten()
-            .chain(&site.config.passthrough)
+            .chain(site.trees.iter().flat_map(|tree| &tree.passthrough))
             .filter_map(|path| Path::new(path).components().next())
             .map(|component| component.as_os_str().to_string_lossy().into_owned()),
     );
@@ -346,10 +346,14 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
         }
     }
     // Last, so a passthrough named after something trail generates
-    // replaces it rather than being quietly overwritten by it.
-    for entry in &site.config.passthrough {
-        copy_passthrough(&site.root.join(entry), &out.dir().join(entry), out)
-            .with_context(|| format!("copying passthrough '{entry}'"))?;
+    // replaces it rather than being quietly overwritten by it. Merged
+    // trees go in reverse and the site root last, so where two trees pass
+    // the same path through, the root's copy wins, then the first listed.
+    for tree in site.trees.iter().rev() {
+        for entry in &tree.passthrough {
+            copy_passthrough(&tree.root.join(entry), &out.dir().join(entry), out)
+                .with_context(|| format!("copying passthrough '{entry}'"))?;
+        }
     }
     out.prune()?;
     Ok(pages)
@@ -1629,6 +1633,102 @@ mod tests {
         .unwrap();
         let err = Site::load(dir.path(), &out).unwrap_err().to_string();
         assert!(err.contains("resolving nav link 'Gone'"));
+    }
+
+    #[test]
+    fn merged_trees_join_the_site_and_keep_their_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        site::write_fixture(&root);
+        fs::write(root.join("CNAME"), "site").unwrap();
+        let config = fs::read_to_string(root.join("trail.toml")).unwrap();
+        fs::write(
+            root.join("trail.toml"),
+            format!(
+                "edit_url = \"https://forge.example/site/{{path}}\"\npassthrough = [\"CNAME\"]\n\
+                 {config}\n[[merge]]\npath = \"../extra/\"\n"
+            ),
+        )
+        .unwrap();
+
+        // The merged tree: one product linking into the site's, its own
+        // edit links and passthrough, and site settings that are ignored
+        // (its nav link would not resolve).
+        let extra = dir.path().join("extra");
+        let topic = extra.join("gamma.product/1--guide.topic");
+        fs::create_dir_all(&topic).unwrap();
+        fs::create_dir_all(extra.join("dist/gamma")).unwrap();
+        fs::write(extra.join("CNAME"), "extra").unwrap();
+        fs::write(extra.join("extra.txt"), "only here").unwrap();
+        let extra_config = "sitename = \"Other\"\ntitle = \"Other\"\ndescription = \"d\"\n\
+             footer = \"other footer\"\n\
+             edit_url = \"https://forge.example/extra/{path}\"\n\
+             passthrough = [\"CNAME\", \"extra.txt\"]\n\n\
+             [[nav]]\nlabel = \"Gone\"\nurl = \"~nowhere/page\"\n";
+        fs::write(extra.join("trail.toml"), extra_config).unwrap();
+        fs::write(
+            extra.join("gamma.product/trail.toml"),
+            "title = \"Gamma\"\nmonogram = \"G\"\ncolor = \"#3b82f6\"\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        fs::write(topic.join("trail.toml"), "title = \"Guide\"\n").unwrap();
+        fs::write(
+            topic.join("1--start.md"),
+            "---\ntitle: Start\ntype: concept\n---\n\nSee [A2](~alpha/a2).\n\n![Figure](fig.png)\n",
+        )
+        .unwrap();
+        fs::write(topic.join("fig.png"), site::TEST_PNG).unwrap();
+
+        let out = root.join("dist");
+        let options = &BuildOptions::default();
+        let site = Site::load(&root, &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+
+        let start = fs::read_to_string(out.join("gamma/guide/start/index.html")).unwrap();
+        assert!(start.contains("href=\"/alpha/acorn/wide/a2\""));
+        assert!(start.contains("footer text"));
+        assert!(start.contains("https://forge.example/extra/gamma.product/1--guide.topic/1--start.md"));
+        // Images resolve beside their page, through the `..` in the path.
+        assert_eq!(fs::read(out.join("gamma/guide/fig.png")).unwrap(), site::TEST_PNG);
+        let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(x1.contains("https://forge.example/site/alpha.product/5--loose.topic/1--x1.md"));
+        // Where both trees pass a path through, the site root's copy wins.
+        assert_eq!(fs::read_to_string(out.join("CNAME")).unwrap(), "site");
+        assert_eq!(fs::read_to_string(out.join("extra.txt")).unwrap(), "only here");
+
+        // Without a trail.toml the tree still merges, with no edit links.
+        fs::remove_file(extra.join("trail.toml")).unwrap();
+        fs::remove_file(extra.join("CNAME")).unwrap();
+        fs::remove_file(extra.join("extra.txt")).unwrap();
+        let site = Site::load(&root, &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+        let start = fs::read_to_string(out.join("gamma/guide/start/index.html")).unwrap();
+        assert!(!start.contains("forge.example"));
+
+        // Two trees cannot share a product slug.
+        fs::create_dir_all(extra.join("alpha.product")).unwrap();
+        fs::copy(
+            extra.join("gamma.product/trail.toml"),
+            extra.join("alpha.product/trail.toml"),
+        )
+        .unwrap();
+        let err = format!("{:#}", Site::load(&root, &out).unwrap_err());
+        assert!(err.contains("product 'alpha' is in two trees"), "{err}");
+        fs::remove_dir_all(extra.join("alpha.product")).unwrap();
+
+        // The merged tree's root is checked like the site root's.
+        fs::write(extra.join("stray.txt"), "").unwrap();
+        let err = format!("{:#}", Site::load(&root, &out).unwrap_err());
+        assert!(err.contains("merging the tree at '../extra/'"), "{err}");
+        assert!(err.contains("unexpected file 'stray.txt'"), "{err}");
+        fs::remove_file(extra.join("stray.txt")).unwrap();
+
+        // A path that is not a directory fails at load.
+        fs::remove_file(root.join("CNAME")).unwrap();
+        fs::write(root.join("trail.toml"), format!("{config}\n[[merge]]\npath = \"../nope\"\n"))
+            .unwrap();
+        let err = format!("{:#}", Site::load(&root, &out).unwrap_err());
+        assert!(err.contains("merge path '../nope' is not a directory"), "{err}");
     }
 
     #[test]
