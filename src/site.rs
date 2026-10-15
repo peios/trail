@@ -89,6 +89,10 @@ pub struct SiteConfig {
     pub product_theming: bool,
     #[serde(default = "default_true")]
     pub built_by_trail: bool,
+    /// The writing rules `trail lint` checks. Building ignores them, but
+    /// a malformed table still fails the load.
+    #[serde(default, skip_serializing)]
+    pub lint: Option<crate::lint::LintConfig>,
 }
 
 /// One header navigation link. The url may be external, or a `~` page
@@ -853,6 +857,9 @@ impl Site {
         }
         if let Some(accent) = &config.accent {
             validate_color(accent).context("in the site accent")?;
+        }
+        if let Some(lint) = &config.lint {
+            lint.validate()?;
         }
         if let Some(accent_dark) = &config.accent_dark {
             ensure!(

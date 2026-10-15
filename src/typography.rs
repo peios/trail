@@ -114,10 +114,7 @@ fn combination_end(events: &[Event<'_>], start: usize) -> usize {
     let mut keys = 0;
     let mut i = start;
     let mut end = start;
-    loop {
-        let Some(after) = kbd_element(events, i) else {
-            break;
-        };
+    while let Some(after) = kbd_element(events, i) {
         keys += 1;
         end = after;
         match (events.get(after), events.get(after + 1)) {
