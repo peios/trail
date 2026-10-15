@@ -91,11 +91,15 @@ async fn serve(
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
+    let watched: Vec<String> = std::iter::once(root.clone())
+        .chain(crate::site::merged_roots(&root))
+        .map(|tree| tree.display().to_string())
+        .collect();
     println!(
         "serving {} at http://{} (watching {} for changes)",
         out.display(),
         listener.local_addr()?,
-        root.display()
+        watched.join(", ")
     );
     axum::serve(listener, app).await.context("serving")?;
     Ok(())
@@ -173,27 +177,43 @@ fn watch_and_rebuild(
     }
 }
 
-/// What plugins depend on outside the site root (the root is already
+/// What the site is built from outside its root (the root is already
 /// watched recursively).
 #[derive(Default)]
 struct External {
+    /// Merged trees: everything beneath one is content, except its own
+    /// build output.
+    trees: Vec<PathBuf>,
     files: HashSet<PathBuf>,
     /// Directories a plugin scans: anything beneath one may be an input.
     dirs: Vec<PathBuf>,
 }
 
-/// Watch what plugins depend on outside the site root, returning it for
-/// the change filter. A file's directory is watched rather than the file,
-/// since editors save by renaming a new file over the old one; a directory
-/// dependency is watched with everything beneath it.
+/// Watch merged trees and what plugins depend on outside the site root,
+/// returning them for the change filter. A file's directory is watched
+/// rather than the file, since editors save by renaming a new file over
+/// the old one; a directory dependency is watched with everything beneath
+/// it.
 fn watch_dependencies(
     watcher: &mut impl Watcher,
     root: &Path,
     watched: &mut HashSet<(PathBuf, bool)>,
 ) -> External {
     let mut external = External::default();
+    for tree in crate::site::merged_roots(root) {
+        let tree = std::fs::canonicalize(&tree).unwrap_or(tree);
+        if tree.starts_with(root) {
+            continue;
+        }
+        if watched.insert((tree.clone(), true))
+            && let Err(error) = watcher.watch(&tree, notify::RecursiveMode::Recursive)
+        {
+            eprintln!("cannot watch {}: {error}", tree.display());
+        }
+        external.trees.push(tree);
+    }
     for path in crate::plugins::dependencies(root) {
-        if path.starts_with(root) {
+        if path.starts_with(root) || external.trees.iter().any(|tree| path.starts_with(tree)) {
             continue;
         }
         let (dir, recursive) = if path.is_dir() {
@@ -223,8 +243,9 @@ fn watch_dependencies(
 /// A change matters unless it is a read (rebuilds read every content file,
 /// and inotify reports those as Access events — reacting to them loops
 /// forever), inside the output directory (our own writes), or under a
-/// dot-entry (.git and friends). Outside the root, only what plugins depend
-/// on matters — the directories around it may be busy with other things.
+/// dot-entry (.git and friends). Outside the root, only merged trees (less
+/// their own `dist/`) and what plugins depend on matter — the directories
+/// around it may be busy with other things.
 fn is_content_change(event: &notify::Event, root: &Path, out: &Path, external: &External) -> bool {
     if matches!(event.kind, notify::EventKind::Access(_)) {
         return false;
@@ -235,6 +256,9 @@ fn is_content_change(event: &notify::Event, root: &Path, out: &Path, external: &
     };
     event.paths.iter().any(|path| {
         if !path.starts_with(root) {
+            if let Some(rest) = external.trees.iter().find_map(|tree| path.strip_prefix(tree).ok()) {
+                return !rest.starts_with("dist") && !dotted(rest);
+            }
             return external.files.contains(path)
                 || external.dirs.iter().any(|dir| {
                     path.strip_prefix(dir).is_ok_and(|rest| !dotted(rest))
@@ -256,11 +280,17 @@ mod tests {
     #[test]
     fn outside_the_root_only_dependencies_are_changes() {
         let external = External {
+            trees: vec![PathBuf::from("/kernel/docs")],
             files: HashSet::from([PathBuf::from("/src/MAINTAINERS")]),
             dirs: vec![PathBuf::from("/src/ABI")],
         };
         let (root, out) = (Path::new("/site"), Path::new("/site/dist"));
         let change = |path| is_content_change(&created(path), root, out, &external);
+        assert!(change("/kernel/docs/kernel.product/1--guide.topic/1--page.md"));
+        assert!(change("/kernel/docs/trail.toml"));
+        assert!(!change("/kernel/docs/dist/kernel/index.html"));
+        assert!(!change("/kernel/docs/.git/index"));
+        assert!(!change("/kernel/README"));
         assert!(change("/src/MAINTAINERS"));
         assert!(!change("/src/README"));
         assert!(change("/src/ABI/testing/sysfs-new"));

@@ -26,9 +26,68 @@ pub struct Site {
     pub favicon: Option<PathBuf>,
     /// The head_html snippet's contents, injected into every head.
     pub head_html: Option<String>,
-    /// The site root directory, for deriving source-relative paths
-    /// (edit links).
+    /// The site root directory.
     pub root: PathBuf,
+    /// The trees the products came from: the site root first, then each
+    /// `[[merge]]` tree in the order listed.
+    pub trees: Vec<Tree>,
+}
+
+/// One directory of products a site is built from, with the settings that
+/// belong to its files rather than to the site.
+#[derive(Debug)]
+pub struct Tree {
+    /// The site root, or the site root joined with a `[[merge]]` path, so
+    /// it prefixes every source file loaded from the tree.
+    pub root: PathBuf,
+    pub edit_url: Option<String>,
+    pub passthrough: Vec<String>,
+    pub plugins: BTreeMap<String, PluginConfig>,
+}
+
+impl Tree {
+    fn new(root: PathBuf, config: &SiteConfig) -> Tree {
+        Tree {
+            root,
+            edit_url: config.edit_url.clone(),
+            passthrough: config.passthrough.clone(),
+            plugins: config.plugins.clone(),
+        }
+    }
+}
+
+/// Of `roots`, the index of the deepest one holding `file`: a tree merged
+/// from inside the site root is still a tree of its own.
+pub fn deepest_root<'a>(roots: impl IntoIterator<Item = &'a Path>, file: &Path) -> Option<usize> {
+    roots
+        .into_iter()
+        .enumerate()
+        .filter(|(_, root)| file.starts_with(root))
+        .max_by_key(|(_, root)| root.components().count())
+        .map(|(index, _)| index)
+}
+
+/// The directories the site at `root` merges, read from its trail.toml
+/// without validating anything else, so `serve` keeps watching them while
+/// the site fails to load.
+pub fn merged_roots(root: &Path) -> Vec<PathBuf> {
+    #[derive(Deserialize)]
+    struct Merges {
+        #[serde(default)]
+        merge: Vec<MergeConfig>,
+    }
+    let Ok(text) = fs::read_to_string(root.join("trail.toml")) else {
+        return Vec::new();
+    };
+    let Ok(merges) = toml::from_str::<Merges>(&text) else {
+        return Vec::new();
+    };
+    merges
+        .merge
+        .iter()
+        .map(|merge| root.join(&merge.path))
+        .filter(|tree| tree.is_dir())
+        .collect()
 }
 
 /// The root `trail.toml`. Unknown keys are load errors.
@@ -94,6 +153,19 @@ pub struct SiteConfig {
     /// keyed by the name the fence uses. See `plugins`.
     #[serde(default, skip_serializing)]
     pub plugins: BTreeMap<String, PluginConfig>,
+    /// Other trees whose products join this site. Each keeps its own
+    /// edit links, passthrough entries and plugins; everything else about
+    /// the site comes from this file.
+    #[serde(default, skip_serializing)]
+    pub merge: Vec<MergeConfig>,
+}
+
+/// One `[[merge]]` table in the root trail.toml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeConfig {
+    /// The tree's directory, relative to the site root.
+    pub path: String,
 }
 
 /// One header navigation link. The url may be external, or a `~` page
@@ -903,64 +975,33 @@ impl Site {
             }
             None => None,
         };
-        if let Some(template) = &config.edit_url {
-            ensure!(
-                template.contains("{path}"),
-                "edit_url must contain a {{path}} placeholder for the \
-                 article's source path"
-            );
-        }
-        for entry in &config.passthrough {
-            validate_passthrough(entry, root, out)?;
-        }
-        // Configured root files (or the directories holding them) are
-        // content the root scan below must tolerate.
-        let keep_entries: Vec<String> = [&config.custom_css, &config.favicon, &config.head_html]
-            .into_iter()
-            .flatten()
-            .chain(&config.passthrough)
-            .chain(
-                config
-                    .plugins
-                    .values()
-                    .filter_map(|plugin| plugin.command.first())
-                    .filter(|program| program.contains('/')),
-            )
-            .filter_map(|path| Path::new(path).components().next())
-            .map(|component| component.as_os_str().to_string_lossy().into_owned())
-            .collect();
-
+        validate_tree_config(&config, root, out)?;
+        // A tree merged from inside the root is content the scan tolerates.
+        let merged_inside = config.merge.iter().map(|merge| &merge.path);
         let mut products = Vec::new();
         let mut images = Vec::new();
-        for entry in read_dir_sorted(root)? {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.')
-                || is_same_path(&entry.path(), out)
-                || keep_entries.contains(&name)
-            {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                let Some(slug) = name.strip_suffix(".product") else {
+        load_products(root, out, keep_entries(&config, merged_inside), &mut products, &mut images)?;
+
+        let mut trees = vec![Tree::new(root.to_path_buf(), &config)];
+        // Each product's tree, so a slug two trees share names both.
+        let mut owners: HashMap<String, usize> =
+            products.iter().map(|p| (p.slug.clone(), 0)).collect();
+        for merge in &config.merge {
+            let first = products.len();
+            let tree = load_merged_tree(root, out, merge, &mut products, &mut images)
+                .with_context(|| format!("merging the tree at '{}'", merge.path))?;
+            for product in &products[first..] {
+                if let Some(other) = owners.insert(product.slug.clone(), trees.len()) {
                     bail!(
-                        "unexpected directory '{name}' in site root: \
-                         only *.product directories are allowed"
+                        "product '{}' is in two trees, {} and {}: merged trees \
+                         cannot share a product slug",
+                        product.slug,
+                        trees[other].root.display(),
+                        tree.root.display()
                     );
-                };
-                validate_slug(slug).with_context(|| format!("in directory '{name}'"))?;
-                ensure!(
-                    slug != "assets" && slug != "pagefind",
-                    "'{slug}' is a reserved product slug (it collides with the \
-                     '/{slug}' output directory)"
-                );
-                products.push(
-                    load_product(&path, slug, &mut images)
-                        .with_context(|| format!("loading product '{slug}'"))?,
-                );
-            } else if name != "trail.toml" {
-                bail!("unexpected file '{name}' in site root: only trail.toml is allowed");
+                }
             }
+            trees.push(tree);
         }
 
         for slug in &config.featured {
@@ -986,6 +1027,7 @@ impl Site {
             favicon,
             head_html,
             root: root.to_path_buf(),
+            trees,
         };
         // Plugin output is ordinary body content from here on: `.link`
         // aliases copy it, reading times count it, and everything the
@@ -1020,6 +1062,12 @@ impl Site {
             }
         }
         Ok(site)
+    }
+
+    /// The tree a source file was loaded from.
+    pub fn tree_of(&self, file: &Path) -> &Tree {
+        let roots = self.trees.iter().map(|tree| tree.root.as_path());
+        &self.trees[deepest_root(roots, file).unwrap_or(0)]
     }
 
     /// The products shown as cards on the front page, in `featured` order.
@@ -2478,6 +2526,128 @@ fn validate_color(color: &str) -> Result<()> {
 /// exists in the site root. Absolute paths and `..` are rejected — a
 /// passthrough copies what it names into the output, so it must not be
 /// able to reach outside the site to do it.
+/// Check the settings a tree keeps for itself when it is merged.
+fn validate_tree_config(config: &SiteConfig, root: &Path, out: &Path) -> Result<()> {
+    if let Some(template) = &config.edit_url {
+        ensure!(
+            template.contains("{path}"),
+            "edit_url must contain a {{path}} placeholder for the \
+             article's source path"
+        );
+    }
+    for entry in &config.passthrough {
+        validate_passthrough(entry, root, out)?;
+    }
+    Ok(())
+}
+
+/// The root entries a tree's configuration names (or the directories
+/// holding them), which its scan for products must tolerate, plus `extra`.
+fn keep_entries<'a>(config: &'a SiteConfig, extra: impl Iterator<Item = &'a String>) -> Vec<String> {
+    [&config.custom_css, &config.favicon, &config.head_html]
+        .into_iter()
+        .flatten()
+        .chain(&config.passthrough)
+        .chain(
+            config
+                .plugins
+                .values()
+                .filter_map(|plugin| plugin.command.first())
+                .filter(|program| program.contains('/')),
+        )
+        .chain(extra)
+        .filter_map(|path| Path::new(path).components().next())
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Load the `*.product` directories of the tree at `root`.
+///
+/// The root may contain only `trail.toml`, `*.product` directories and
+/// the entries in `keep`; anything else (dot-entries aside) is an error,
+/// so typos surface at build time instead of silently vanishing from the
+/// site.
+fn load_products(
+    root: &Path,
+    out: &Path,
+    keep: Vec<String>,
+    products: &mut Vec<Product>,
+    images: &mut Vec<ImageAsset>,
+) -> Result<()> {
+    for entry in read_dir_sorted(root)? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || is_same_path(&entry.path(), out) || keep.contains(&name) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let Some(slug) = name.strip_suffix(".product") else {
+                bail!(
+                    "unexpected directory '{name}' in site root: \
+                     only *.product directories are allowed"
+                );
+            };
+            validate_slug(slug).with_context(|| format!("in directory '{name}'"))?;
+            ensure!(
+                slug != "assets" && slug != "pagefind",
+                "'{slug}' is a reserved product slug (it collides with the \
+                 '/{slug}' output directory)"
+            );
+            products.push(
+                load_product(&path, slug, images)
+                    .with_context(|| format!("loading product '{slug}'"))?,
+            );
+        } else if name != "trail.toml" {
+            bail!("unexpected file '{name}' in site root: only trail.toml is allowed");
+        }
+    }
+    Ok(())
+}
+
+/// Load a `[[merge]]` tree's products and the settings it keeps. Its
+/// trail.toml is optional; when present it must be valid, but only its
+/// edit link, passthrough entries and plugins apply — the site root's
+/// trail.toml settles everything else, including what is merged.
+fn load_merged_tree(
+    site_root: &Path,
+    out: &Path,
+    merge: &MergeConfig,
+    products: &mut Vec<Product>,
+    images: &mut Vec<ImageAsset>,
+) -> Result<Tree> {
+    ensure!(!merge.path.is_empty(), "a merge path cannot be empty");
+    let root = site_root.join(&merge.path);
+    ensure!(
+        root.is_dir(),
+        "merge path '{}' is not a directory (paths are relative to the site root)",
+        merge.path
+    );
+    ensure!(
+        !is_same_path(&root, site_root),
+        "merge path '{}' is the site root itself",
+        merge.path
+    );
+    let file = root.join("trail.toml");
+    let config: Option<SiteConfig> = file.exists().then(|| read_toml(&file)).transpose()?;
+    let mut keep = Vec::new();
+    if let Some(config) = &config {
+        validate_tree_config(config, &root, out)?;
+        keep = keep_entries(config, std::iter::empty());
+    }
+    // The tree's own build output, from building it as a site of its own.
+    keep.push("dist".to_string());
+    load_products(&root, out, keep, products, images)?;
+    Ok(match &config {
+        Some(config) => Tree::new(root, config),
+        None => Tree {
+            root,
+            edit_url: None,
+            passthrough: Vec::new(),
+            plugins: BTreeMap::new(),
+        },
+    })
+}
+
 fn validate_passthrough(entry: &str, root: &Path, out: &Path) -> Result<()> {
     ensure!(!entry.is_empty(), "passthrough entries cannot be empty");
     let path = Path::new(entry);
