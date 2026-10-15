@@ -116,7 +116,10 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
         &markdown,
         options.refs.and_then(|scope| scope.book_short),
     );
-    let events = crate::math::mark_math(Parser::new_ext(&markdown, parser_options()).collect());
+    // Equations first, so the typography pass never sees their source.
+    let events = crate::typography::keep_together(crate::math::mark_math(
+        Parser::new_ext(&markdown, parser_options()).collect(),
+    ));
 
     let mut out = Vec::with_capacity(events.len());
     let mut toc = Vec::new();

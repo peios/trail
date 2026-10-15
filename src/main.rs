@@ -4,6 +4,7 @@ mod export;
 mod highlight;
 mod images;
 mod links;
+mod lint;
 mod markdown;
 mod math;
 mod plugins;
@@ -12,6 +13,8 @@ mod render;
 mod search;
 mod serve;
 mod site;
+mod titlecase;
+mod typography;
 
 use clap::Parser;
 
@@ -22,5 +25,11 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Build(args) => build::run(&args),
         Command::Serve(args) => serve::run(&args),
+        Command::Lint(args) => {
+            if lint::run(&args.root)? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
     }
 }

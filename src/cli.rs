@@ -17,6 +17,16 @@ pub enum Command {
     Build(BuildArgs),
     /// Build the site, then serve it over local HTTP.
     Serve(ServeArgs),
+    /// Check the site's sources against the writing rules its trail.toml
+    /// turns on in [lint]. Exits non-zero if any breach is an error.
+    Lint(LintArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct LintArgs {
+    /// Site root directory (the one containing trail.toml).
+    #[arg(value_name = "ROOT", default_value = ".")]
+    pub root: PathBuf,
 }
 
 #[derive(Debug, Args)]
