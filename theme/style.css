@@ -1011,6 +1011,17 @@ body.drawer-open { overflow: hidden; }
   border: none;
 }
 
+/* An equation on its own line: spaced like a paragraph, and scrolled
+   rather than squeezed when it is wider than the column. */
+.math-display {
+  margin: 1.1rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.math-display math {
+  font-size: 1.1em;
+}
+
 .table-scroll {
   overflow-x: auto;
   margin: 1.1rem 0;
