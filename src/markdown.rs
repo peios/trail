@@ -3,7 +3,9 @@ use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail, ensure};
 use lol_html::{HtmlRewriter, RewriteStrSettings, Settings, element, rewrite_str};
-use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{
+    BlockQuoteKind, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd, html,
+};
 use serde::Serialize;
 
 use crate::highlight;
@@ -322,7 +324,11 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                 title: title.clone(),
                 id: id.clone(),
             }));
-        } else if let Event::Start(Tag::Link { dest_url, .. }) = &events[i]
+        } else if let Event::Start(Tag::Link {
+            link_type, dest_url, ..
+        }) = &events[i]
+            // An email autolink's destination is the bare address.
+            && *link_type != LinkType::Email
             && is_relative(dest_url)
         {
             link_depth += 1;
@@ -1945,9 +1951,10 @@ const html = '<a id="script"></a>';
     fn relative_destinations_are_broken_links() {
         let rendered = render(
             "[a](../410--policy.md) [b](sibling.md#part) [c](https://example.com/x.md) \
-             [d](/print) [e](mailto:docs@example.com)\n\n## Part\n",
+             [d](/print) [e](mailto:docs@example.com) <docs@example.com>\n\n## Part\n",
         );
         assert_eq!(rendered.broken.len(), 2, "{:?}", rendered.broken);
+        assert!(rendered.html.contains("<a href=\"mailto:docs@example.com\">docs@example.com</a>"));
         assert!(rendered.broken[0].contains("'../410--policy.md' is a relative path"));
         assert!(rendered.broken[1].contains("'sibling.md#part' is a relative path"));
         let rendered =
