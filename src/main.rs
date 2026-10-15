@@ -11,6 +11,7 @@ mod search;
 mod serve;
 mod site;
 mod titlecase;
+mod typography;
 
 use clap::Parser;
 

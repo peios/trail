@@ -114,7 +114,8 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
         &markdown,
         options.refs.and_then(|scope| scope.book_short),
     );
-    let events: Vec<Event> = Parser::new_ext(&markdown, parser_options()).collect();
+    let events =
+        crate::typography::keep_together(Parser::new_ext(&markdown, parser_options()).collect());
 
     let mut out = Vec::with_capacity(events.len());
     let mut toc = Vec::new();

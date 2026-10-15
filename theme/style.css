@@ -1011,6 +1011,12 @@ body.drawer-open { overflow: hidden; }
   border: none;
 }
 
+/* A numeric range or a key combination, which reads wrongly split
+   across lines (see the typography module). */
+.keep-together {
+  white-space: nowrap;
+}
+
 .table-scroll {
   overflow-x: auto;
   margin: 1.1rem 0;
