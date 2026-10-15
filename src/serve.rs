@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -143,12 +144,16 @@ fn watch_and_rebuild(
         eprintln!("cannot watch {}: {error}", canonical_root.display());
         return;
     }
+    let mut watched_dirs = HashSet::new();
+    let mut external = watch_dependencies(&mut watcher, &canonical_root, &mut watched_dirs);
 
     while let Ok(first) = event_rx.recv() {
-        let mut relevant = is_content_change(&first, &canonical_out);
+        let is_change =
+            |event: &notify::Event| is_content_change(event, &canonical_root, &canonical_out, &external);
+        let mut relevant = is_change(&first);
         // Debounce: editors fire bursts; wait for 200ms of quiet.
         while let Ok(event) = event_rx.recv_timeout(Duration::from_millis(200)) {
-            relevant |= is_content_change(&event, &canonical_out);
+            relevant |= is_change(&event);
         }
         if !relevant {
             continue;
@@ -163,21 +168,105 @@ fn watch_and_rebuild(
                 eprintln!("rebuild failed (still serving the last good build): {error:#}")
             }
         }
+        // A rebuild can change what plugins read, failed or not.
+        external = watch_dependencies(&mut watcher, &canonical_root, &mut watched_dirs);
     }
+}
+
+/// What plugins depend on outside the site root (the root is already
+/// watched recursively).
+#[derive(Default)]
+struct External {
+    files: HashSet<PathBuf>,
+    /// Directories a plugin scans: anything beneath one may be an input.
+    dirs: Vec<PathBuf>,
+}
+
+/// Watch what plugins depend on outside the site root, returning it for
+/// the change filter. A file's directory is watched rather than the file,
+/// since editors save by renaming a new file over the old one; a directory
+/// dependency is watched with everything beneath it.
+fn watch_dependencies(
+    watcher: &mut impl Watcher,
+    root: &Path,
+    watched: &mut HashSet<(PathBuf, bool)>,
+) -> External {
+    let mut external = External::default();
+    for path in crate::plugins::dependencies(root) {
+        if path.starts_with(root) {
+            continue;
+        }
+        let (dir, recursive) = if path.is_dir() {
+            external.dirs.push(path.clone());
+            (path, true)
+        } else {
+            let Some(dir) = path.parent().map(Path::to_path_buf) else {
+                continue;
+            };
+            external.files.insert(path);
+            (dir, false)
+        };
+        let mode = if recursive {
+            notify::RecursiveMode::Recursive
+        } else {
+            notify::RecursiveMode::NonRecursive
+        };
+        if watched.insert((dir.clone(), recursive))
+            && let Err(error) = watcher.watch(&dir, mode)
+        {
+            eprintln!("cannot watch {}: {error}", dir.display());
+        }
+    }
+    external
 }
 
 /// A change matters unless it is a read (rebuilds read every content file,
 /// and inotify reports those as Access events — reacting to them loops
 /// forever), inside the output directory (our own writes), or under a
-/// dot-entry (.git and friends).
-fn is_content_change(event: &notify::Event, out: &Path) -> bool {
+/// dot-entry (.git and friends). Outside the root, only what plugins depend
+/// on matters — the directories around it may be busy with other things.
+fn is_content_change(event: &notify::Event, root: &Path, out: &Path, external: &External) -> bool {
     if matches!(event.kind, notify::EventKind::Access(_)) {
         return false;
     }
+    let dotted = |path: &Path| {
+        path.components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+    };
     event.paths.iter().any(|path| {
-        !path.starts_with(out)
-            && !path
-                .components()
-                .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+        if !path.starts_with(root) {
+            return external.files.contains(path)
+                || external.dirs.iter().any(|dir| {
+                    path.strip_prefix(dir).is_ok_and(|rest| !dotted(rest))
+                });
+        }
+        !path.starts_with(out) && !dotted(path)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::{CreateKind, EventKind};
+
+    fn created(path: &str) -> notify::Event {
+        notify::Event::new(EventKind::Create(CreateKind::File)).add_path(PathBuf::from(path))
+    }
+
+    #[test]
+    fn outside_the_root_only_dependencies_are_changes() {
+        let external = External {
+            files: HashSet::from([PathBuf::from("/src/MAINTAINERS")]),
+            dirs: vec![PathBuf::from("/src/ABI")],
+        };
+        let (root, out) = (Path::new("/site"), Path::new("/site/dist"));
+        let change = |path| is_content_change(&created(path), root, out, &external);
+        assert!(change("/src/MAINTAINERS"));
+        assert!(!change("/src/README"));
+        assert!(change("/src/ABI/testing/sysfs-new"));
+        assert!(!change("/src/ABI/testing/.sysfs-new.swp"));
+        assert!(!change("/src/ABIX/file"));
+        assert!(change("/site/page.md"));
+        assert!(!change("/site/dist/page/index.html"));
+    }
 }

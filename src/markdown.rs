@@ -3,7 +3,9 @@ use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail, ensure};
 use lol_html::{HtmlRewriter, RewriteStrSettings, Settings, element, rewrite_str};
-use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{
+    BlockQuoteKind, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd, html,
+};
 use serde::Serialize;
 
 use crate::highlight;
@@ -114,7 +116,7 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
         &markdown,
         options.refs.and_then(|scope| scope.book_short),
     );
-    let events: Vec<Event> = Parser::new_ext(&markdown, parser_options()).collect();
+    let events = crate::math::mark_math(Parser::new_ext(&markdown, parser_options()).collect());
 
     let mut out = Vec::with_capacity(events.len());
     let mut toc = Vec::new();
@@ -177,6 +179,19 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                 out.push(Event::Html(
                     format!("<span class=\"heading-number\">{number}</span> ").into(),
                 ));
+            }
+        } else if let Event::InlineMath(tex) | Event::DisplayMath(tex) = &events[i] {
+            let display = matches!(events[i], Event::DisplayMath(_));
+            match crate::math::to_mathml(tex, display) {
+                Ok(mathml) if display => out.push(Event::Html(
+                    format!("<div class=\"math-display\">{mathml}</div>\n").into(),
+                )),
+                Ok(mathml) => out.push(Event::InlineHtml(mathml.into())),
+                Err(error) => {
+                    // Not downgradable: the equation is the author's own text.
+                    broken.push(format!("equation '{tex}' is not valid TeX: {error}"));
+                    out.push(Event::Code(tex.clone()));
+                }
             }
         } else if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(language))) = &events[i]
             && language.as_ref() == "mermaid"
@@ -322,7 +337,11 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                 title: title.clone(),
                 id: id.clone(),
             }));
-        } else if let Event::Start(Tag::Link { dest_url, .. }) = &events[i]
+        } else if let Event::Start(Tag::Link {
+            link_type, dest_url, ..
+        }) = &events[i]
+            // An email autolink's destination is the bare address.
+            && *link_type != LinkType::Email
             && is_relative(dest_url)
         {
             link_depth += 1;
@@ -1081,7 +1100,10 @@ fn image_tag(info: &ImageInfo, alt: &str, title: Option<&str>) -> String {
 }
 
 /// ENABLE_GFM parses `> [!NOTE]`-style blockquote alerts (admonitions).
-fn parser_options() -> Options {
+/// ENABLE_MATH stays off: a pair of `$` in ordinary prose ("$PATH and
+/// $HOME") would become an equation. `math::mark_math` finds equations in
+/// forms prose never takes.
+pub(crate) fn parser_options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_FOOTNOTES
@@ -1349,6 +1371,18 @@ pub fn anchor_ids(markdown: &str) -> HashSet<String> {
     html::push_html(&mut html, events.into_iter());
     ids.extend(html_ids(&html).unwrap_or_default());
     ids
+}
+
+/// The anchors an article body names itself: ids in raw HTML, and
+/// citation anchors. Every id except the slugs Trail derives from heading
+/// text, which change whenever a heading is reworded, so these are the
+/// targets other content can rely on.
+pub fn explicit_anchor_ids(markdown: &str) -> HashSet<String> {
+    let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
+    let expanded = expand_citation_anchors(&expanded, None);
+    let mut html = String::new();
+    html::push_html(&mut html, Parser::new_ext(&expanded, parser_options()));
+    html_ids(&html).unwrap_or_default()
 }
 
 /// A link destination in none of the forms a page can serve: not a `~`
@@ -1945,9 +1979,10 @@ const html = '<a id="script"></a>';
     fn relative_destinations_are_broken_links() {
         let rendered = render(
             "[a](../410--policy.md) [b](sibling.md#part) [c](https://example.com/x.md) \
-             [d](/print) [e](mailto:docs@example.com)\n\n## Part\n",
+             [d](/print) [e](mailto:docs@example.com) <docs@example.com>\n\n## Part\n",
         );
         assert_eq!(rendered.broken.len(), 2, "{:?}", rendered.broken);
+        assert!(rendered.html.contains("<a href=\"mailto:docs@example.com\">docs@example.com</a>"));
         assert!(rendered.broken[0].contains("'../410--policy.md' is a relative path"));
         assert!(rendered.broken[1].contains("'sibling.md#part' is a relative path"));
         let rendered =
@@ -2232,6 +2267,20 @@ const html = '<a id="script"></a>';
                 .contains("<pre class=\"mermaid\">graph TD;\n  A--&gt;B;\n</pre>")
         );
         assert!(!rendered.html.contains("language-mermaid"));
+    }
+
+    #[test]
+    fn math_fences_and_dollar_code_spans_render_as_mathml() {
+        let rendered = render("Where $`N`$ costs $5:\n\n```math\n\\frac{1}{2^N}\n```\n");
+        assert!(rendered.broken.is_empty(), "{:?}", rendered.broken);
+        assert!(rendered.html.contains("<p>Where <math display=\"inline\">"), "{}", rendered.html);
+        assert!(rendered.html.contains(" costs $5:</p>"));
+        assert!(rendered.html.contains("<div class=\"math-display\"><math display=\"block\">"));
+        assert!(!rendered.html.contains("code-block"));
+
+        let rendered = render("```math\n\\frac{1}\n```\n");
+        assert_eq!(rendered.broken.len(), 1);
+        assert!(rendered.broken[0].contains("equation '\\frac{1}' is not valid TeX"));
     }
 
     #[test]

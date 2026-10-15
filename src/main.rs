@@ -5,6 +5,8 @@ mod highlight;
 mod images;
 mod links;
 mod markdown;
+mod math;
+mod plugins;
 mod refs;
 mod render;
 mod search;
