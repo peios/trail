@@ -725,7 +725,7 @@ fn splice_text(body: &str, range: &Range<usize>, markdown: &str) -> String {
     let mut out = String::new();
     out.push('\n');
     for line in markdown.trim_end_matches('\n').lines() {
-        if line.trim().is_empty() {
+        if line.is_empty() {
             out.push_str(blank);
         } else {
             out.push_str(&prefix);
@@ -972,6 +972,28 @@ mod tests {
             .unwrap()
             .body
             .clone()
+    }
+
+    #[test]
+    fn generated_code_preserves_whitespace_only_lines() {
+        use pulldown_cmark::{Event, Parser};
+        for source in ["```{p}\n```\n", "> ```{p}\n> ```\n", "- ```{p}\n  ```\n"] {
+            let range = source.find("```").unwrap()..source.rfind("```").unwrap() + 3;
+            let generated = "```text\nalpha\n    \n\u{c}\n\t\nomega\n```\n";
+            let expanded = format!(
+                "{}{}{}",
+                &source[..range.start],
+                splice_text(source, &range, generated),
+                &source[range.end..]
+            );
+            let text: String = Parser::new(&expanded)
+                .filter_map(|event| match event {
+                    Event::Text(text) => Some(text.into_string()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(text, "alpha\n    \n\u{c}\n\t\nomega\n", "{expanded:?}");
+        }
     }
 
     #[test]
