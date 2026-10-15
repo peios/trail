@@ -1674,9 +1674,10 @@ mod tests {
         fs::write(topic.join("trail.toml"), "title = \"Guide\"\n").unwrap();
         fs::write(
             topic.join("1--start.md"),
-            "---\ntitle: Start\ntype: concept\n---\n\nSee [A2](~alpha/a2).\n",
+            "---\ntitle: Start\ntype: concept\n---\n\nSee [A2](~alpha/a2).\n\n![Figure](fig.png)\n",
         )
         .unwrap();
+        fs::write(topic.join("fig.png"), site::TEST_PNG).unwrap();
 
         let out = root.join("dist");
         let options = &BuildOptions::default();
@@ -1687,6 +1688,8 @@ mod tests {
         assert!(start.contains("href=\"/alpha/acorn/wide/a2\""));
         assert!(start.contains("footer text"));
         assert!(start.contains("https://forge.example/extra/gamma.product/1--guide.topic/1--start.md"));
+        // Images resolve beside their page, through the `..` in the path.
+        assert_eq!(fs::read(out.join("gamma/guide/fig.png")).unwrap(), site::TEST_PNG);
         let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
         assert!(x1.contains("https://forge.example/site/alpha.product/5--loose.topic/1--x1.md"));
         // Where both trees pass a path through, the site root's copy wins.
