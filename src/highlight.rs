@@ -66,6 +66,19 @@ pub fn licenses() -> String {
 /// carries the copy button. An unknown or absent language renders as
 /// plain escaped text — no highlighting, same chrome.
 pub fn code_block(language: Option<&str>, source: &str) -> String {
+    thread_local! {
+        static CACHE: std::cell::RefCell<crate::memo::Memo<String>> =
+            std::cell::RefCell::new(crate::memo::Memo::new(64 * 1024 * 1024));
+    }
+    // None and an explicitly empty language have the same rendered result.
+    let key = crate::memo::key(&[language.unwrap_or("").as_bytes(), source.as_bytes()]);
+    if let Some(html) = CACHE.with(|cache| cache.borrow().get(&key)) { return html; }
+    let html = uncached_code_block(language, source);
+    CACHE.with(|cache| cache.borrow_mut().insert(key, html.clone(), html.capacity()));
+    html
+}
+
+fn uncached_code_block(language: Option<&str>, source: &str) -> String {
     let syntax = language
         .map(str::trim)
         .filter(|language| !language.is_empty())
@@ -101,6 +114,17 @@ fn highlight(syntax: &SyntaxReference, source: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuse_preserves_language_and_exact_source() {
+        for language in [None, Some(""), Some("rust"), Some("text"), Some("unknown"), Some(" rust ")] {
+            for source in ["let x = 1;\n", "let x = 2;\n", "\t \n<>&\n"] {
+                let expected = uncached_code_block(language, source);
+                assert_eq!(code_block(language, source), expected);
+                assert_eq!(code_block(language, source), expected);
+            }
+        }
+    }
 
     #[test]
     fn known_languages_are_highlighted_with_classed_spans() {

@@ -7,6 +7,7 @@ description = "Static site builder for the Peios learn documentation."
 [dependencies]
 aho-corasick = "1"
 anyhow = "1"
+blake3 = "1.8"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 html-escape = "0.2"
