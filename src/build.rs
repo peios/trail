@@ -64,7 +64,7 @@ struct PageSink {
 }
 
 /// How a build behaves, beyond the site itself.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct BuildOptions {
     /// Inject the dev-server auto-reload script into every page;
     /// plain `trail build` output never carries it.
@@ -199,6 +199,7 @@ pub fn run(args: &BuildArgs) -> Result<()> {
 }
 
 /// Build the whole site into `out`, returning the number of pages written.
+#[cfg(test)]
 pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usize> {
     build_prepared(site, out, options, &Prepared::new(site)?)
 }

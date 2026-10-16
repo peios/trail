@@ -52,6 +52,7 @@ pub struct Renderer {
     env: Environment<'static>,
     /// Inject the dev-server auto-reload script into every page.
     live_reload: bool,
+    cache_key: String,
 }
 
 impl Renderer {
@@ -109,15 +110,30 @@ impl Renderer {
         Ok(Renderer {
             env,
             live_reload: options.live_reload,
+            cache_key: crate::cache::key_json(options),
         })
+    }
+
+    fn render_cached(&self, name: &str, context: Value) -> Result<String> {
+        if !crate::cache::persistent() || name == "print.html" {
+            return self.env.get_template(name)?.render(context).map_err(Into::into);
+        }
+        let key = crate::cache::key_json(&(&self.cache_key, name, &context));
+        if let Some(bytes) = crate::cache::read_bytes("pages", &key)
+            && let Ok(html) = String::from_utf8(bytes) { return Ok(html); }
+        let html = self.env.get_template(name)?.render(context)?;
+        crate::cache::write_bytes("pages", &key, html.as_bytes());
+        Ok(html)
+    }
+
+    pub fn context_key(&self, site: &Site) -> String {
+        crate::cache::key_json(&(&self.cache_key, &site.config, &site.products,
+            site.favicon_href(), &site.head_html))
     }
 
     pub fn index(&self, site: &Site) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("index.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("index.html", context! {
                 site => site.config,
                 products => site.products,
                 featured => site.featured(),
@@ -140,10 +156,7 @@ impl Renderer {
 
     pub fn product(&self, site: &Site, product: &Product) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("product.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("product.html", context! {
                 site => site.config,
                 products => site.products,
                 product => product,
@@ -173,10 +186,7 @@ impl Renderer {
         anthology: &Anthology,
     ) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("anthology.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("anthology.html", context! {
                 site => site.config,
                 products => site.products,
                 product => product,
@@ -213,10 +223,7 @@ impl Renderer {
         book: &Book,
     ) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("book.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("book.html", context! {
                 site => site.config,
                 products => site.products,
                 product => product,
@@ -261,10 +268,7 @@ impl Renderer {
             "article",
         );
         let edit_url = edit_link(site, article);
-        self.env
-            .get_template("book-article.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("book-article.html", context! {
                 site => site.config,
                 products => site.products,
                 product => product,
@@ -305,10 +309,7 @@ impl Renderer {
         has_mermaid: bool,
     ) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("print.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("print.html", context! {
                 site => site.config,
                 products => site.products,
                 product => product,
@@ -355,10 +356,7 @@ impl Renderer {
             "article",
         );
         let edit_url = edit_link(site, article);
-        self.env
-            .get_template("article.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("article.html", context! {
                 site => site.config,
                 products => site.products,
                 product => product,
@@ -392,10 +390,7 @@ impl Renderer {
     /// doesn't exist has nothing to canonicalise or preview.
     pub fn not_found(&self, site: &Site) -> Result<String> {
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("404.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("404.html", context! {
                 site => site.config,
                 products => site.products,
                 favicon => site.favicon_href(),

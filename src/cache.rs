@@ -19,8 +19,54 @@ use std::{
 struct Store {
     dir: PathBuf,
     used: RefCell<HashSet<PathBuf>>,
+    captures: RefCell<Vec<HashSet<Entry>>>,
     #[cfg(test)]
     hits: RefCell<std::collections::HashMap<&'static str, usize>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+pub struct Entry { kind: String, key: String }
+
+fn record(store: &Store, kind: &str, key: &str, path: PathBuf) {
+    store.used.borrow_mut().insert(path);
+    for capture in store.captures.borrow_mut().iter_mut() {
+        capture.insert(Entry { kind: kind.into(), key: key.into() });
+    }
+}
+
+/// Keep lower-level results alive when their enclosing artifact is reused.
+pub fn retain(entries: &[Entry]) {
+    let Some(store) = store() else { return };
+    for entry in entries {
+        if !entry.kind.bytes().all(|c| c.is_ascii_lowercase() || c == b'-') { continue; }
+        if let Some(path) = path(&store, &entry.kind, &entry.key) {
+            record(&store, &entry.kind, &entry.key, path);
+        }
+    }
+}
+
+pub struct Capture { store: Option<Rc<Store>>, finished: bool }
+
+pub fn capture() -> Capture {
+    let store = store();
+    if let Some(store) = &store { store.captures.borrow_mut().push(HashSet::new()); }
+    Capture { store, finished: false }
+}
+
+impl Capture {
+    pub fn finish(mut self) -> Vec<Entry> {
+        self.finished = true;
+        let mut entries: Vec<_> = self.store.as_ref().map(|s| s.captures.borrow_mut().pop().unwrap())
+            .unwrap_or_default().into_iter().collect();
+        entries.sort_by(|a, b| (&a.kind, &a.key).cmp(&(&b.kind, &b.key)));
+        entries
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if !self.finished && let Some(store) = &self.store { store.captures.borrow_mut().pop(); }
+    }
 }
 
 thread_local! {
@@ -123,7 +169,7 @@ pub fn read_bytes(kind: &'static str, key: &str) -> Option<Vec<u8>> {
     if blake3::hash(payload).as_bytes() != digest {
         return None;
     }
-    store.used.borrow_mut().insert(path);
+    record(&store, kind, key, path);
     #[cfg(test)]
     {
         *store.hits.borrow_mut().entry(kind).or_default() += 1;
@@ -136,7 +182,7 @@ pub fn write_bytes(kind: &'static str, key: &str, bytes: &[u8]) {
     let Some(path) = path(&store, kind, key) else {
         return;
     };
-    store.used.borrow_mut().insert(path.clone());
+    record(&store, kind, key, path.clone());
     let Some(parent) = path.parent() else { return };
     if fs::create_dir_all(parent).is_err() {
         return;
@@ -186,6 +232,30 @@ pub fn compute<T: Serialize + DeserializeOwned>(kind: &'static str, key: &str, b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_hits_retain_nested_cache_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let key = crate::memo::key(&[b"child"]);
+        let references = {
+            let session = Session::new(root.path(), true);
+            let outer = capture();
+            let inner = capture();
+            put("child", &key, &42);
+            let child = inner.finish();
+            retain(&child);
+            let references = outer.finish();
+            session.finish();
+            references
+        };
+        {
+            let session = Session::new(root.path(), true);
+            retain(&references);
+            session.finish();
+        }
+        let _session = Session::new(root.path(), true);
+        assert_eq!(get::<i32>("child", &key), Some(42));
+    }
 
     #[test]
     fn corrupt_unwritable_and_disabled_caches_are_misses() {

@@ -338,6 +338,59 @@ fn write_bundle(
         return Ok(0);
     }
 
+    let key = crate::cache::persistent().then(|| {
+        let entries: Vec<_> = unit.entries.iter().map(|(crumbs, article)|
+            (crumbs, *article, &article.source_dir, crate::memo::key(&[article.body.as_bytes()]))).collect();
+        crate::cache::key_json(&(renderer.context_key(site), product, &unit.title,
+            unit.description, unit.path, entries, images.cache_key()))
+    });
+    if let Some(key) = &key
+        && let Some(cached) = crate::cache::get::<CachedBundle>("bundles", key)
+        && cached.links.valid(links)
+        && let Some(markdown) = crate::cache::read_bytes("bundles-md", key)
+        && let Some(html) = crate::cache::read_bytes("bundles-html", key) {
+        cached.links.replay(links);
+        images.replay_usage(&cached.images);
+        crate::cache::retain(&cached.entries);
+        publish_bundle(out, unit.path, &markdown, &html, options.render_llms_full)?;
+        return Ok(1);
+    }
+    let entries = crate::cache::capture();
+    let dependencies = links.capture();
+    let usage = images.usage_start();
+    let result = render_bundle(site, links, images, renderer, product, unit, options);
+    let used = images.usage_since(usage);
+    let dependencies = dependencies.finish();
+    let entries = entries.finish();
+    let (markdown, html) = result?;
+    if let Some(key) = key {
+        crate::cache::write_bytes("bundles-md", &key, markdown.as_bytes());
+        crate::cache::write_bytes("bundles-html", &key, html.as_bytes());
+        crate::cache::put("bundles", &key, &CachedBundle { links: dependencies, images: used, entries });
+    }
+    publish_bundle(out, unit.path, markdown.as_bytes(), html.as_bytes(), options.render_llms_full)?;
+    Ok(1)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedBundle {
+    links: crate::links::Dependencies,
+    images: Vec<std::path::PathBuf>,
+    entries: Vec<crate::cache::Entry>,
+}
+
+fn publish_bundle(out: &Output, path: &str, markdown: &[u8], html: &[u8], full: bool) -> Result<()> {
+    out.write(&mirror_path(out.dir(), &format!("{path}/print")), markdown)?;
+    let path = path.trim_start_matches('/');
+    out.write(&out.dir().join(format!("{path}/print/index.html")), html)?;
+    if full { out.write(&out.dir().join(format!("{path}/llms-full.txt")), markdown)?; }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_bundle(site: &Site, links: &LinkIndex, images: &ImageIndex, renderer: &Renderer,
+    product: &Product, unit: &Unit, options: &BuildOptions) -> Result<(String, String)> {
+
     validate_print_anchors(unit)?;
 
     let url_base = options.base.as_str();
@@ -357,20 +410,6 @@ fn write_bundle(
             )
         })
         .collect();
-    out.write(
-        &mirror_path(out.dir(), &format!("{}/print", unit.path)),
-        markdown.as_bytes(),
-    )?;
-    if options.render_llms_full {
-        out.write(
-            &out.dir().join(format!(
-                "{}/llms-full.txt",
-                unit.path.trim_start_matches('/')
-            )),
-            markdown.as_bytes(),
-        )?;
-    }
-
     let anchor_key = crate::cache::key_json(&anchors);
     let mut sections = Vec::new();
     let mut has_mermaid = false;
@@ -419,14 +458,7 @@ fn write_bundle(
         &sections,
         has_mermaid,
     )?;
-    out.write(
-        &out.dir().join(format!(
-            "{}/print/index.html",
-            unit.path.trim_start_matches('/')
-        )),
-        html.as_bytes(),
-    )?;
-    Ok(1)
+    Ok((markdown, html))
 }
 
 /// The whole unit as one markdown document, in reading order.
