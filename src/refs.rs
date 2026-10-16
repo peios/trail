@@ -36,7 +36,7 @@ pub struct Phrase {
 }
 
 /// A `§` target inside a book: an article page, optionally one heading.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SectionTarget {
     pub path: String,
     pub fragment: Option<String>,
@@ -67,6 +67,7 @@ pub struct Citation {
 
 #[derive(Debug, Default)]
 pub struct InlineRefIndex {
+    reads: std::cell::RefCell<Vec<std::collections::BTreeSet<(String, String)>>>,
     /// Leftmost-longest matcher over every phrase; None when no phrase
     /// is declared anywhere.
     matcher: Option<AhoCorasick>,
@@ -83,7 +84,7 @@ pub struct InlineRefIndex {
 
 impl InlineRefIndex {
     pub fn cache_key(&self) -> &str {
-        self.cache_key.get_or_init(|| crate::cache::key_json(&(&self.phrases, &self.sections)))
+        self.cache_key.get_or_init(|| crate::cache::key_json(&self.phrases))
     }
 
     pub fn new(site: &Site) -> Result<InlineRefIndex> {
@@ -116,13 +117,48 @@ impl InlineRefIndex {
 
     /// Look up a section number ("2.1", "A.3") within a book.
     pub fn section(&self, book: &str, number: &str) -> Option<&SectionTarget> {
+        for reads in self.reads.borrow_mut().iter_mut() { reads.insert((book.into(), number.into())); }
         self.sections.get(book)?.get(number)
+    }
+
+    pub fn capture(&self) -> SectionCapture<'_> {
+        self.reads.borrow_mut().push(Default::default());
+        SectionCapture { index: self, finished: false }
     }
 
     /// Every citation anchor in the site, in tree order.
     pub fn citations(&self) -> &[Citation] {
         &self.citations
     }
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct SectionDependencies(Vec<(String, String, Option<SectionTarget>)>);
+
+impl SectionDependencies {
+    pub fn valid(&self, index: &InlineRefIndex) -> bool {
+        self.0.iter().all(|(book, number, target)| index.sections.get(book).and_then(|s| s.get(number)) == target.as_ref())
+    }
+    pub fn replay(&self, index: &InlineRefIndex) {
+        for (book, number, _) in &self.0 { index.section(book, number); }
+    }
+}
+
+pub struct SectionCapture<'a> { index: &'a InlineRefIndex, finished: bool }
+
+impl SectionCapture<'_> {
+    pub fn finish(mut self) -> SectionDependencies {
+        self.finished = true;
+        let reads = self.index.reads.borrow_mut().pop().expect("active section capture");
+        SectionDependencies(reads.into_iter().map(|(book, number)| {
+            let target = self.index.sections.get(&book).and_then(|s| s.get(&number)).cloned();
+            (book, number, target)
+        }).collect())
+    }
+}
+
+impl Drop for SectionCapture<'_> {
+    fn drop(&mut self) { if !self.finished { self.index.reads.borrow_mut().pop(); } }
 }
 
 #[derive(Default)]
@@ -379,6 +415,7 @@ impl Builder {
             )
         };
         Ok(InlineRefIndex {
+            reads: Default::default(),
             cache_key: Default::default(),
             matcher,
             phrases: self.phrases,
@@ -390,6 +427,19 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn section_dependencies_ignore_unread_books_and_detect_missing_sections() {
+        let (_dir, mut index) = fixture_index();
+        let capture = index.capture();
+        index.section("/alpha/manual", "1");
+        index.section("/alpha/manual", "missing");
+        let dependencies = capture.finish();
+        index.sections.remove("/alpha/field-guide");
+        assert!(dependencies.valid(&index));
+        let target = index.sections["/alpha/manual"]["1"].clone();
+        index.sections.get_mut("/alpha/manual").unwrap().insert("missing".into(), target);
+        assert!(!dependencies.valid(&index));
+    }
     use super::*;
 
     fn fixture_index() -> (tempfile::TempDir, InlineRefIndex) {

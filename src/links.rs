@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+use serde::{Serialize, Deserialize};
 
 use crate::site::{Anthology, AnthologyItem, Book, ProductItem, Site, Topic, TopicChild};
 
@@ -33,12 +36,62 @@ impl std::error::Error for ResolveError {}
 #[derive(Debug, Default)]
 pub struct LinkIndex {
     products: HashMap<String, ProductIndex>,
-    cache_key: std::sync::OnceLock<String>,
+    reads: RefCell<Vec<BTreeSet<Read>>>,
     /// Page path → the anchor ids its body defines (heading ids, `[*name]`
     /// citation anchors, raw HTML ids), so a `#fragment` on a reference
     /// can be checked. Only articles have bodies; product and anthology
     /// pages are absent and their fragments go unchecked.
     anchors: HashMap<String, HashSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Read { Page(String), Anchor(String, String) }
+
+/// Actual resolution results, including missing and ambiguous references.
+/// Rechecking the query detects newly introduced candidates as well as removals.
+#[derive(Default, Serialize, Deserialize)]
+pub struct Dependencies {
+    pages: Vec<(String, Result<(String, String), String>)>,
+    anchors: Vec<(String, String, Option<bool>)>,
+}
+
+impl Dependencies {
+    pub fn valid(&self, index: &LinkIndex) -> bool {
+        self.pages.iter().all(|(query, answer)| index.resolve_page_untracked(query).map_err(|e| e.to_string()) == *answer)
+            && self.anchors.iter().all(|(page, fragment, answer)| index.anchors.get(page).map(|ids| ids.contains(fragment)) == *answer)
+    }
+
+    pub fn replay(&self, index: &LinkIndex) {
+        for (query, _) in &self.pages { index.record(Read::Page(query.clone())); }
+        for (page, fragment, _) in &self.anchors { index.record(Read::Anchor(page.clone(), fragment.clone())); }
+    }
+}
+
+pub struct Capture<'a> { index: &'a LinkIndex, finished: bool }
+
+impl Capture<'_> {
+    pub fn finish(mut self) -> Dependencies {
+        self.finished = true;
+        let reads = self.index.reads.borrow_mut().pop().expect("active link capture");
+        let mut dependencies = Dependencies::default();
+        for read in reads {
+            match read {
+                Read::Page(query) => {
+                    let answer = self.index.resolve_page_untracked(&query).map_err(|e| e.to_string());
+                    dependencies.pages.push((query, answer));
+                }
+                Read::Anchor(page, fragment) => {
+                    let answer = self.index.anchors.get(&page).map(|ids| ids.contains(&fragment));
+                    dependencies.anchors.push((page, fragment, answer));
+                }
+            }
+        }
+        dependencies
+    }
+}
+
+impl Drop for Capture<'_> {
+    fn drop(&mut self) { if !self.finished { self.index.reads.borrow_mut().pop(); } }
 }
 
 #[derive(Debug)]
@@ -158,16 +211,14 @@ fn push_anthology_candidates(
 }
 
 impl LinkIndex {
-    pub fn cache_key(&self) -> &str {
-        self.cache_key.get_or_init(|| {
-            let products: std::collections::BTreeMap<_, _> = self.products.iter()
-                .map(|(name, p)| (name, (&p.path, &p.title, &p.candidates))).collect();
-            let anchors: std::collections::BTreeMap<_, _> = self.anchors.iter()
-                .map(|(path, ids)| (path, ids.iter().collect::<std::collections::BTreeSet<_>>())).collect();
-            crate::cache::key_json(&(products, anchors))
-        })
+    pub fn capture(&self) -> Capture<'_> {
+        self.reads.borrow_mut().push(BTreeSet::new());
+        Capture { index: self, finished: false }
     }
 
+    fn record(&self, read: Read) {
+        for capture in self.reads.borrow_mut().iter_mut() { capture.insert(read.clone()); }
+    }
     pub fn new(site: &Site) -> LinkIndex {
         Self::build(site, false)
     }
@@ -221,13 +272,14 @@ impl LinkIndex {
                 )
             })
             .collect();
-        LinkIndex { products, anchors, cache_key: Default::default() }
+        LinkIndex { products, anchors, reads: Default::default() }
     }
 
     /// Whether the page at `path` defines the anchor `fragment`. None when
     /// the page's anchors are unknown — a product or anthology page, or an
     /// index built without a site — and the caller should not judge.
     pub fn has_anchor(&self, path: &str, fragment: &str) -> Option<bool> {
+        self.record(Read::Anchor(path.to_owned(), fragment.to_owned()));
         self.anchors.get(path).map(|ids| ids.contains(fragment))
     }
 
@@ -239,6 +291,11 @@ impl LinkIndex {
     /// Resolve like `resolve`, also returning the target page's title —
     /// for surfaces that display the link rather than embed it.
     pub fn resolve_page(&self, reference: &str) -> Result<(String, String), ResolveError> {
+        self.record(Read::Page(reference.to_owned()));
+        self.resolve_page_untracked(reference)
+    }
+
+    fn resolve_page_untracked(&self, reference: &str) -> Result<(String, String), ResolveError> {
         let mut segments = reference.split('/');
         let product_slug = segments.next().unwrap_or("");
         let suffix: Vec<&str> = segments.collect();
@@ -277,6 +334,29 @@ impl LinkIndex {
 mod tests {
     use super::*;
     use crate::site;
+
+    #[test]
+    fn dependencies_track_queries_and_replay_nested_hits() {
+        let (_dir, mut index) = index();
+        let outer = index.capture();
+        let inner = index.capture();
+        index.resolve("alpha/a2").unwrap();
+        assert!(index.resolve("alpha/missing").is_err());
+        index.has_anchor("/alpha/acorn/wide/a2", "future");
+        let dependencies = inner.finish();
+        let parent = outer.finish();
+        assert!(dependencies.valid(&index) && parent.valid(&index));
+        index.anchors.insert("/unrelated".into(), HashSet::from(["new".into()]));
+        assert!(dependencies.valid(&index));
+        let replay = index.capture();
+        dependencies.replay(&index);
+        let replayed = replay.finish();
+        index.anchors.get_mut("/alpha/acorn/wide/a2").unwrap().insert("future".into());
+        assert!(!dependencies.valid(&index) && !replayed.valid(&index));
+        index.anchors.get_mut("/alpha/acorn/wide/a2").unwrap().remove("future");
+        index.products.get_mut("alpha").unwrap().suffixes.insert("missing".into(), vec![0]);
+        assert!(!dependencies.valid(&index));
+    }
 
     #[test]
     fn indexed_suffixes_match_the_scan_including_ambiguity_order() {

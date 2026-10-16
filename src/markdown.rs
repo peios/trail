@@ -114,25 +114,33 @@ pub struct RefScope<'a> {
 struct CachedRender {
     rendered: Rendered,
     images: Vec<std::path::PathBuf>,
+    links: crate::links::Dependencies,
+    refs: Option<crate::refs::SectionDependencies>,
 }
 
 pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
     if !crate::cache::persistent() { return render_uncached(markdown, links, options); }
     let key = crate::cache::key_json(&(
-        markdown, links.cache_key(), options.allow_dangling, options.strict,
+        crate::memo::key(&[markdown.as_bytes()]), options.allow_dangling, options.strict,
         options.numbering, options.id_prefix, options.base,
         options.images.map(|s| (s.dir, s.index.cache_key())),
         options.refs.map(|s| (s.index.cache_key(), s.page, s.book, s.book_short)),
         options.print.map(|s| (s.cache_key, s.base)),
     ));
-    if let Some(cached) = crate::cache::get::<CachedRender>("render", &key) {
+    if let Some(cached) = crate::cache::get::<CachedRender>("render", &key)
+        && cached.links.valid(links)
+        && cached.refs.as_ref().zip(options.refs).is_none_or(|(deps, scope)| deps.valid(scope.index)) {
+        cached.links.replay(links);
+        if let Some((deps, scope)) = cached.refs.as_ref().zip(options.refs) { deps.replay(scope.index); }
         if let Some(scope) = options.images { scope.index.replay_usage(&cached.images); }
         return Ok(cached.rendered);
     }
     let start = options.images.map(|s| s.index.usage_start());
+    let capture = links.capture();
+    let ref_capture = options.refs.map(|scope| scope.index.capture());
     let result = render_uncached(markdown, links, options);
     let images = options.images.zip(start).map(|(s, start)| s.index.usage_since(start)).unwrap_or_default();
-    let cached = CachedRender { rendered: result?, images };
+    let cached = CachedRender { rendered: result?, images, links: capture.finish(), refs: ref_capture.map(|c| c.finish()) };
     crate::cache::put("render", &key, &cached);
     Ok(cached.rendered)
 }
@@ -1166,16 +1174,19 @@ pub fn rewrite_source(
     base: &str,
 ) -> String {
     if !crate::cache::persistent() { return rewrite_source_uncached(markdown, links, numbering, images, base); }
-    let key = crate::cache::key_json(&(markdown, links.cache_key(), numbering, base,
+    let key = crate::cache::key_json(&(crate::memo::key(&[markdown.as_bytes()]), numbering, base,
         images.map(|s| (s.dir, s.index.cache_key()))));
-    if let Some((text, used)) = crate::cache::get::<(String, Vec<std::path::PathBuf>)>("source", &key) {
+    if let Some((text, used, dependencies)) = crate::cache::get::<(String, Vec<std::path::PathBuf>, crate::links::Dependencies)>("source", &key)
+        && dependencies.valid(links) {
+        dependencies.replay(links);
         if let Some(scope) = images { scope.index.replay_usage(&used); }
         return text;
     }
     let start = images.map(|s| s.index.usage_start());
+    let capture = links.capture();
     let text = rewrite_source_uncached(markdown, links, numbering, images, base);
     let used = images.zip(start).map(|(s, start)| s.index.usage_since(start)).unwrap_or_default();
-    crate::cache::put("source", &key, &(&text, used));
+    crate::cache::put("source", &key, &(&text, used, capture.finish()));
     text
 }
 
