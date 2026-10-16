@@ -357,7 +357,7 @@ impl<'a> Renderer<'a> {
     ) -> Result<String> {
         let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.render_cached("print.html", || String::new(), || context! {
+        self.render_cached("print.html", String::new, || context! {
                 site => site.config,
                 products => product_views(site),
                 product => ProductView::from(product),
@@ -443,7 +443,7 @@ impl<'a> Renderer<'a> {
     pub fn not_found(&self, site: &Site) -> Result<String> {
         let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.render_cached("404.html", || String::new(), || context! {
+        self.render_cached("404.html", String::new, || context! {
                 site => site.config,
                 products => product_views(site),
                 favicon => site.favicon_href(),
