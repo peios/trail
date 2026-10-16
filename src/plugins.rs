@@ -15,7 +15,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -137,9 +136,12 @@ struct ResponseBlock {
 /// A plugin's last successful output, reused while its request and every
 /// file it depends on are unchanged. `trail serve` rebuilds on every
 /// keystroke's save; without this, each one would rerun every plugin.
+#[derive(Clone, Serialize, Deserialize)]
 struct Cached {
-    key: u64,
-    dependencies: Vec<(PathBuf, Option<u64>)>,
+    key: String,
+    dependencies: Vec<(PathBuf, Option<String>)>,
+    stderr: Vec<u8>,
+    diagnostics_key: String,
     outputs: Vec<String>,
 }
 
@@ -558,6 +560,8 @@ struct Outcome {
 /// Run a plugin over its blocks, or reuse its last output when nothing it
 /// read has changed. Line numbers are not part of the cache key: editing
 /// prose above a block moves it without changing what it expands to.
+/// When a plugin emitted diagnostics, changed line numbers rerun it so
+/// replayed stderr always describes the current source locations.
 fn run_cached(
     root: &Path,
     name: &str,
@@ -566,78 +570,60 @@ fn run_cached(
     blocks: Vec<RequestBlock>,
     anchors: Option<&AnchorIndex>,
 ) -> Result<Outcome> {
-    let key = {
-        let mut hasher = DefaultHasher::new();
-        config.command.hash(&mut hasher);
-        anchors.hash(&mut hasher);
-        for block in &blocks {
-            (
-                block.page,
-                &block.file,
-                block.argument,
-                block.options,
-                block.body,
-            )
-                .hash(&mut hasher);
-        }
-        hasher.finish()
-    };
-    let slot = (root.to_path_buf(), name.to_string());
-    if let Some(cached) = cache().lock().unwrap().get(&slot)
-        && cached.key == key
-        && cached
-            .dependencies
-            .iter()
-            .all(|(path, print)| fingerprint(path) == *print)
-    {
-        return Ok(Outcome {
-            outputs: cached.outputs.iter().cloned().map(Ok).collect(),
-            dependencies: cached
-                .dependencies
-                .iter()
-                .map(|(path, _)| path.clone())
-                .collect(),
-        });
-    }
-
     let count = blocks.len();
     let request = Request {
-        protocol: PROTOCOL,
-        plugin: name,
-        root: root.display().to_string(),
-        blocks,
-        anchors,
+        protocol: PROTOCOL, plugin: name, root: root.display().to_string(), blocks, anchors,
     };
-    let response = run(root, config, program, &request)?;
+    let environment: BTreeMap<Vec<u8>, Vec<u8>> = std::env::vars_os()
+        .map(|(k, v)| (k.as_encoded_bytes().to_vec(), v.as_encoded_bytes().to_vec())).collect();
+    let environment: Vec<_> = environment.into_iter().collect();
+    let executable = resolve_program(root, program);
+    let diagnostics_key = crate::cache::key_json(&request);
+    let mut inputs = serde_json::to_value(&request)?;
+    for block in inputs["blocks"].as_array_mut().unwrap() { block["line"] = 0.into(); }
+    let key = crate::cache::key_json(&(config, inputs, environment, &executable,
+        executable.as_deref().and_then(fingerprint)));
+    let slot = (root.to_path_buf(), name.to_string());
+    if crate::cache::enabled() {
+        let cached = if crate::cache::persistent() {
+            crate::cache::get::<Cached>("plugins", &key)
+        } else {
+            cache().lock().unwrap().get(&slot).cloned()
+        };
+        if let Some(cached) = cached
+            && cached.key == key
+            && (cached.stderr.is_empty() || cached.diagnostics_key == diagnostics_key)
+            && cached.dependencies.iter().all(|(path, print)| fingerprint(path) == *print)
+        {
+            let _ = std::io::stderr().write_all(&cached.stderr);
+            return Ok(Outcome {
+                outputs: cached.outputs.into_iter().map(Ok).collect(),
+                dependencies: cached.dependencies.into_iter().map(|(path, _)| path).collect(),
+            });
+        }
+    }
+
+    let (response, stderr) = run(root, config, program, &request)?;
     let outputs = check_response(response.blocks, count)?;
 
     let mut dependencies: Vec<PathBuf> = response
         .depends_on
         .iter()
-        .map(|path| canonical(&root.join(path)))
+        .flat_map(|path| { let path = root.join(path); [canonical(&path), path] })
         .collect();
-    if config.command[0].contains('/') {
-        dependencies.push(program.to_path_buf());
-    }
+    if let Some(executable) = executable { dependencies.push(executable); }
     dependencies.sort();
     dependencies.dedup();
 
-    let mut slots = cache().lock().unwrap();
-    if outputs.iter().all(Result::is_ok) {
-        slots.insert(
-            slot,
-            Cached {
-                key,
-                dependencies: dependencies
-                    .iter()
-                    .map(|path| (path.clone(), fingerprint(path)))
-                    .collect(),
-                outputs: outputs.iter().map(|o| o.clone().unwrap()).collect(),
-            },
-        );
-    } else {
-        slots.remove(&slot);
-    }
+    if crate::cache::enabled() && outputs.iter().all(Result::is_ok) {
+        let cached = Cached {
+            key: key.clone(), stderr, diagnostics_key,
+            dependencies: dependencies.iter().map(|path| (path.clone(), fingerprint(path))).collect(),
+            outputs: outputs.iter().map(|o| o.clone().unwrap()).collect(),
+        };
+        if crate::cache::persistent() { crate::cache::put("plugins", &key, &cached); }
+        else { cache().lock().unwrap().insert(slot, cached); }
+    } else { cache().lock().unwrap().remove(&slot); }
     Ok(Outcome {
         outputs,
         dependencies,
@@ -645,16 +631,16 @@ fn run_cached(
 }
 
 /// Spawn the plugin, feed it the request, and parse what it prints. The
-/// plugin's stderr is passed straight through, so its warnings reach the
-/// terminal.
-fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request) -> Result<Response> {
+/// plugin's stderr is captured and replayed after it exits, so warnings
+/// reach the terminal on both cache misses and later hits.
+fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request) -> Result<(Response, Vec<u8>)> {
     let payload = serde_json::to_vec(request)?;
     let mut child = Command::new(program)
         .args(&config.command[1..])
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("starting '{}'", config.command[0]))?;
     // Write from a thread: a plugin that streams output while still
@@ -662,6 +648,7 @@ fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request) ->
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let writer = std::thread::spawn(move || stdin.write_all(&payload));
     let output = child.wait_with_output().context("waiting for the plugin")?;
+    let _ = std::io::stderr().write_all(&output.stderr);
     let written = writer.join().expect("the stdin writer does not panic");
     ensure!(
         output.status.success(),
@@ -670,7 +657,8 @@ fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request) ->
         output.status
     );
     written.context("writing the request to the plugin")?;
-    serde_json::from_slice(&output.stdout).context("the plugin's response is not valid")
+    let response = serde_json::from_slice(&output.stdout).context("the plugin's response is not valid")?;
+    Ok((response, output.stderr))
 }
 
 /// Every request id must be answered exactly once, with exactly one of
@@ -795,20 +783,38 @@ fn report(errors: &[String]) -> String {
     out
 }
 
+/// Resolve PATH programs as well as explicit paths so a changed executable
+/// cannot leave a persistent plugin hit behind.
+fn resolve_program(root: &Path, program: &Path) -> Option<PathBuf> {
+    let candidates = if program.components().count() > 1 || program.is_absolute() {
+        vec![root.join(program)]
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| root.join(dir).join(program)).collect()
+    };
+    candidates.into_iter().find_map(|path| {
+        let metadata = std::fs::metadata(&path).ok()?;
+        if !metadata.is_file() { return None; }
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 { return None; }
+        }
+        std::fs::canonicalize(path).ok()
+    })
+}
+
 /// A file's content, or for a directory the names of everything beneath
 /// it. A plugin that scans a directory lists the directory, so that a new
 /// file there reruns it, and each file it read, so that edits do.
-fn fingerprint(path: &Path) -> Option<u64> {
-    let mut hasher = DefaultHasher::new();
+fn fingerprint(path: &Path) -> Option<String> {
     if path.is_dir() {
         let mut names = Vec::new();
         list_tree(path, Path::new(""), &mut names);
         names.sort();
-        ("directory", names).hash(&mut hasher);
+        Some(crate::cache::key_json(&("directory", names)))
     } else {
-        std::fs::read(path).ok()?.hash(&mut hasher);
+        Some(crate::memo::key(&[&std::fs::read(path).ok()?]))
     }
-    Some(hasher.finish())
 }
 
 /// The paths beneath `dir`, relative to the directory first given. Dot

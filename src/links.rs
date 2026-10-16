@@ -33,6 +33,7 @@ impl std::error::Error for ResolveError {}
 #[derive(Debug, Default)]
 pub struct LinkIndex {
     products: HashMap<String, ProductIndex>,
+    cache_key: std::sync::OnceLock<String>,
     /// Page path → the anchor ids its body defines (heading ids, `[*name]`
     /// citation anchors, raw HTML ids), so a `#fragment` on a reference
     /// can be checked. Only articles have bodies; product and anthology
@@ -49,7 +50,7 @@ struct ProductIndex {
     suffixes: HashMap<String, Vec<usize>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 struct Candidate {
     /// URL-path segments below the product, e.g. ["acorn", "wide", "a1"].
     segments: Vec<String>,
@@ -157,6 +158,16 @@ fn push_anthology_candidates(
 }
 
 impl LinkIndex {
+    pub fn cache_key(&self) -> &str {
+        self.cache_key.get_or_init(|| {
+            let products: std::collections::BTreeMap<_, _> = self.products.iter()
+                .map(|(name, p)| (name, (&p.path, &p.title, &p.candidates))).collect();
+            let anchors: std::collections::BTreeMap<_, _> = self.anchors.iter()
+                .map(|(path, ids)| (path, ids.iter().collect::<std::collections::BTreeSet<_>>())).collect();
+            crate::cache::key_json(&(products, anchors))
+        })
+    }
+
     pub fn new(site: &Site) -> LinkIndex {
         Self::build(site, false)
     }
@@ -210,7 +221,7 @@ impl LinkIndex {
                 )
             })
             .collect();
-        LinkIndex { products, anchors }
+        LinkIndex { products, anchors, cache_key: Default::default() }
     }
 
     /// Whether the page at `path` defines the anchor `fragment`. None when

@@ -20,7 +20,7 @@ use crate::site::{
 };
 
 /// Where a phrase points.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub enum PhraseTarget {
     /// A page path: the declaring article, or a directory's landing.
     Page(String),
@@ -29,14 +29,14 @@ pub enum PhraseTarget {
 }
 
 /// One declared phrase and its target.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Phrase {
     pub text: String,
     pub target: PhraseTarget,
 }
 
 /// A `§` target inside a book: an article page, optionally one heading.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct SectionTarget {
     pub path: String,
     pub fragment: Option<String>,
@@ -70,6 +70,7 @@ pub struct InlineRefIndex {
     /// Leftmost-longest matcher over every phrase; None when no phrase
     /// is declared anywhere.
     matcher: Option<AhoCorasick>,
+    cache_key: std::sync::OnceLock<String>,
     /// Phrase details, indexed by the matcher's pattern ids.
     phrases: Vec<Phrase>,
     /// Per-book section index: book path → section number → target.
@@ -81,6 +82,10 @@ pub struct InlineRefIndex {
 }
 
 impl InlineRefIndex {
+    pub fn cache_key(&self) -> &str {
+        self.cache_key.get_or_init(|| crate::cache::key_json(&(&self.phrases, &self.sections)))
+    }
+
     pub fn new(site: &Site) -> Result<InlineRefIndex> {
         let mut builder = Builder::default();
         for product in &site.products {
@@ -374,6 +379,7 @@ impl Builder {
             )
         };
         Ok(InlineRefIndex {
+            cache_key: Default::default(),
             matcher,
             phrases: self.phrases,
             sections: self.sections,

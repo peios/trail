@@ -23,6 +23,25 @@ pub struct SearchPage {
 /// `build_site` is never called from inside a tokio runtime (the dev
 /// server enters async only after building), so blocking here is safe.
 pub fn write_search_bundle(pages: Vec<SearchPage>, out: &Output) -> Result<()> {
+    let mut input = blake3::Hasher::new();
+    for page in &pages {
+        for field in [page.url.as_bytes(), page.html.as_bytes()] {
+            input.update(&(field.len() as u64).to_le_bytes());
+            input.update(field);
+        }
+    }
+    let key = input.finalize().to_hex().to_string();
+    let cached = crate::cache::get::<Vec<(std::path::PathBuf, String)>>("search", &key)
+        .and_then(|manifest| manifest.into_iter().map(|(path, hash)| {
+            if path.is_absolute() || path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                return None;
+            }
+            Some((path, crate::cache::read_bytes("search-files", &hash)?))
+        }).collect::<Option<Vec<_>>>());
+    if let Some(files) = cached {
+        for (path, bytes) in files { out.write(&out.dir().join("pagefind").join(path), &bytes)?; }
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -38,9 +57,14 @@ pub fn write_search_bundle(pages: Vec<SearchPage>, out: &Output) -> Result<()> {
             .context("building the search bundle")
     })?;
     let bundle_dir = out.dir().join("pagefind");
+    let mut manifest = Vec::new();
     for file in files {
+        let hash = crate::memo::key(&[&file.contents]);
+        crate::cache::write_bytes("search-files", &hash, &file.contents);
+        manifest.push((file.filename.clone(), hash));
         out.write(&bundle_dir.join(&file.filename), &file.contents)?;
     }
+    crate::cache::put("search", &key, &manifest);
     Ok(())
 }
 

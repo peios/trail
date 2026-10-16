@@ -1,4 +1,5 @@
 mod build;
+mod cache;
 mod cli;
 mod export;
 mod highlight;

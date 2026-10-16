@@ -11,13 +11,17 @@ pub fn parse(source: &str, options: Options) -> Events {
         static CACHE: RefCell<Memo<Events>> = RefCell::new(Memo::new(256 * 1024 * 1024));
     }
     let key = key(&[source.as_bytes(), &options.bits().to_le_bytes()]);
-    if let Some(events) = CACHE.with(|cache| cache.borrow().get(&key)) { return events; }
+    if crate::cache::enabled() {
+        if let Some(events) = CACHE.with(|cache| cache.borrow().get(&key)) { return events; }
+    }
     let events: Vec<_> = Parser::new_ext(source, options).into_offset_iter()
         .map(|(event, range)| (event.into_static(), range)).collect();
     let bytes = events.capacity() * std::mem::size_of::<(Event, Range<usize>)>()
         + events.iter().map(|(event, _)| heap_bytes(event)).sum::<usize>();
     let events = Arc::new(events);
-    CACHE.with(|cache| cache.borrow_mut().insert(key, events.clone(), bytes));
+    if crate::cache::enabled() {
+        CACHE.with(|cache| cache.borrow_mut().insert(key, events.clone(), bytes));
+    }
     events
 }
 

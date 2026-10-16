@@ -6,7 +6,7 @@ use lol_html::{HtmlRewriter, RewriteStrSettings, Settings, element, rewrite_str}
 use pulldown_cmark::{
     BlockQuoteKind, CodeBlockKind, Event, LinkType, Options, Tag, TagEnd, html,
 };
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 use crate::highlight;
 use crate::images::{ImageInfo, ImageScope};
@@ -14,7 +14,7 @@ use crate::links::{LinkIndex, ResolveError};
 use crate::refs::{InlineRefIndex, PhraseTarget, SectionTarget};
 
 /// One "On this page" entry: an h2 or h3 with its generated anchor id.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct TocEntry {
     pub level: u8,
     pub id: String,
@@ -23,7 +23,7 @@ pub struct TocEntry {
     pub number: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Rendered {
     pub html: String,
     pub toc: Vec<TocEntry>,
@@ -84,6 +84,8 @@ pub struct RenderOptions<'a> {
 pub struct PrintScope<'a> {
     /// Page path → the bundle's anchor id for that page.
     pub anchors: &'a HashMap<String, String>,
+    /// Precomputed once per bundle, not once for each article.
+    pub cache_key: &'a str,
     /// The site's base URL, for pages outside the bundle. Without one
     /// they stay root-relative — still correct on the site itself.
     pub base: Option<&'a str>,
@@ -108,7 +110,34 @@ pub struct RefScope<'a> {
 /// ```` ```mermaid ```` fences become `<pre class="mermaid">` blocks for
 /// client-side mermaid to render. `~` link destinations are resolved
 /// through the link index.
+#[derive(Serialize, Deserialize)]
+struct CachedRender {
+    rendered: Rendered,
+    images: Vec<std::path::PathBuf>,
+}
+
 pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
+    if !crate::cache::persistent() { return render_uncached(markdown, links, options); }
+    let key = crate::cache::key_json(&(
+        markdown, links.cache_key(), options.allow_dangling, options.strict,
+        options.numbering, options.id_prefix, options.base,
+        options.images.map(|s| (s.dir, s.index.cache_key())),
+        options.refs.map(|s| (s.index.cache_key(), s.page, s.book, s.book_short)),
+        options.print.map(|s| (s.cache_key, s.base)),
+    ));
+    if let Some(cached) = crate::cache::get::<CachedRender>("render", &key) {
+        if let Some(scope) = options.images { scope.index.replay_usage(&cached.images); }
+        return Ok(cached.rendered);
+    }
+    let start = options.images.map(|s| s.index.usage_start());
+    let result = render_uncached(markdown, links, options);
+    let images = options.images.zip(start).map(|(s, start)| s.index.usage_since(start)).unwrap_or_default();
+    let cached = CachedRender { rendered: result?, images };
+    crate::cache::put("render", &key, &cached);
+    Ok(cached.rendered)
+}
+
+fn render_uncached(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
     let markdown = expand_tab_groups(markdown)?;
     // Before parsing: `[*name]` anchors become inline HTML, so the `*`
     // can never pair with an emphasis marker elsewhere in the block.
@@ -1129,6 +1158,21 @@ pub fn rewrite_source(
     images: Option<ImageScope>,
     base: &str,
 ) -> String {
+    if !crate::cache::persistent() { return rewrite_source_uncached(markdown, links, numbering, images, base); }
+    let key = crate::cache::key_json(&(markdown, links.cache_key(), numbering, base,
+        images.map(|s| (s.dir, s.index.cache_key()))));
+    if let Some((text, used)) = crate::cache::get::<(String, Vec<std::path::PathBuf>)>("source", &key) {
+        if let Some(scope) = images { scope.index.replay_usage(&used); }
+        return text;
+    }
+    let start = images.map(|s| s.index.usage_start());
+    let text = rewrite_source_uncached(markdown, links, numbering, images, base);
+    let used = images.zip(start).map(|(s, start)| s.index.usage_since(start)).unwrap_or_default();
+    crate::cache::put("source", &key, &(&text, used));
+    text
+}
+
+fn rewrite_source_uncached(markdown: &str, links: &LinkIndex, numbering: Option<&str>, images: Option<ImageScope>, base: &str) -> String {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut counter = SectionCounter::default();
     for (event, range) in crate::parsed::parse(markdown, parser_options()).iter().cloned() {

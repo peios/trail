@@ -66,6 +66,7 @@ pub fn licenses() -> String {
 /// carries the copy button. An unknown or absent language renders as
 /// plain escaped text — no highlighting, same chrome.
 pub fn code_block(language: Option<&str>, source: &str) -> String {
+    if !crate::cache::enabled() { return uncached_code_block(language, source); }
     thread_local! {
         static CACHE: std::cell::RefCell<crate::memo::Memo<String>> =
             std::cell::RefCell::new(crate::memo::Memo::new(64 * 1024 * 1024));

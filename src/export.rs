@@ -371,6 +371,7 @@ fn write_bundle(
         )?;
     }
 
+    let anchor_key = crate::cache::key_json(&anchors);
     let mut sections = Vec::new();
     let mut has_mermaid = false;
     for (crumbs, article) in &unit.entries {
@@ -388,6 +389,7 @@ fn write_bundle(
                 refs: None,
                 print: Some(markdown::PrintScope {
                     anchors: &anchors,
+                    cache_key: &anchor_key,
                     base: site.config.url.as_deref(),
                 }),
                 images: Some(ImageScope {

@@ -51,6 +51,10 @@ pub struct BuildArgs {
     #[arg(long)]
     pub strict: bool,
 
+    /// Rebuild without reading or writing build caches.
+    #[arg(long)]
+    pub no_cache: bool,
+
     /// Also write each unit's print.md as llms-full.txt — a discovery
     /// fallback for agents that probe for that name instead of reading
     /// llms.txt (which always points at print.md).

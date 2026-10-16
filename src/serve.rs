@@ -30,7 +30,16 @@ struct ReloadState {
     announce: broadcast::Sender<u64>,
 }
 
+fn rebuild(root: &Path, out: &Path, options: &build::BuildOptions, no_cache: bool) -> Result<usize> {
+    let cache = crate::cache::Session::new(root, !no_cache);
+    let site = Site::load(root, out)?;
+    let pages = build::build_all(&site, out, options)?;
+    cache.finish();
+    Ok(pages)
+}
+
 pub fn run(args: &ServeArgs) -> Result<()> {
+    let no_cache = args.build.no_cache;
     let root = args.build.root.clone();
     let out = args.build.out_dir();
     let options = build::BuildOptions {
@@ -43,7 +52,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     };
     // A broken site shouldn't kill the dev server: report, serve whatever
     // output already exists, and let the watcher rebuild once it's fixed.
-    match Site::load(&root, &out).and_then(|site| build::build_all(&site, &out, &options)) {
+    match rebuild(&root, &out, &options, no_cache) {
         Ok(_) => {}
         Err(error) => eprintln!("initial build failed (serving previous output): {error:#}"),
     }
@@ -59,7 +68,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         let root = root.clone();
         let out = out.clone();
         let options = options.clone();
-        std::thread::spawn(move || watch_and_rebuild(&root, &out, &options, &state));
+        std::thread::spawn(move || watch_and_rebuild(&root, &out, &options, &state, no_cache));
     }
 
     let runtime = tokio::runtime::Runtime::new().context("starting async runtime")?;
@@ -126,6 +135,7 @@ fn watch_and_rebuild(
     out: &Path,
     options: &build::BuildOptions,
     state: &ReloadState,
+    no_cache: bool,
 ) {
     // Event paths arrive absolute; canonicalize for the ignore checks.
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
@@ -162,7 +172,7 @@ fn watch_and_rebuild(
         if !relevant {
             continue;
         }
-        match Site::load(root, out).and_then(|site| build::build_all(&site, out, options)) {
+        match rebuild(root, out, options, no_cache) {
             Ok(pages) => {
                 let version = state.version.fetch_add(1, Ordering::SeqCst) + 1;
                 let _ = state.announce.send(version);
@@ -298,5 +308,6 @@ mod tests {
         assert!(!change("/src/ABIX/file"));
         assert!(change("/site/page.md"));
         assert!(!change("/site/dist/page/index.html"));
+        assert!(!change("/site/.trail-cache/v1/cache-file"));
     }
 }

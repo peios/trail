@@ -23,9 +23,11 @@ pub struct ImageAsset {
 pub struct ImageIndex {
     by_source: HashMap<PathBuf, ImageInfo>,
     used: RefCell<HashSet<PathBuf>>,
+    recorded: RefCell<Vec<PathBuf>>,
+    cache_key: std::sync::OnceLock<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ImageInfo {
     /// Site-absolute URL of the published image.
     pub url: String,
@@ -62,6 +64,8 @@ impl ImageIndex {
         ImageIndex {
             by_source,
             used: RefCell::new(HashSet::new()),
+            recorded: RefCell::new(Vec::new()),
+            cache_key: Default::default(),
         }
     }
 
@@ -71,8 +75,25 @@ impl ImageIndex {
     pub fn resolve(&self, dir: &Path, reference: &str) -> Option<&ImageInfo> {
         let path = normalize(&dir.join(reference));
         let info = self.by_source.get(&path)?;
+        self.recorded.borrow_mut().push(path.clone());
         self.used.borrow_mut().insert(path);
         Some(info)
+    }
+
+    pub fn cache_key(&self) -> &str {
+        self.cache_key.get_or_init(|| crate::cache::key_json(&self.by_source))
+    }
+
+    pub fn usage_start(&self) -> usize { self.recorded.borrow().len() }
+
+    pub fn usage_since(&self, start: usize) -> Vec<PathBuf> {
+        let mut recorded = self.recorded.borrow_mut();
+        let mut paths: Vec<_> = recorded.drain(start..).collect();
+        paths.sort(); paths.dedup(); paths
+    }
+
+    pub fn replay_usage(&self, paths: &[PathBuf]) {
+        self.used.borrow_mut().extend(paths.iter().cloned());
     }
 
     pub fn is_used(&self, asset: &ImageAsset) -> bool {
