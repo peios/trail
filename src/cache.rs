@@ -175,6 +175,14 @@ pub fn put(kind: &'static str, key: &str, value: &impl Serialize) {
     }
 }
 
+/// Reuse small, context-independent metadata without retaining parsed events.
+pub fn compute<T: Serialize + DeserializeOwned>(kind: &'static str, key: &str, build: impl FnOnce() -> T) -> T {
+    if let Some(value) = get(kind, key) { return value; }
+    let value = build();
+    put(kind, key, &value);
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

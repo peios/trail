@@ -714,6 +714,11 @@ impl SectionCounter {
 /// ahead of the render pass. h2/h3 only — deeper headings consume ids
 /// but never numbers, exactly as in `render`.
 pub fn heading_outline(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
+    let key = crate::memo::key(&[markdown.as_bytes(), &[u8::from(numbering.is_some())], numbering.unwrap_or("").as_bytes()]);
+    crate::cache::compute("headings", &key, || heading_outline_uncached(markdown, numbering))
+}
+
+fn heading_outline_uncached(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
     let parsed = crate::parsed::parse(markdown, parser_options());
     let events: Vec<Event> = parsed.iter().map(|(event, _)| crate::parsed::borrow_event(event)).collect();
     let mut outline = Vec::new();
@@ -1396,6 +1401,11 @@ fn html_ids(html: &str) -> Result<HashSet<String>> {
 /// in raw HTML. The link index collects these so a `#fragment` on a
 /// reference can be checked against the page it names.
 pub fn anchor_ids(markdown: &str) -> HashSet<String> {
+    let key = crate::memo::key(&[markdown.as_bytes()]);
+    crate::cache::compute("anchors", &key, || anchor_ids_uncached(markdown))
+}
+
+fn anchor_ids_uncached(markdown: &str) -> HashSet<String> {
     let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
     let expanded = expand_citation_anchors(&expanded, None);
     let parsed = crate::parsed::parse(&expanded, parser_options());
@@ -1429,6 +1439,11 @@ pub fn anchor_ids(markdown: &str) -> HashSet<String> {
 /// text, which change whenever a heading is reworded, so these are the
 /// targets other content can rely on.
 pub fn explicit_anchor_ids(markdown: &str) -> HashSet<String> {
+    let key = crate::memo::key(&[markdown.as_bytes()]);
+    crate::cache::compute("explicit-anchors", &key, || explicit_anchor_ids_uncached(markdown))
+}
+
+fn explicit_anchor_ids_uncached(markdown: &str) -> HashSet<String> {
     let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
     let expanded = expand_citation_anchors(&expanded, None);
     let mut html = String::new();
@@ -1714,6 +1729,24 @@ fn escape_attr(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn persistent_metadata_matches_uncached_with_numbering_and_source_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let session = crate::cache::Session::new(root.path(), true);
+        for source in ["## First\n\n[*fixed]\n", "## Changed {#custom}\n\n<div id=\"raw\">X</div>"] {
+            assert_eq!(super::anchor_ids(source), super::anchor_ids_uncached(source));
+            assert_eq!(super::anchor_ids(source), super::anchor_ids_uncached(source));
+            assert_eq!(super::explicit_anchor_ids(source), super::explicit_anchor_ids_uncached(source));
+            assert_eq!(super::explicit_anchor_ids(source), super::explicit_anchor_ids_uncached(source));
+            for numbering in [None, Some(""), Some("2")] {
+                assert_eq!(super::heading_outline(source, numbering), super::heading_outline_uncached(source, numbering));
+                assert_eq!(super::heading_outline(source, numbering), super::heading_outline_uncached(source, numbering));
+            }
+        }
+        assert_eq!(session.hits("anchors"), 2);
+        assert_eq!(session.hits("explicit-anchors"), 2);
+        assert_eq!(session.hits("headings"), 6);
+    }
     use super::*;
 
     /// Render with an empty link index — for tests exercising plain markdown.

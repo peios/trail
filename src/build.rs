@@ -105,12 +105,14 @@ pub fn build_all(site: &Site, out: &Path, options: &BuildOptions) -> Result<usiz
     if let Some(cbpath) = &options.cachebust {
         validate_cbpath(cbpath, site)?;
     }
-    let pages = build_site(site, out, options)?;
+    let prepared = Prepared::new(site)?;
+    let pages = build_prepared(site, out, options, &prepared)?;
     if let Some(cbpath) = &options.cachebust {
-        build_site(
+        build_prepared(
             site,
             &out.join(cbpath),
             &options.cachebust_copy(cbpath),
+            &prepared,
         )?;
     }
     Ok(pages)
@@ -198,11 +200,25 @@ pub fn run(args: &BuildArgs) -> Result<()> {
 
 /// Build the whole site into `out`, returning the number of pages written.
 pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usize> {
+    build_prepared(site, out, options, &Prepared::new(site)?)
+}
+
+struct Prepared {
+    links: LinkIndex,
+    images: ImageIndex,
+    refs: InlineRefIndex,
+}
+
+impl Prepared {
+    fn new(site: &Site) -> Result<Self> {
+        Ok(Self { links: LinkIndex::new(site), images: ImageIndex::new(&site.images), refs: InlineRefIndex::new(site)? })
+    }
+}
+
+fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Prepared) -> Result<usize> {
     let out = &Output::new(out);
     let renderer = Renderer::new(options)?;
-    let links = LinkIndex::new(site);
-    let images = ImageIndex::new(&site.images);
-    let refs = InlineRefIndex::new(site)?;
+    let Prepared { links, images, refs } = prepared;
     out.write(
         &out.dir().join("index.html"),
         renderer.index(site)?.as_bytes(),
