@@ -15,7 +15,7 @@ imagesize = "0.15.0"
 lol_html = "2.9"
 minijinja = "2"
 notify = "8"
-pagefind = "1.5.2"
+pagefind = { version = "=1.5.2", path = "vendor/pagefind", default-features = false }
 pulldown-cmark = "0.13"
 pulldown-latex = "0.8"
 serde = { version = "1", features = ["derive"] }
