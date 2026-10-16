@@ -45,6 +45,8 @@ struct ProductIndex {
     path: String,
     title: String,
     candidates: Vec<Candidate>,
+    // Candidate indices retain traversal order, including ambiguous matches.
+    suffixes: HashMap<String, Vec<usize>>,
 }
 
 #[derive(Debug)]
@@ -182,12 +184,19 @@ impl LinkIndex {
                     }
                 }
             }
+            let mut suffixes: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, candidate) in candidates.iter().enumerate() {
+                for start in 0..candidate.segments.len() {
+                    suffixes.entry(candidate.segments[start..].join("/")).or_default().push(i);
+                }
+            }
             products.insert(
                 product.slug.clone(),
                 ProductIndex {
                     path: product.path.clone(),
                     title: product.title.clone(),
                     candidates,
+                    suffixes,
                 },
             );
         }
@@ -232,17 +241,9 @@ impl LinkIndex {
             return Ok((product.path.clone(), product.title.clone()));
         }
 
-        let matches: Vec<&Candidate> = product
-            .candidates
-            .iter()
-            .filter(|candidate| {
-                candidate.segments.len() >= suffix.len()
-                    && candidate.segments[candidate.segments.len() - suffix.len()..]
-                        .iter()
-                        .map(String::as_str)
-                        .eq(suffix.iter().copied())
-            })
-            .collect();
+        let key = suffix.join("/");
+        let matches: Vec<&Candidate> = product.suffixes.get(&key).into_iter().flatten()
+            .map(|i| &product.candidates[*i]).collect();
 
         match matches.as_slice() {
             [only] => Ok((only.target.clone(), only.title.clone())),
@@ -265,6 +266,32 @@ impl LinkIndex {
 mod tests {
     use super::*;
     use crate::site;
+
+    #[test]
+    fn indexed_suffixes_match_the_scan_including_ambiguity_order() {
+        let (_dir, index) = index();
+        for product in index.products.values() {
+            let mut queries = HashSet::from(["missing".to_owned(), "".to_owned()]);
+            for candidate in &product.candidates {
+                for start in 0..candidate.segments.len() {
+                    let suffix = candidate.segments[start..].join("/");
+                    queries.insert(format!("{suffix}/"));
+                    queries.insert(format!("/{suffix}"));
+                    queries.insert(suffix);
+                }
+            }
+            for query in queries {
+                let suffix: Vec<_> = query.split('/').collect();
+                let expected: Vec<_> = product.candidates.iter().enumerate()
+                    .filter(|(_, c)| c.segments.len() >= suffix.len()
+                        && c.segments[c.segments.len() - suffix.len()..]
+                            .iter().map(String::as_str).eq(suffix.iter().copied()))
+                    .map(|(i, _)| i).collect();
+                let actual = product.suffixes.get(&query).cloned().unwrap_or_default();
+                assert_eq!(actual, expected, "suffix {query:?}");
+            }
+        }
+    }
 
     fn index() -> (tempfile::TempDir, LinkIndex) {
         let dir = tempfile::tempdir().unwrap();
