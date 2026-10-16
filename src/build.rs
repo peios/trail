@@ -218,7 +218,7 @@ impl Prepared {
 
 fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Prepared) -> Result<usize> {
     let out = &Output::new(out);
-    let renderer = Renderer::new(options)?;
+    let renderer = Renderer::new(options, site)?;
     let Prepared { links, images, refs } = prepared;
     out.write(
         &out.dir().join("index.html"),

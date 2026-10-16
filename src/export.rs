@@ -1131,7 +1131,7 @@ mod tests {
             render_llms_full: llms_full,
             ..Default::default()
         };
-        let renderer = Renderer::new(&options).unwrap();
+        let renderer = Renderer::new(&options, &site).unwrap();
         let output = Output::new(&out);
         let refs = crate::refs::InlineRefIndex::new(&site).unwrap();
         let pages =
