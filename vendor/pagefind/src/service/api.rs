@@ -34,6 +34,7 @@
 //! ```
 
 pub use crate::output::SyntheticFile;
+pub use crate::output::CompressionCache;
 use anyhow::{bail, Result};
 use rust_patch::Patch;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -236,6 +237,13 @@ impl PagefindIndex {
         let mut state = self.search_index.lock().await;
         state.build_indexes().await?;
         Ok(state.get_files().await)
+    }
+
+    /// Reuse encoded fragments/chunks without changing the global index layout.
+    pub async fn get_files_cached(&mut self, cache: &dyn CompressionCache, workers: usize) -> Result<Vec<SyntheticFile>> {
+        let mut state = self.search_index.lock().await;
+        state.build_indexes().await?;
+        state.get_files_cached(cache, workers).await
     }
 }
 

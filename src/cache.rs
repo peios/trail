@@ -8,9 +8,8 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    rc::Rc,
     sync::{
-        OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -18,18 +17,18 @@ use std::{
 #[derive(Default)]
 struct Store {
     dir: PathBuf,
-    used: RefCell<HashSet<PathBuf>>,
-    captures: RefCell<Vec<HashSet<Entry>>>,
+    used: Mutex<HashSet<PathBuf>>,
+    captures: Mutex<Vec<HashSet<Entry>>>,
     #[cfg(test)]
-    hits: RefCell<std::collections::HashMap<&'static str, usize>>,
+    hits: Mutex<std::collections::HashMap<&'static str, usize>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 pub struct Entry { kind: String, key: String }
 
 fn record(store: &Store, kind: &str, key: &str, path: PathBuf) {
-    store.used.borrow_mut().insert(path);
-    for capture in store.captures.borrow_mut().iter_mut() {
+    store.used.lock().unwrap().insert(path);
+    for capture in store.captures.lock().unwrap().iter_mut() {
         capture.insert(Entry { kind: kind.into(), key: key.into() });
     }
 }
@@ -45,18 +44,18 @@ pub fn retain(entries: &[Entry]) {
     }
 }
 
-pub struct Capture { store: Option<Rc<Store>>, finished: bool }
+pub struct Capture { store: Option<Arc<Store>>, finished: bool }
 
 pub fn capture() -> Capture {
     let store = store();
-    if let Some(store) = &store { store.captures.borrow_mut().push(HashSet::new()); }
+    if let Some(store) = &store { store.captures.lock().unwrap().push(HashSet::new()); }
     Capture { store, finished: false }
 }
 
 impl Capture {
     pub fn finish(mut self) -> Vec<Entry> {
         self.finished = true;
-        let mut entries: Vec<_> = self.store.as_ref().map(|s| s.captures.borrow_mut().pop().unwrap())
+        let mut entries: Vec<_> = self.store.as_ref().map(|s| s.captures.lock().unwrap().pop().unwrap())
             .unwrap_or_default().into_iter().collect();
         entries.sort_by(|a, b| (&a.kind, &a.key).cmp(&(&b.kind, &b.key)));
         entries
@@ -65,17 +64,17 @@ impl Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        if !self.finished && let Some(store) = &self.store { store.captures.borrow_mut().pop(); }
+        if !self.finished && let Some(store) = &self.store { store.captures.lock().unwrap().pop(); }
     }
 }
 
 thread_local! {
-    static ACTIVE: RefCell<Option<Option<Rc<Store>>>> = const { RefCell::new(None) };
+    static ACTIVE: RefCell<Option<Option<Arc<Store>>>> = const { RefCell::new(None) };
 }
 
 pub struct Session {
-    previous: Option<Option<Rc<Store>>>,
-    store: Option<Rc<Store>>,
+    previous: Option<Option<Arc<Store>>>,
+    store: Option<Arc<Store>>,
 }
 
 impl Session {
@@ -87,7 +86,7 @@ impl Session {
                 .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
         });
         let store = enabled.then_some(version.as_ref()).flatten().map(|version| {
-            Rc::new(Store {
+            Arc::new(Store {
                 dir: root.join(".trail-cache").join(format!("v1-{version}")),
                 ..Store::default()
             })
@@ -103,7 +102,7 @@ impl Session {
         let Ok(kinds) = fs::read_dir(&store.dir) else {
             return;
         };
-        let used = store.used.borrow();
+        let used = store.used.lock().unwrap();
         for kind in kinds.flatten() {
             if !kind.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
@@ -124,7 +123,7 @@ impl Session {
     pub fn hits(&self, kind: &str) -> usize {
         self.store
             .as_ref()
-            .and_then(|s| s.hits.borrow().get(kind).copied())
+            .and_then(|s| s.hits.lock().unwrap().get(kind).copied())
             .unwrap_or(0)
     }
 }
@@ -145,7 +144,22 @@ pub fn persistent() -> bool {
     store().is_some()
 }
 
-fn store() -> Option<Rc<Store>> {
+/// Worker tasks share used-entry accounting; only the initiating session prunes.
+#[derive(Clone)]
+pub struct Shared { store: Option<Arc<Store>>, enabled: bool }
+
+pub fn share() -> Shared { Shared { store: store(), enabled: enabled() } }
+
+impl Shared {
+    pub fn scope<T>(&self, work: impl FnOnce() -> T) -> T {
+        let active = if self.enabled && self.store.is_none() { None } else { Some(self.store.clone()) };
+        let previous = ACTIVE.with(|slot| slot.replace(active));
+        let _session = Session { previous, store: self.store.clone() };
+        work()
+    }
+}
+
+fn store() -> Option<Arc<Store>> {
     ACTIVE.with(|active| active.borrow().as_ref().cloned().flatten())
 }
 
@@ -172,7 +186,7 @@ pub fn read_bytes(kind: &'static str, key: &str) -> Option<Vec<u8>> {
     record(&store, kind, key, path);
     #[cfg(test)]
     {
-        *store.hits.borrow_mut().entry(kind).or_default() += 1;
+        *store.hits.lock().unwrap().entry(kind).or_default() += 1;
     }
     Some(payload.to_vec())
 }

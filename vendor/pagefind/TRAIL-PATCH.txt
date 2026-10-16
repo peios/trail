@@ -8,10 +8,18 @@ SearchState::fossick_batch parses with a private bounded Rayon pool,
 retains input order, and commits only if every page parses successfully.
 The existing single-page and directory APIs are unchanged.
 
-Changed upstream files: src/lib.rs and src/service/api.rs. The patch is
+PagefindIndex::get_files_cached additionally compresses independent output
+chunks using a private bounded pool and a caller-provided CompressionCache.
+It preserves the original gzip encoding and common files. The caller must
+verify cache payload integrity. Global index packing remains unchanged;
+unchanged fragments and chunks can reuse their compressed bytes after edits.
+
+Changed upstream files: src/lib.rs, src/service/api.rs and src/output/mod.rs. The patch is
 retained in batch-api.patch. Trail's search tests compare all generated
 index bytes against the unmodified single-page API with 1 and 4 workers,
-and cover duplicate URLs, a nonempty index and zero workers.
+and cover duplicate URLs, a nonempty index and zero workers. Compression
+tests compare every file against the original API across cold/warm builds,
+body edits, additions, removals and multiple languages.
 
 Remove this local copy when an upstream release provides equivalent
 in-memory batching, after rerunning those tests and the full-site output

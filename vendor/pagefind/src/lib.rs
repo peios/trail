@@ -392,6 +392,22 @@ impl SearchState {
         files
     }
 
+    pub async fn get_files_cached(&self, cache: &dyn output::CompressionCache, workers: usize) -> Result<Vec<SyntheticFile>> {
+        anyhow::ensure!(workers > 0, "compression requires at least one worker");
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(workers).build()?;
+        let outdir = &self.options.bundle_output;
+        let entries = self.built_indexes.iter().map(|index| index.get_lang_meta(&self.options)).collect();
+        let mut files = Vec::new();
+        for index in &self.built_indexes {
+            files.extend(index.cached_files(&self.options, outdir, cache, &pool)?);
+        }
+        files.extend(output::write_common_to_memory(entries, self.options.write_playground, outdir, &self.options).await);
+        for file in &mut files {
+            if let Ok(path) = file.filename.strip_prefix(outdir) { file.filename = path.to_path_buf(); }
+        }
+        Ok(files)
+    }
+
     pub fn log_start(&self) {
         let log = &self.options.logger;
 
