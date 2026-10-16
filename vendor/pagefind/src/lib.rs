@@ -114,12 +114,13 @@ impl SearchState {
     }
 
     /// Parse a fresh in-memory batch in input order with a bounded worker pool.
-    pub fn fossick_batch(&mut self, files: Vec<Fossicker>, threads: usize) -> Result<()> {
+    pub fn fossick_batch(&mut self, files: Vec<(String, Fossicker)>, threads: usize) -> Result<()> {
         anyhow::ensure!(self.fossicked_pages.is_empty(), "batch requires an empty index");
         anyhow::ensure!(threads > 0, "batch requires at least one worker");
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
         let results: Vec<Result<FossickedData>> = pool.install(|| {
-            files.into_par_iter().map(|file| file.fossick_sync(&self.options)).collect()
+            files.into_par_iter().map(|(url, file)| file.fossick_sync(&self.options)
+                .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))).collect()
         });
         // Commit only a completely successful batch. Iterating the ordered
         // results also makes the first reported failure deterministic.

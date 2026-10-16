@@ -1,16 +1,17 @@
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -113,6 +113,20 @@
+@@ -113,6 +113,21 @@
          Ok(self.fossicked_pages.len() - existing_page_count)
      }
  
 +    /// Parse a fresh in-memory batch in input order with a bounded worker pool.
-+    pub fn fossick_batch(&mut self, files: Vec<Fossicker>, threads: usize) -> Result<()> {
++    pub fn fossick_batch(&mut self, files: Vec<(String, Fossicker)>, threads: usize) -> Result<()> {
 +        anyhow::ensure!(self.fossicked_pages.is_empty(), "batch requires an empty index");
 +        anyhow::ensure!(threads > 0, "batch requires at least one worker");
 +        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
 +        let results: Vec<Result<FossickedData>> = pool.install(|| {
-+            files.into_par_iter().map(|file| file.fossick_sync(&self.options)).collect()
++            files.into_par_iter().map(|(url, file)| file.fossick_sync(&self.options)
++                .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))).collect()
 +        });
 +        // Commit only a completely successful batch. Iterating the ordered
 +        // results also makes the first reported failure deterministic.
@@ -38,7 +39,7 @@
 +            anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
 +        }
 +        let files = pages.into_iter().map(|(url, content)|
-+            Fossicker::new_synthetic(None, Some(url), content)).collect();
++            (url.clone(), Fossicker::new_synthetic(None, Some(url), content))).collect();
 +        let state = Arc::clone(&self.search_index);
 +        tokio::task::spawn_blocking(move || state.blocking_lock().fossick_batch(files, threads))
 +            .await.map_err(|e| anyhow::anyhow!("Task join error: {e}"))?

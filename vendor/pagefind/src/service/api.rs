@@ -87,7 +87,7 @@ impl PagefindIndex {
             anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
         }
         let files = pages.into_iter().map(|(url, content)|
-            Fossicker::new_synthetic(None, Some(url), content)).collect();
+            (url.clone(), Fossicker::new_synthetic(None, Some(url), content))).collect();
         let state = Arc::clone(&self.search_index);
         tokio::task::spawn_blocking(move || state.blocking_lock().fossick_batch(files, threads))
             .await.map_err(|e| anyhow::anyhow!("Task join error: {e}"))?

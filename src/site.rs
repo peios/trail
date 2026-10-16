@@ -1051,7 +1051,7 @@ impl Site {
         // resolve through the body-link grammar — strictly, at load,
         // because site chrome must never dangle.
         let resolved = {
-            let index = crate::links::LinkIndex::new(&site);
+            let index = std::sync::LazyLock::new(|| crate::links::LinkIndex::new(&site));
             let mut resolved = Vec::with_capacity(site.config.nav.len());
             for item in &site.config.nav {
                 resolved.push(match item.url.strip_prefix('~') {
@@ -1879,6 +1879,21 @@ fn load_article(
 /// whole tree has loaded, since targets can live anywhere; targets must
 /// be articles that exist on disk — a link cannot target another link.
 fn resolve_linked_articles(site: &mut Site) -> Result<()> {
+    fn chapter_links(children: &[BookChild]) -> bool {
+        children.iter().any(|child| match child {
+            BookChild::Chapter { chapter } => !chapter.links.is_empty() || chapter_links(&chapter.children),
+            BookChild::Article { .. } => false,
+        })
+    }
+    let topic_links = topics_mut(&mut site.products).iter().any(|topic| {
+        !topic.links.is_empty() || topic.children.iter().any(|child| match child {
+            TopicChild::Folder { folder } => !folder.links.is_empty(),
+            TopicChild::Article { .. } => false,
+        })
+    });
+    let book_links = books_mut(&mut site.products).iter()
+        .any(|book| !book.links.is_empty() || chapter_links(&book.children));
+    if !topic_links && !book_links { return Ok(()); }
     // Stubs resolve through the folder-aware index: unlike body links,
     // a stub may alias a whole topic subfolder.
     let index = crate::links::LinkIndex::with_folders(site);
