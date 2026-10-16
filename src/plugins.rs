@@ -250,7 +250,11 @@ pub fn expand(site: &mut Site) -> Result<()> {
     let mut replacements: HashMap<usize, Vec<(Range<usize>, String)>> = HashMap::new();
     // Each plugin's output so far, by article, for the plugins after it.
     let mut generated: HashMap<&str, Vec<(usize, String)>> = HashMap::new();
-    for name in order.iter().filter(|name| by_plugin.contains_key(*name)) {
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(4);
+    let batches = run_batches(&order, &plugins, |name| by_plugin.contains_key(name), workers);
+    let shared_cache = crate::cache::share();
+    for batch in batches {
+      let outcomes = parallel_batch(&batch, |name| shared_cache.scope(|| {
         let blocks = &by_plugin[name];
         let config = &plugins[name];
         let anchor_index = config.anchors.then(|| {
@@ -285,8 +289,21 @@ pub fn expand(site: &mut Site) -> Result<()> {
             })
             .collect();
         let plugin_root = canonical(&plugin_roots[name]);
-        let outcome = run_cached(&plugin_root, name, config, program, request_blocks, anchors)
-            .with_context(|| format!("running plugin '{name}'"))?;
+        let request = Request {
+            protocol: PROTOCOL, plugin: name, root: plugin_root.display().to_string(),
+            blocks: request_blocks, anchors,
+        };
+        let mut diagnostics = Vec::new();
+        let outcome = run_cached(&plugin_root, config, program, request, &mut diagnostics)
+            .with_context(|| format!("running plugin '{name}'"));
+        (outcome, diagnostics)
+      }));
+      // Replay and integrate in the original topological order, regardless
+      // of which independent process finished first.
+      for (name, (outcome, diagnostics)) in batch.into_iter().zip(outcomes) {
+        let _ = std::io::stderr().write_all(&diagnostics);
+        let outcome = outcome?;
+        let blocks = &by_plugin[name];
         dependencies.extend(outcome.dependencies);
         for (id, result) in outcome.outputs.into_iter().enumerate() {
             let (index, block) = &blocks[id];
@@ -308,6 +325,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
                 )),
             }
         }
+      }
     }
     dependencies.sort();
     dependencies.dedup();
@@ -333,8 +351,48 @@ pub fn expand(site: &mut Site) -> Result<()> {
     Ok(())
 }
 
-/// The order plugins run in: each after the plugins its `after` names,
-/// otherwise by name.
+/// Bounded, consecutive batches preserve both dependency order and diagnostic
+/// order. Include transitive dependencies through plugins without blocks.
+fn run_batches<'a>(
+    order: &'a [String],
+    plugins: &BTreeMap<String, PluginConfig>,
+    active: impl Fn(&str) -> bool,
+    workers: usize,
+) -> Vec<Vec<&'a String>> {
+    let mut ancestors: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut batches = Vec::new();
+    let mut batch: Vec<&String> = Vec::new();
+    for name in order {
+        let mut dependencies = BTreeSet::new();
+        for earlier in &plugins[name].after {
+            dependencies.insert(earlier.as_str());
+            dependencies.extend(ancestors[earlier.as_str()].iter().copied());
+        }
+        if active(name) {
+            if !batch.is_empty() && (batch.len() >= workers.max(1)
+                || batch.iter().any(|n| dependencies.contains(n.as_str()))) {
+                batches.push(std::mem::take(&mut batch));
+            }
+            batch.push(name);
+        }
+        ancestors.insert(name, dependencies);
+    }
+    if !batch.is_empty() { batches.push(batch); }
+    batches
+}
+
+fn parallel_batch<T: Send>(names: &[&String], work: impl Fn(&String) -> T + Sync) -> Vec<T> {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = names.iter().map(|name| {
+            let work = &work;
+            scope.spawn(move || work(name))
+        }).collect();
+        handles.into_iter().map(|handle| handle.join().expect("plugin worker panicked")).collect()
+    })
+}
+
+/// The order plugins' results are integrated: each after the plugins its
+/// `after` names, otherwise by name.
 fn run_order(plugins: &BTreeMap<String, PluginConfig>) -> Result<Vec<String>> {
     for (name, config) in plugins {
         if !config.after.is_empty() && !config.anchors {
@@ -564,16 +622,13 @@ struct Outcome {
 /// replayed stderr always describes the current source locations.
 fn run_cached(
     root: &Path,
-    name: &str,
     config: &PluginConfig,
     program: &Path,
-    blocks: Vec<RequestBlock>,
-    anchors: Option<&AnchorIndex>,
+    request: Request,
+    diagnostics: &mut Vec<u8>,
 ) -> Result<Outcome> {
-    let count = blocks.len();
-    let request = Request {
-        protocol: PROTOCOL, plugin: name, root: root.display().to_string(), blocks, anchors,
-    };
+    let count = request.blocks.len();
+    let name = request.plugin;
     let environment: BTreeMap<Vec<u8>, Vec<u8>> = std::env::vars_os()
         .map(|(k, v)| (k.as_encoded_bytes().to_vec(), v.as_encoded_bytes().to_vec())).collect();
     let environment: Vec<_> = environment.into_iter().collect();
@@ -595,7 +650,7 @@ fn run_cached(
             && (cached.stderr.is_empty() || cached.diagnostics_key == diagnostics_key)
             && cached.dependencies.iter().all(|(path, print)| fingerprint(path) == *print)
         {
-            let _ = std::io::stderr().write_all(&cached.stderr);
+            diagnostics.extend_from_slice(&cached.stderr);
             return Ok(Outcome {
                 outputs: cached.outputs.into_iter().map(Ok).collect(),
                 dependencies: cached.dependencies.into_iter().map(|(path, _)| path).collect(),
@@ -603,7 +658,7 @@ fn run_cached(
         }
     }
 
-    let (response, stderr) = run(root, config, program, &request)?;
+    let (response, stderr) = run(root, config, program, &request, diagnostics)?;
     let outputs = check_response(response.blocks, count)?;
 
     let mut dependencies: Vec<PathBuf> = response
@@ -633,7 +688,7 @@ fn run_cached(
 /// Spawn the plugin, feed it the request, and parse what it prints. The
 /// plugin's stderr is captured and replayed after it exits, so warnings
 /// reach the terminal on both cache misses and later hits.
-fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request) -> Result<(Response, Vec<u8>)> {
+fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request, diagnostics: &mut Vec<u8>) -> Result<(Response, Vec<u8>)> {
     let payload = serde_json::to_vec(request)?;
     let mut child = Command::new(program)
         .args(&config.command[1..])
@@ -648,7 +703,7 @@ fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request) ->
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let writer = std::thread::spawn(move || stdin.write_all(&payload));
     let output = child.wait_with_output().context("waiting for the plugin")?;
-    let _ = std::io::stderr().write_all(&output.stderr);
+    diagnostics.extend_from_slice(&output.stderr);
     let written = writer.join().expect("the stdin writer does not panic");
     ensure!(
         output.status.success(),
@@ -843,6 +898,35 @@ fn canonical(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batches_bound_concurrency_and_preserve_transitive_dependencies() {
+        let config = |after: &[&str]| PluginConfig {
+            command: vec!["unused".into()], anchors: true,
+            after: after.iter().map(|s| s.to_string()).collect(),
+        };
+        let plugins = BTreeMap::from([
+            ("a".into(), config(&[])), ("b".into(), config(&["a"])),
+            ("c".into(), config(&["b"])), ("d".into(), config(&[])),
+            ("e".into(), config(&[])),
+        ]);
+        let order = run_order(&plugins).unwrap();
+        let batches = run_batches(&order, &plugins, |name| name != "b", 2);
+        let actual: Vec<Vec<&str>> = batches.iter().map(|b| b.iter().map(|n| n.as_str()).collect()).collect();
+        assert_eq!(actual, vec![vec!["a"], vec!["c", "d"], vec!["e"]]);
+        assert!(run_batches(&order, &plugins, |_| true, 1).iter().all(|b| b.len() == 1));
+    }
+
+    #[test]
+    fn parallel_jobs_overlap_and_return_in_input_order() {
+        let names = ["a".to_string(), "b".to_string()];
+        let barrier = std::sync::Barrier::new(2);
+        let results = parallel_batch(&[&names[0], &names[1]], |name| {
+            barrier.wait();
+            name.clone()
+        });
+        assert_eq!(results, names);
+    }
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
