@@ -259,9 +259,9 @@ fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Pr
                 ProductItem::Anthology { anthology } => {
                     let (count, mermaid) = write_anthology(
                         &renderer,
-                        &links,
-                        &images,
-                        &refs,
+                        links,
+                        images,
+                        refs,
                         options,
                         site,
                         product,
@@ -276,9 +276,9 @@ fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Pr
                 ProductItem::Topic { topic } => {
                     let (count, mermaid) = write_articles(
                         &renderer,
-                        &links,
-                        &images,
-                        &refs,
+                        links,
+                        images,
+                        refs,
                         options,
                         site,
                         product,
@@ -293,9 +293,9 @@ fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Pr
                 ProductItem::Book { book } => {
                     let (count, mermaid) = write_book(
                         &renderer,
-                        &links,
-                        &images,
-                        &refs,
+                        links,
+                        images,
+                        refs,
                         options,
                         site,
                         product,
@@ -320,7 +320,7 @@ fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Pr
     }
     // The AI-facing surface: markdown mirrors, /print bundles, llms.txt,
     // site.json, sitemap, robots. Print pages are pages; the rest are not.
-    pages += export::write_ai_surface(site, &links, &images, &refs, &renderer, out, options)?;
+    pages += export::write_ai_surface(site, links, images, refs, &renderer, out, options)?;
     // Referenced images ship at their published URLs; an image nothing
     // references stays out of the output — a warning, not an error, so a
     // file added ahead of its article doesn't block the build.

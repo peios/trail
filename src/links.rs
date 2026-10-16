@@ -47,11 +47,13 @@ pub struct LinkIndex {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Read { Page(String), Anchor(String, String) }
 
+type PageResolution = Result<(String, String), String>;
+
 /// Actual resolution results, including missing and ambiguous references.
 /// Rechecking the query detects newly introduced candidates as well as removals.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Dependencies {
-    pages: Vec<(String, Result<(String, String), String>)>,
+    pages: Vec<(String, PageResolution)>,
     anchors: Vec<(String, String, Option<bool>)>,
 }
 
