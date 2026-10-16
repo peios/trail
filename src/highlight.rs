@@ -75,7 +75,11 @@ pub fn code_block(language: Option<&str>, source: &str) -> String {
     let key = crate::memo::key(&[language.unwrap_or("").as_bytes(), source.as_bytes()]);
     if let Some(html) = CACHE.with(|cache| cache.borrow().get(&key)) { return html; }
     let html = uncached_code_block(language, source);
-    CACHE.with(|cache| cache.borrow_mut().insert(key, html.clone(), html.capacity()));
+    // Cloning trims the formatter's spare capacity. Charge the retained
+    // allocation, not the larger temporary that is returned to the caller.
+    let retained = html.clone();
+    let bytes = retained.capacity();
+    CACHE.with(|cache| cache.borrow_mut().insert(key, retained, bytes));
     html
 }
 

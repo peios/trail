@@ -40,7 +40,7 @@ impl Session {
                 .ok()
                 .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
         });
-        let store = enabled.then(|| version.as_ref()).flatten().map(|version| {
+        let store = enabled.then_some(version.as_ref()).flatten().map(|version| {
             Rc::new(Store {
                 dir: root.join(".trail-cache").join(format!("v1-{version}")),
                 ..Store::default()

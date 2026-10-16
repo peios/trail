@@ -838,6 +838,24 @@ mod tests {
         assert!(!out.join("revision-2").exists());
         let live = BuildOptions { live_reload: true, ..Default::default() };
         check(&live);
+        let extra = dir.path().join("extra");
+        let topic = extra.join("gamma.product/1--guide.topic");
+        fs::create_dir_all(&topic).unwrap();
+        fs::write(extra.join("gamma.product/trail.toml"),
+            "title = \"Gamma\"\nmonogram = \"G\"\ncolor = \"#3b82f6\"\ndescription = \"d\"\n").unwrap();
+        let merged = topic.join("1--start.md");
+        fs::write(&merged, "---\ntitle: Start\ntype: concept\n---\n\nMerged content.\n").unwrap();
+        append(&root.join("trail.toml"), "\n[[merge]]\npath = \"../extra\"\n");
+        check(&options);
+        append(&merged, "\nChanged merged body.\n");
+        check(&options);
+        // A corrupt search blob must rebuild the entire bundle, including
+        // fragments which were otherwise present in the output directory.
+        let namespace = fs::read_dir(root.join(".trail-cache")).unwrap().next().unwrap().unwrap().path();
+        let blob = fs::read_dir(namespace.join("search-files")).unwrap().next().unwrap().unwrap().path();
+        fs::write(&blob, b"corrupt").unwrap();
+        check(&options);
+        assert_ne!(fs::read(blob).unwrap(), b"corrupt");
     }
 
     #[test]
@@ -854,6 +872,18 @@ mod tests {
             build_all(&site, &out, options).map_err(|error| format!("{error:#}"))
         };
         run(true, &BuildOptions::default()).unwrap();
+        let target = root.join("alpha.product/2--acorn.antho/200--narrow.topic/1--b1.md");
+        let original = fs::read_to_string(&target).unwrap();
+        fs::write(&target, format!("{original}\n## Target Anchor\n")).unwrap();
+        fs::write(&page, "---\ntitle: Link\ntype: concept\n---\n\n[Target](~alpha/b1#target-anchor)\n").unwrap();
+        run(true, &BuildOptions::default()).unwrap();
+        fs::write(&target, &original).unwrap();
+        let missing = run(true, &BuildOptions::default()).unwrap_err();
+        assert_eq!(missing, run(false, &BuildOptions::default()).unwrap_err());
+        let allow = BuildOptions { allow_dangling_links: true, ..Default::default() };
+        run(true, &allow).unwrap();
+        assert_eq!(run(true, &BuildOptions::default()).unwrap_err(), missing);
+        fs::write(&page, "---\ntitle: Link\ntype: concept\n---\n\n[Target](~alpha/b1)\n").unwrap();
         let strict = BuildOptions { strict: true, ..Default::default() };
         assert_eq!(run(true, &strict).unwrap_err(), run(false, &strict).unwrap_err());
         fs::write(root.join("alpha.product/5--loose.topic/99--b1.md"), "---\ntitle: Another\ntype: concept\n---\n\nText\n").unwrap();

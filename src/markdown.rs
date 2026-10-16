@@ -146,8 +146,9 @@ fn render_uncached(markdown: &str, links: &LinkIndex, options: RenderOptions) ->
         options.refs.and_then(|scope| scope.book_short),
     );
     // Equations first, so the typography pass never sees their source.
+    let parsed = crate::parsed::parse(&markdown, parser_options());
     let events = crate::typography::keep_together(crate::math::mark_math(
-        crate::parsed::parse(&markdown, parser_options()).iter().map(|(event, _)| event.clone()).collect(),
+        parsed.iter().map(|(event, _)| crate::parsed::borrow_event(event)).collect(),
     ));
 
     let mut out = Vec::with_capacity(events.len());
@@ -713,7 +714,8 @@ impl SectionCounter {
 /// ahead of the render pass. h2/h3 only — deeper headings consume ids
 /// but never numbers, exactly as in `render`.
 pub fn heading_outline(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
-    let events: Vec<Event> = crate::parsed::parse(markdown, parser_options()).iter().map(|(event, _)| event.clone()).collect();
+    let parsed = crate::parsed::parse(markdown, parser_options());
+    let events: Vec<Event> = parsed.iter().map(|(event, _)| crate::parsed::borrow_event(event)).collect();
     let mut outline = Vec::new();
     let mut used_ids = HashMap::new();
     let mut counter = SectionCounter::default();
@@ -1175,7 +1177,8 @@ pub fn rewrite_source(
 fn rewrite_source_uncached(markdown: &str, links: &LinkIndex, numbering: Option<&str>, images: Option<ImageScope>, base: &str) -> String {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut counter = SectionCounter::default();
-    for (event, range) in crate::parsed::parse(markdown, parser_options()).iter().cloned() {
+    for (event, range) in crate::parsed::parse(markdown, parser_options()).iter()
+        .map(|(event, range)| (crate::parsed::borrow_event(event), range.clone())) {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) if dest_url.starts_with('~') => {
                 let reference = &dest_url[1..];
@@ -1395,7 +1398,8 @@ fn html_ids(html: &str) -> Result<HashSet<String>> {
 pub fn anchor_ids(markdown: &str) -> HashSet<String> {
     let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
     let expanded = expand_citation_anchors(&expanded, None);
-    let events: Vec<Event> = crate::parsed::parse(&expanded, parser_options()).iter().map(|(event, _)| event.clone()).collect();
+    let parsed = crate::parsed::parse(&expanded, parser_options());
+    let events: Vec<Event> = parsed.iter().map(|(event, _)| crate::parsed::borrow_event(event)).collect();
     let mut ids = HashSet::new();
     let mut used_ids = HashMap::new();
     for (i, event) in events.iter().enumerate() {
@@ -1428,7 +1432,7 @@ pub fn explicit_anchor_ids(markdown: &str) -> HashSet<String> {
     let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
     let expanded = expand_citation_anchors(&expanded, None);
     let mut html = String::new();
-    html::push_html(&mut html, crate::parsed::parse(&expanded, parser_options()).iter().map(|(event, _)| event.clone()));
+    html::push_html(&mut html, crate::parsed::parse(&expanded, parser_options()).iter().map(|(event, _)| crate::parsed::borrow_event(event)));
     html_ids(&html).unwrap_or_default()
 }
 

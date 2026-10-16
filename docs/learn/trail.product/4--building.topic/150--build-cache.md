@@ -11,7 +11,7 @@ Trail reuses unchanged build work in `build` and `serve`. The first build
 fills a cache. Later builds reuse plugin output, rendered Markdown, source
 mirrors, and search files when their inputs match.
 
-## Cache Location
+## Cache location
 
 The persistent cache lives in `.trail-cache/` under the site root. It is
 separate from `dist/`, is not published, and is ignored by the file watcher.
@@ -25,7 +25,7 @@ builds discard entries from their executable's cache that they did not use.
 A missing, damaged, or unwritable cache causes Trail to compute the result
 again. A cache failure does not prevent a build.
 
-## Rebuild Without Cached Results
+## Rebuild without cached results
 
 Pass `--no-cache` to bypass cache reads and writes:
 
@@ -38,7 +38,7 @@ This flag applies to every rebuild in that `serve` session. It leaves
 existing cache files in place. Output files whose bytes are unchanged
 retain their modification times.
 
-## What Invalidates Cached Work
+## What invalidates cached work
 
 Trail checks file contents. It does not rely on modification times alone.
 Changes to link targets, anchors, inline references, image dimensions, or
@@ -63,7 +63,7 @@ A plugin that depends on time, network state, or an undeclared input must
 be run with `--no-cache` when that input changes. See
 [Plugin Blocks](~trail/writing/plugin-blocks) for the dependency contract.
 
-## Reuse Within a Build
+## Reuse within a build
 
 Trail also shares parsed Markdown and highlighted code across article and
 print passes. These memory caches have limits: 256 MiB of accounted parsed
