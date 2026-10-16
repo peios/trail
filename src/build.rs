@@ -796,7 +796,7 @@ mod tests {
             let cache = crate::cache::Session::new(&root, enabled);
             let site = Site::load(&root, destination).unwrap();
             let pages = build_all(&site, destination, options).unwrap();
-            let hits = (cache.hits("render"), cache.hits("search"));
+            let hits = (cache.hits("render"), cache.hits("search"), cache.hits("pages"), cache.hits("bundles-html"));
             cache.finish();
             (pages, hits)
         };
@@ -810,12 +810,16 @@ mod tests {
         check(&options);
         let hits = check(&options);
         assert!(hits.0 > 0 && hits.1 > 0, "unchanged build must reuse rendering and search");
+        assert!(hits.2 > 0 && hits.3 > 0, "unchanged build must reuse pages and complete bundles");
         let article = root.join("alpha.product/5--loose.topic/1--x1.md");
         let append = |path: &Path, text: &str| {
             let mut source = fs::read_to_string(path).unwrap(); source.push_str(text); fs::write(path, source).unwrap();
         };
         append(&article, "\nChanged body with **emphasis** and `$x$`.\n");
         assert!(check(&options).0 > 0, "body edits must preserve other render hits");
+        append(&article, &"Longer prose changes aggregate reading times. ".repeat(200));
+        let edited = check(&options);
+        assert!(edited.2 > 0 && edited.3 > 0, "unrelated pages and bundles survive changed totals");
         append(&article, "\n## A New Anchor\n");
         check(&options);
         let config = root.join("alpha.product/7--manual.book/trail.toml");

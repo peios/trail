@@ -341,7 +341,7 @@ fn write_bundle(
     let key = crate::cache::persistent().then(|| {
         let entries: Vec<_> = unit.entries.iter().map(|(crumbs, article)|
             (crumbs, *article, &article.source_dir, crate::memo::key(&[article.body.as_bytes()]))).collect();
-        crate::cache::key_json(&(renderer.context_key(site), product, &unit.title,
+        crate::cache::key_json(&(renderer.context_key(site), crate::render::ProductView::from(product), &unit.title,
             unit.description, unit.path, entries, images.cache_key()))
     });
     if let Some(key) = &key

@@ -48,6 +48,29 @@ pub struct PrintSection {
     pub html: String,
 }
 
+/// Product fields consumed by templates. Aggregate reading time and update
+/// dates belong to content listings, not every page's shared navigation.
+#[derive(serde::Serialize)]
+pub struct ProductView<'a> {
+    slug: &'a str,
+    path: &'a str,
+    title: &'a str,
+    monogram: &'a str,
+    color: &'a str,
+    description: &'a str,
+}
+
+impl<'a> From<&'a Product> for ProductView<'a> {
+    fn from(product: &'a Product) -> Self {
+        Self { slug: &product.slug, path: &product.path, title: &product.title,
+            monogram: &product.monogram, color: &product.color, description: &product.description }
+    }
+}
+
+fn product_views(site: &Site) -> Vec<ProductView<'_>> {
+    site.products.iter().map(ProductView::from).collect()
+}
+
 pub struct Renderer {
     env: Environment<'static>,
     /// Inject the dev-server auto-reload script into every page.
@@ -127,7 +150,7 @@ impl Renderer {
     }
 
     pub fn context_key(&self, site: &Site) -> String {
-        crate::cache::key_json(&(&self.cache_key, &site.config, &site.products,
+        crate::cache::key_json(&(&self.cache_key, &site.config, product_views(site),
             site.favicon_href(), &site.head_html))
     }
 
@@ -135,8 +158,8 @@ impl Renderer {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.render_cached("index.html", context! {
                 site => site.config,
-                products => site.products,
-                featured => site.featured(),
+                products => product_views(site),
+                featured => site.featured().into_iter().map(ProductView::from).collect::<Vec<_>>(),
                 meta => page_meta(
                     site,
                     &site.config.sitename,
@@ -158,8 +181,8 @@ impl Renderer {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.render_cached("product.html", context! {
                 site => site.config,
-                products => site.products,
-                product => product,
+                products => product_views(site),
+                product => ProductView::from(product),
                 sections => product.sections(),
                 meta => page_meta(
                     site,
@@ -188,8 +211,8 @@ impl Renderer {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.render_cached("anthology.html", context! {
                 site => site.config,
-                products => site.products,
-                product => product,
+                products => product_views(site),
+                product => ProductView::from(product),
                 anthology => anthology,
                 anthologies => parents,
                 sections => anthology.sections(),
@@ -225,8 +248,8 @@ impl Renderer {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.render_cached("book.html", context! {
                 site => site.config,
-                products => site.products,
-                product => product,
+                products => product_views(site),
+                product => ProductView::from(product),
                 anthologies => anthologies,
                 book => book,
                 meta => page_meta(
@@ -270,8 +293,8 @@ impl Renderer {
         let edit_url = edit_link(site, article);
         self.render_cached("book-article.html", context! {
                 site => site.config,
-                products => site.products,
-                product => product,
+                products => product_views(site),
+                product => ProductView::from(product),
                 anthologies => anthologies,
                 book => book,
                 chapters => chapters,
@@ -311,8 +334,8 @@ impl Renderer {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.render_cached("print.html", context! {
                 site => site.config,
-                products => site.products,
-                product => product,
+                products => product_views(site),
+                product => ProductView::from(product),
                 title => title,
                 description => description,
                 meta => page_meta(
@@ -358,8 +381,8 @@ impl Renderer {
         let edit_url = edit_link(site, article);
         self.render_cached("article.html", context! {
                 site => site.config,
-                products => site.products,
-                product => product,
+                products => product_views(site),
+                product => ProductView::from(product),
                 anthologies => anthologies,
                 topic => topic,
                 folder => folder,
@@ -392,7 +415,7 @@ impl Renderer {
         let (head, tail) = split_sitename(&site.config.sitename);
         self.render_cached("404.html", context! {
                 site => site.config,
-                products => site.products,
+                products => product_views(site),
                 favicon => site.favicon_href(),
                 head_html => site.head_html,
                 wordmark_head => head,
@@ -498,6 +521,26 @@ mod tests {
         site::write_fixture(dir.path());
         let site = Site::load(dir.path(), &dir.path().join("dist")).unwrap();
         (dir, site)
+    }
+
+    #[test]
+    fn navigation_cache_ignores_aggregate_counts_but_tracks_visible_metadata() {
+        let (dir, mut site) = fixture_site();
+        let session = crate::cache::Session::new(dir.path(), true);
+        let renderer = Renderer::new(&plain()).unwrap();
+        let first = renderer.index(&site).unwrap();
+        site.products[0].reading_minutes += 100;
+        site.products[0].updated = Some("2026-10-17".into());
+        assert_eq!(first, renderer.index(&site).unwrap());
+        assert_eq!(session.hits("pages"), 1);
+        site.products[0].title = "Renamed Product".into();
+        let changed = renderer.index(&site).unwrap();
+        assert_ne!(first, changed);
+        assert!(changed.contains("Renamed Product"));
+        assert_eq!(session.hits("pages"), 1);
+        site.config.footer = "Changed footer".into();
+        assert!(renderer.index(&site).unwrap().contains("Changed footer"));
+        assert_eq!(session.hits("pages"), 1);
     }
 
     #[test]
