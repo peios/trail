@@ -8,6 +8,7 @@ mod lint;
 mod markdown;
 mod math;
 mod memo;
+mod parsed;
 mod plugins;
 mod refs;
 mod render;
