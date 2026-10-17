@@ -1,0 +1,5 @@
+# Bound concurrent Rust compilations on developer and CI hosts.
+build --jobs=6
+build --compilation_mode=opt
+test --test_output=errors
+build --@rules_rust//rust/settings:clippy_flag=-Dwarnings

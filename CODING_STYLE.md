@@ -5,15 +5,25 @@ shell, and other-format profiles in
 [PSC](https://learn.peios.org/psc/). Public documentation follows Core
 Style, Learn, Man Pages, and Command-Line Help and Errors.
 
-Run `npm ci --ignore-scripts`, then `tools/check` from a checkout. The check
-requires the selected Rust toolchain, Node.js 22, Python 3.11 or later,
-ShellCheck, and groff. `CARGO_TARGET_DIR` can select a reusable build directory.
+Run `tools/check` from a checkout. It runs the Bazel tests and Clippy target.
+The checks require the selected host Rust formatter, Node.js 22, Python 3.11
+or later, ShellCheck, and groff. Bazel downloads its own pinned Rust compiler,
+Prettier, and buildifier; Cargo does not compile the Bazel targets.
 
-Use `cargo fmt --package trail` for first-party Rust and `npm run format`
-for JavaScript, embedded scripts, CSS, JSON, and workflow files. Rust's
-toolchain and formatter edition are selected in the repository; Prettier's
-exact version and dependency integrity are locked. Do not format imported
-dependencies with `cargo fmt --all`.
+Use `./tools/bazel run //:format` for Rust, JavaScript, embedded scripts,
+CSS, JSON, workflow files, and Starlark. Rust's toolchain and formatter
+edition are selected in the repository; Prettier and buildifier have exact
+versions and verified download integrity. The npm commands remain available
+after `npm ci --ignore-scripts`. Do not format imported dependencies with
+`cargo fmt --all`.
+
+`Cargo.toml` and `Cargo.lock` remain the Rust dependency authority. Exclude
+Pagefind from workspace membership so metadata resolution does not enable
+its optional server and tokenizer features. Its maintained path dependency
+is mirrored by crate_universe, including its embedded assets. The generated
+`MODULE.bazel.lock` contains that checkout's absolute path, so it stays local;
+Bazel and Rust module versions and download checksums are pinned separately.
+Host C/C++ tools and local style tools are not fully hermetic toolchains.
 
 ## Scoped format decisions
 

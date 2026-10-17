@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode=check
+rustfmt_args=(--check)
+prettier_args=()
+if [[ ${1:-} == --write && $# == 1 ]]; then
+    mode=fix
+    rustfmt_args=()
+    prettier_args=(--write)
+elif [[ $# != 0 ]]; then
+    echo 'usage: tools/style [--write]' >&2
+    exit 2
+fi
+
+expected=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+if [[ $(rustc --version | cut -d' ' -f2) != "$expected" ]]; then
+    echo "tools/style: Rust $expected is required for formatting" >&2
+    exit 1
+fi
+rustfmt "${rustfmt_args[@]}" --config-path rustfmt.toml src/*.rs tests/*.rs
+rustfmt "${rustfmt_args[@]}" --config-path rustfmt.toml --config skip_children=true \
+    vendor/pagefind/src/lib.rs vendor/pagefind/src/service/api.rs \
+    vendor/pagefind/src/output/mod.rs vendor/pagefind/src/fossick/mod.rs \
+    vendor/pagefind/src/fragments/mod.rs
+node tools/format.mjs "${prettier_args[@]}"
+"${TRAIL_BUILDIFIER:?Run the Bazel style or format target}" -mode="$mode" \
+    BUILD.bazel MODULE.bazel tools/BUILD.bazel tools/build.bzl
+if [[ $mode == check ]]; then
+    python3 tools/check-text.py --tree
+    python3 tools/check-build.py
+    shellcheck tools/bazel tools/check tools/style tools/check-man tools/install
+fi

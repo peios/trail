@@ -1,29 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-# Run from the checkout root after npm ci. CARGO_TARGET_DIR is honored.
 cd "$(dirname "$0")/.."
-cargo fmt --package trail -- --check
-rustfmt --check --config-path rustfmt.toml --config skip_children=true \
-    vendor/pagefind/src/lib.rs vendor/pagefind/src/service/api.rs \
-    vendor/pagefind/src/output/mod.rs vendor/pagefind/src/fossick/mod.rs \
-    vendor/pagefind/src/fragments/mod.rs
-npm run format:check
-python3 tools/check-text.py
-shellcheck tools/check
-npm test
-cargo clippy --release --locked --all-targets -- -D warnings
-cargo test --release --locked
-
-warnings_file=$(mktemp)
-docs_output=$(mktemp -d)
-trap 'rm -f "$warnings_file"; rm -rf "$docs_output"' EXIT
-for page in man/*; do
-    groff -Kutf8 -man -Tutf8 -ww -z "$page" 2>>"$warnings_file"
-done
-if [[ -s "$warnings_file" ]]; then
-    cat "$warnings_file" >&2
-    exit 1
-fi
-cargo run --release --locked -- lint docs/learn
-cargo run --release --locked -- build docs/learn --strict --no-cache --out "$docs_output"
+# The wildcard also builds //:clippy, whose marker outputs fail on warnings.
+tools/bazel test "$@" //...

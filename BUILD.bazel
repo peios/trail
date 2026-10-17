@@ -1,0 +1,173 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_clippy", "rust_test")
+load("//tools:build.bzl", "local_command", "local_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])
+
+rust_binary(
+    name = "trail",
+    srcs = glob(["src/*.rs"]),
+    aliases = aliases(),
+    compile_data = glob(
+        ["theme/**"],
+        exclude = ["theme/tests/**"],
+    ),
+    crate_root = "src/main.rs",
+    edition = crate_edition(),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "unit-tests",
+    size = "small",
+    aliases = aliases(normal_dev = True),
+    crate = ":trail",
+    data = glob(["theme/**"]),
+    env_inherit = ["PATH"],
+    rustc_env = {"CARGO_MANIFEST_DIR": "."},
+    deps = all_crate_deps(normal_dev = True),
+)
+
+[
+    rust_test(
+        name = name + "-test",
+        size = "small",
+        srcs = ["tests/" + name + ".rs"],
+        aliases = aliases(normal_dev = True),
+        compile_data = ["man/trail.1"],
+        data = [":trail"],
+        edition = crate_edition(),
+        env_inherit = ["PATH"],
+        rustc_env = {"CARGO_BIN_EXE_trail": "$(rootpath :trail)"},
+        version = "0.1.0",
+        deps = all_crate_deps(normal_dev = True),
+    )
+    for name in [
+        "build_cache",
+        "cli",
+    ]
+]
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [
+        ":build_cache-test",
+        ":cli-test",
+        ":trail",
+        ":unit-tests",
+    ],
+)
+
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "src/**",
+            "tests/**",
+            "theme/**",
+            "docs/**",
+            "man/**",
+            ".github/**",
+            "*.toml",
+            "*.json",
+            "*.md",
+            "*.bazel",
+            ".bazel*",
+            ".prettierrc.json",
+        ],
+        exclude = [
+            "docs/**/.trail-cache/**",
+            "docs/**/dist/**",
+        ],
+    ) + [
+        ".editorconfig",
+        ".gitattributes",
+        ".gitignore",
+        "Cargo.lock",
+        "//tools:sources",
+        "//vendor/pagefind:src/fossick/mod.rs",
+        "//vendor/pagefind:src/fragments/mod.rs",
+        "//vendor/pagefind:src/lib.rs",
+        "//vendor/pagefind:src/output/mod.rs",
+        "//vendor/pagefind:src/service/api.rs",
+    ],
+)
+
+local_test(
+    name = "style",
+    size = "small",
+    srcs = [
+        ":sources",
+        "@prettier//:files",
+    ],
+    buildifier = "@buildifier//file",
+    command = "exec bash tools/style",
+    prettier = "@prettier//:index.mjs",
+    tags = [
+        "external",
+        "no-remote",
+        "no-sandbox",
+    ],
+)
+
+local_test(
+    name = "browser-tests",
+    size = "small",
+    srcs = glob(["theme/**"]),
+    command = "node theme/tests/commands.mjs && node theme/tests/search.mjs && exec node theme/tests/citations.mjs",
+    tags = [
+        "external",
+        "no-remote",
+        "no-sandbox",
+    ],
+)
+
+local_test(
+    name = "manual-tests",
+    size = "small",
+    srcs = glob(["man/*"]) + ["//tools:sources"],
+    command = "exec bash tools/check-man",
+    tags = [
+        "external",
+        "no-remote",
+        "no-sandbox",
+    ],
+)
+
+local_test(
+    name = "docs-test",
+    size = "small",
+    srcs = glob(
+        ["docs/learn/**"],
+        exclude = [
+            "**/.trail-cache/**",
+            "**/dist/**",
+        ],
+    ),
+    binary = ":trail",
+    command = '"$TRAIL_BINARY" lint docs/learn && exec "$TRAIL_BINARY" build docs/learn --strict --no-cache --out "${TEST_TMPDIR:?}/docs"',
+)
+
+local_command(
+    name = "format",
+    srcs = ["@prettier//:files"],
+    buildifier = "@buildifier//file",
+    command = "exec bash tools/style --write",
+    prettier = "@prettier//:index.mjs",
+    workspace = True,
+)
+
+local_command(
+    name = "install",
+    srcs = glob(["man/*"]) + ["//tools:sources"],
+    binary = ":trail",
+    command = 'exec bash tools/install "$@"',
+)

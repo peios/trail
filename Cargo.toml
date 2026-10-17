@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Static site builder for the Peios learn documentation."
 
+[workspace]
+# Keep optional Pagefind server/tokenizer features out of workspace resolution.
+exclude = ["vendor/pagefind"]
+resolver = "3"
+
 [dependencies]
 aho-corasick = "1"
 anyhow = "1"

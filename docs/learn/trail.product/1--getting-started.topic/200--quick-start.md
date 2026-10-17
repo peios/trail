@@ -27,10 +27,10 @@ a second page while it is running.
 
 ## Prerequisites
 
-- **A `trail` binary.** Trail is a single Rust binary; build it from its
-  source directory with `cargo build --release` and the result is
-  `target/release/trail`. Put it on your `PATH`, or call it by path — the
-  examples below assume `trail` is on your `PATH`.
+- **A `trail` binary.** Follow [Building Trail](~trail/getting-started/building-trail)
+  to build and install it with Bazel. The build output is `bazel-bin/trail`.
+  Put it on your `PATH`, or call it by path — the examples below assume
+  `trail` is on your `PATH`.
 - **Nothing else.** The templates, stylesheet, fonts, syntax highlighter,
   diagram renderer, and search engine are all compiled into the binary.
 

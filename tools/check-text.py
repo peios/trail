@@ -7,14 +7,21 @@ import sys
 
 
 def main():
-    names = subprocess.check_output(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
-    ).split(b"\0")
+    if sys.argv[1:] == ["--tree"]:
+        names = [str(path).encode() for path in pathlib.Path(".").rglob("*")]
+    elif not sys.argv[1:]:
+        names = subprocess.check_output(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+        ).split(b"\0")
+    else:
+        raise SystemExit("usage: tools/check-text.py [--tree]")
     failed = False
     for name in names:
         if not name:
             continue
         path = pathlib.Path(name.decode())
+        if path.name == "MODULE.bazel.lock":
+            continue
         if path.parts[0] == "vendor" or "fonts" in path.parts or "vendor" in path.parts:
             continue
         if path.suffix in {".png", ".woff2", ".ttf", ".patch"} or not path.is_file():

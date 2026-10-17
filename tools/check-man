@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+warnings=$(mktemp)
+trap 'rm -f "$warnings"' EXIT
+for page in man/*; do
+    groff -Kutf8 -man -Tutf8 -ww -z "$page" 2>>"$warnings"
+done
+if [[ -s $warnings ]]; then
+    cat "$warnings" >&2
+    exit 1
+fi

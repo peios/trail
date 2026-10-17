@@ -2,7 +2,7 @@
 // the embedded JavaScript with the same pinned formatter as standalone code.
 import fs from "node:fs/promises";
 import path from "node:path";
-import * as prettier from "prettier";
+const prettier = await import(process.env.TRAIL_PRETTIER || "prettier");
 
 const write = process.argv.includes("--write");
 const options = JSON.parse(await fs.readFile(".prettierrc.json", "utf8"));

@@ -17,12 +17,19 @@ jobs:
             - uses: dtolnay/rust-toolchain@master
               with:
                   toolchain: "1.96.0"
-                  components: rustfmt, clippy
-            - uses: Swatinem/rust-cache@v2
+                  components: rustfmt
+            - uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cache/trail/bazel-disk
+                      ~/.cache/trail/bazel-repository
+                      ~/.cache/peios/bazel
+                  key: ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-${{ github.sha }}
+                  restore-keys: |
+                      ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-
+                      ${{ runner.os }}-trail-bazel-
             - uses: actions/setup-node@v4
               with:
                   node-version: "22"
-                  cache: npm
-            - run: npm ci --ignore-scripts
             - run: sudo apt-get update && sudo apt-get install -y groff shellcheck
-            - run: tools/check
+            - run: tools/check --disk_cache="$HOME/.cache/trail/bazel-disk" --repository_cache="$HOME/.cache/trail/bazel-repository"

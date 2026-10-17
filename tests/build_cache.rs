@@ -7,7 +7,7 @@ use std::{
 };
 
 fn build(root: &Path, extra: &[&str], environment: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_trail"))
+    Command::new(fs::canonicalize(env!("CARGO_BIN_EXE_trail")).unwrap())
         .arg("build")
         .arg(root)
         .args(["--strict", "--out"])

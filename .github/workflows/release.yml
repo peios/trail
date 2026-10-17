@@ -18,24 +18,25 @@ jobs:
         steps:
             - uses: actions/checkout@v4
 
-            - uses: dtolnay/rust-toolchain@master
+            - uses: actions/cache@v4
               with:
-                  toolchain: "1.96.0"
-
-            - uses: Swatinem/rust-cache@v2
+                  path: |
+                      ~/.cache/trail/bazel-disk
+                      ~/.cache/trail/bazel-repository
+                      ~/.cache/peios/bazel
+                  key: ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-${{ github.sha }}
+                  restore-keys: |
+                      ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-
+                      ${{ runner.os }}-trail-bazel-
 
             # The binary is consumed by peios/learn's Pages workflow, which runs
             # on the same runner image, so a plain glibc build is enough. A fully
-            # static one would mean cross-compiling zstd-sys (pagefind's, via cc)
-            # against musl, which is a toolchain to maintain for no gain here.
-            - name: Test
-              run: cargo test --release --locked
-
+            # static one would require a separately qualified musl toolchain.
             - name: Build
-              run: cargo build --release --locked
+              run: ./tools/bazel build --disk_cache="$HOME/.cache/trail/bazel-disk" --repository_cache="$HOME/.cache/trail/bazel-repository" //:trail
 
             - name: Stage the artifact
-              run: cp target/release/trail trail-linux-amd64
+              run: cp bazel-bin/trail trail-linux-amd64
 
             - name: Update latest release
               env:

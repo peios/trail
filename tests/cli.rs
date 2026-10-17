@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
 fn run(arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_trail"))
+    Command::new(std::fs::canonicalize(env!("CARGO_BIN_EXE_trail")).unwrap())
         .args(arguments)
         .output()
         .unwrap()
@@ -100,7 +100,8 @@ fn operational_errors_use_display_text_and_stderr() {
 fn diagnostics_use_the_invoked_basename() {
     let directory = tempfile::tempdir().unwrap();
     let alias = directory.path().join("docs-tool");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_trail"), &alias).unwrap();
+    let binary = std::fs::canonicalize(env!("CARGO_BIN_EXE_trail")).unwrap();
+    std::os::unix::fs::symlink(binary, &alias).unwrap();
     let output = Command::new(alias).arg("--unknown").output().unwrap();
     assert_eq!(output.status.code(), Some(2));
     let text = String::from_utf8(output.stderr).unwrap();
