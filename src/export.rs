@@ -593,7 +593,8 @@ fn write_article_mirrors(
             if !related.is_empty() {
                 markdown.push_str("\nRelated content:\n\n");
                 for (path, title) in &related {
-                    let _ = writeln!(markdown, "- [{title}]({base}{path}.md)");
+                    let path = links.source_url(path);
+                    let _ = writeln!(markdown, "- [{title}]({base}{path})");
                 }
             }
             out.write(&mirror_path(out.dir(), &article.path), markdown.as_bytes())?;

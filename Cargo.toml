@@ -16,6 +16,9 @@ blake3 = "1.8"
 axum = "0.8"
 clap = { version = "4", features = ["derive", "wrap_help"] }
 html-escape = "0.2"
+flate2 = "1"
+sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
 imagesize = "0.15.0"
 lol_html = "2.9"
 minijinja = "2"

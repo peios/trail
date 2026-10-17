@@ -74,6 +74,7 @@ files:
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `edit_url` | Edit links on the tree's pages use the tree's own template, with `{path}` relative to the tree's root. A tree without `edit_url` gets no edit links; it doesn't borrow the primary's, which would point at the wrong repository. |
 | `passthrough` | Entries are copied from the tree's root. Where two trees pass the same path through, the primary's copy wins, then the first tree listed. |
+| `attachments` | Sources resolve from the tree's root. IDs must be unique across all trees. |
 | `plugins` | The tree's plugins are available to every page, and each runs in the tree that configures it. See [Plugins](#plugins). |
 
 A merged tree doesn't need a `trail.toml` at all. If it has one, the file must

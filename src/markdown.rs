@@ -1262,9 +1262,10 @@ fn rewrite_source_uncached(
                 let Ok(resolved) = links.resolve(target) else {
                     continue;
                 };
+                let resolved = links.source_url(&resolved);
                 let new_dest = match fragment {
-                    Some(fragment) => format!("{base}{resolved}.md#{fragment}"),
-                    None => format!("{base}{resolved}.md"),
+                    Some(fragment) => format!("{base}{resolved}#{fragment}"),
+                    None => format!("{base}{resolved}"),
                 };
                 if let Some(dest_range) = inline_dest_range(markdown, &range, &dest_url) {
                     edits.push((dest_range, new_dest));
@@ -1303,6 +1304,39 @@ fn rewrite_source_uncached(
             _ => {}
         }
     }
+    // Attachment reference definitions also need file URLs in exported text.
+    // Keep the ordinary parser fast path for pages without attachment links.
+    if markdown.contains("~attachments/") {
+        let parser = pulldown_cmark::Parser::new_ext(markdown, parser_options());
+        for (_, definition) in parser.reference_definitions().iter() {
+            let Some(reference) = definition.dest.strip_prefix('~') else {
+                continue;
+            };
+            if !reference.starts_with("attachments/") {
+                continue;
+            }
+            let (target, fragment) = reference
+                .split_once('#')
+                .map_or((reference, None), |(t, f)| (t, Some(f)));
+            let Ok(resolved) = links.resolve(target) else {
+                continue;
+            };
+            let source = &markdown[definition.span.clone()];
+            let Some(label_end) = source.find("]:") else {
+                continue;
+            };
+            let start = label_end + 2;
+            let Some(offset) = source[start..].find(definition.dest.as_ref()) else {
+                continue;
+            };
+            let at = definition.span.start + start + offset;
+            let destination = match fragment {
+                Some(fragment) => format!("{base}{resolved}#{fragment}"),
+                None => format!("{base}{resolved}"),
+            };
+            edits.push((at..at + definition.dest.len(), destination));
+        }
+    }
     let mut out = markdown.to_string();
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
     for (range, replacement) in edits {
@@ -1327,6 +1361,14 @@ fn inline_dest_range(
     }
     let inner = (range.start + open + 2)..(range.end - 1);
     let written = &markdown[inner.clone()];
+    if let Some(rest) = written
+        .strip_prefix('<')
+        .and_then(|text| text.strip_prefix(dest_url))
+        && let Some(rest) = rest.strip_prefix('>')
+        && (rest.is_empty() || rest.starts_with([' ', '\t']))
+    {
+        return Some(inner.start + 1..inner.start + 1 + dest_url.len());
+    }
     if written == dest_url {
         return Some(inner);
     }

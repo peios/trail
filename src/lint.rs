@@ -205,8 +205,19 @@ pub fn run(root: &Path) -> Result<bool> {
     let config: LintConfig = lint.clone().try_into().context("reading [lint]")?;
     config.validate()?;
 
+    let attachments: Vec<crate::attachments::AttachmentConfig> = table
+        .get("attachments")
+        .map(|value| value.clone().try_into())
+        .transpose()
+        .context("reading [[attachments]]")?
+        .unwrap_or_default();
+    let mut excluded = Vec::new();
+    for attachment in attachments {
+        attachment.validate(root, &root.join("dist"))?;
+        excluded.push(root.join(attachment.source));
+    }
     let mut files = Vec::new();
-    collect_files(root, root, &mut files)?;
+    collect_files(root, root, &excluded, &mut files)?;
     let mut reports = Vec::new();
     for path in files {
         let relative = path
@@ -259,7 +270,12 @@ pub fn run(root: &Path) -> Result<bool> {
 
 /// Every article, trail.toml below the root, and link file. The output
 /// directory and dot entries are skipped.
-fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_files(
+    root: &Path,
+    dir: &Path,
+    excluded: &[PathBuf],
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
     let mut entries: Vec<_> = fs::read_dir(dir)
         .and_then(Iterator::collect)
         .with_context(|| format!("reading {}", dir.display()))?;
@@ -267,11 +283,14 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
-        if name.starts_with('.') || (dir == root && name == "dist") {
+        if name.starts_with('.')
+            || (dir == root && name == "dist")
+            || excluded.iter().any(|source| path.starts_with(source))
+        {
             continue;
         }
         if path.is_dir() {
-            collect_files(root, &path, files)?;
+            collect_files(root, &path, excluded, files)?;
         } else if name.ends_with(".md")
             || name.ends_with(".link")
             || (name == "trail.toml" && dir != root)
@@ -1402,6 +1421,31 @@ impl Suppressions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_attachments_are_data_not_articles() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::attachments::tests::fixture(dir.path());
+        fs::write(
+            dir.path().join("bundles/tools/README.md"),
+            "# Standalone title\n",
+        )
+        .unwrap();
+        let config = dir.path().join("trail.toml");
+        fs::write(
+            &config,
+            fs::read_to_string(&config).unwrap() + "\n[lint]\nrules=['heading-levels']\n",
+        )
+        .unwrap();
+        assert!(!run(dir.path()).unwrap());
+        fs::write(
+            dir.path()
+                .join("alpha.product/5--loose.topic/999--invalid.md"),
+            "---\ntitle: Invalid\ntype: concept\n---\n# Invalid heading\n",
+        )
+        .unwrap();
+        assert!(run(dir.path()).unwrap());
+    }
 
     fn config(rules: &[&str]) -> LintConfig {
         let mut config: LintConfig = toml::from_str(

@@ -18,15 +18,16 @@ related:
 <span id="merge"></span>
 <span id="nav"></span>
 <span id="passthrough"></span>
+<span id="attachments"></span>
 <span id="plugins-name"></span>
 <span id="the-site-root"></span>
 <span id="validation"></span>
 <span id="what-url-unlocks"></span>
 
 Each `trail.toml` configures the source directory that contains it. The
-root file defines site-wide presentation, merged trees, plugins, and writing
-rules. Grouping files describe their own navigation unit. `trail.toml(5)`
-is the authoritative key and validation reference.
+root file defines site-wide presentation, merged trees, attachments, plugins,
+and writing rules. Grouping files describe their own navigation unit.
+`trail.toml(5)` is the authoritative key and validation reference.
 
 ## Configure the site root
 

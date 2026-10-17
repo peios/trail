@@ -124,6 +124,42 @@ the
 .IP \(bu 2
 Every slug in \fBfeatured\fR must name an existing product.
 .PP
+.SS "[[attachments]]"
+Declare a downloadable file or a generated source archive. Each table requires
+\fBid\fR, \fBtitle\fR, \fBdescription\fR, \fBsource\fR and \fBfilename\fR.
+The source is relative to the declaring tree's root, outside product directories.
+Merged trees retain their declarations; IDs must be unique across the site.
+.PP
+\fBformat\fR defaults to \fBfile\fR, which copies a regular file unchanged.
+Use \fBtar.gz\fR to package a directory; the filename must end in .tar.gz.
+Optional \fBexclude\fR entries name exact relative paths or subtrees in a
+directory bundle, not glob patterns. Hidden files are included unless excluded.
+File attachments do not accept exclusions.
+.PP
+IDs and filenames start with an ASCII letter or digit and contain only ASCII
+letters, digits, dots, underscores and hyphens. The ID \fBindex.json\fR and
+filename \fBmetadata.json\fR are reserved. Symbolic links, special files,
+escaping paths and sources overlapping the output are rejected.
+.PP
+Use \fB~attachments/<id>\fR for the download and
+\fB~attachments/<id>/metadata\fR for its JSON metadata. Valid references
+are checked and work in HTML, print, Markdown and cache-busting copies.
+The output is \fB/attachments/<id>/<filename>\fR; metadata is
+\fB/attachments/<id>/metadata.json\fR. The directory and product slug
+\fBattachments\fR cannot collide with configured downloads.
+.PP
+\fB/attachments/index.json\fR lists metadata records in ID order. Each
+record contains schema_version (1), id, title, description, filename, url,
+metadata_url, format, media_type, size_bytes and sha256. SHA-256 covers the
+published bytes. Metadata omits local paths. Media type is application/gzip
+for generated archives and application/octet-stream for copied files;
+the hosting server controls HTTP headers.
+.PP
+Archives contain a top-level directory named after the ID. Entries are sorted;
+ownership and timestamps are zeroed. Directories and Unix executable files
+use mode 0755; other files use 0644. Empty directories are retained. Packaging
+never executes source files. Content and executable modes participate in cache
+invalidation; removed downloads are pruned on a successful build.
 .SS "passthrough"
 .PP
 Root entries trail neither builds nor understands, copied into the output as
@@ -252,7 +288,7 @@ path = "../kernel/docs"
 Every \fB*.product\fR in the tree joins the site. A merged tree's
 \fBtrail.toml\fR is
 optional; when present it must be valid, and only its \fBedit_url\fR,
-\fBpassthrough\fR and \fBplugins\fR apply. Everything else, including its own
+\fBpassthrough\fR, \fBattachments\fR and \fBplugins\fR apply. Everything else, including its own
 \fB[[merge]]\fR list, is ignored.
 .PP
 Errors:

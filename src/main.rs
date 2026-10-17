@@ -1,3 +1,4 @@
+mod attachments;
 mod build;
 mod cache;
 mod cli;

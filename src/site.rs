@@ -42,6 +42,7 @@ pub struct Tree {
     pub root: PathBuf,
     pub edit_url: Option<String>,
     pub passthrough: Vec<String>,
+    pub attachments: Vec<crate::attachments::AttachmentConfig>,
     pub plugins: BTreeMap<String, PluginConfig>,
 }
 
@@ -51,6 +52,7 @@ impl Tree {
             root,
             edit_url: config.edit_url.clone(),
             passthrough: config.passthrough.clone(),
+            attachments: config.attachments.clone(),
             plugins: config.plugins.clone(),
         }
     }
@@ -143,6 +145,9 @@ pub struct SiteConfig {
     /// something trail generates (`robots.txt`) replaces it.
     #[serde(default)]
     pub passthrough: Vec<String>,
+    /// Declared downloads, resolved relative to this tree's root.
+    #[serde(default)]
+    pub attachments: Vec<crate::attachments::AttachmentConfig>,
     /// Per-product tinting (cards, tiles, sidebar highlights take each
     /// product's color). Off, everything tints from the site accent.
     #[serde(default = "default_true")]
@@ -154,7 +159,7 @@ pub struct SiteConfig {
     #[serde(default, skip_serializing)]
     pub plugins: BTreeMap<String, PluginConfig>,
     /// Other trees whose products join this site. Each keeps its own
-    /// edit links, passthrough entries and plugins; everything else about
+    /// edit links, attachments, passthrough entries and plugins; everything else about
     /// the site comes from this file.
     #[serde(default, skip_serializing)]
     pub merge: Vec<MergeConfig>,
@@ -1036,6 +1041,7 @@ impl Site {
             (None, None) => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
         });
 
+        crate::attachments::validate_site(&trees, &products, favicon.as_deref())?;
         Ok(Site {
             config,
             products,
@@ -2598,6 +2604,11 @@ fn validate_color(color: &str) -> Result<()> {
 /// able to reach outside the site to do it.
 /// Check the settings a tree keeps for itself when it is merged.
 fn validate_tree_config(config: &SiteConfig, root: &Path, out: &Path) -> Result<()> {
+    for attachment in &config.attachments {
+        attachment
+            .validate(root, out)
+            .with_context(|| format!("validating attachment '{}'", attachment.id))?;
+    }
     if let Some(template) = &config.edit_url {
         ensure!(
             template.contains("{path}"),
@@ -2621,6 +2632,12 @@ fn keep_entries<'a>(
         .into_iter()
         .flatten()
         .chain(&config.passthrough)
+        .chain(
+            config
+                .attachments
+                .iter()
+                .map(|attachment| &attachment.source),
+        )
         .chain(
             config
                 .plugins
@@ -2679,7 +2696,7 @@ fn load_products(
 
 /// Load a `[[merge]]` tree's products and the settings it keeps. Its
 /// trail.toml is optional; when present it must be valid, but only its
-/// edit link, passthrough entries and plugins apply — the site root's
+/// edit link, attachments, passthrough entries and plugins apply — the site root's
 /// trail.toml settles everything else, including what is merged.
 fn load_merged_tree(
     site_root: &Path,
@@ -2716,6 +2733,7 @@ fn load_merged_tree(
             root,
             edit_url: None,
             passthrough: Vec::new(),
+            attachments: Vec::new(),
             plugins: BTreeMap::new(),
         },
     })

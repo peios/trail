@@ -140,6 +140,7 @@ fn source_inputs(root: &Path, out: &Path) -> Result<std::collections::BTreeMap<P
     let mut seen = HashSet::new();
     for tree in std::iter::once(root.to_path_buf()).chain(crate::site::merged_roots(root)) {
         walk(&tree, &out, &mut seen, &mut inputs)?;
+        inputs.extend(crate::attachments::source_fingerprints(&tree, &out)?);
     }
     // Explicit chrome paths can be hidden or outside the source tree. In
     // particular head_html is loaded into the retained model, not read by
@@ -456,6 +457,41 @@ mod tests {
 
     fn created(path: &str) -> notify::Event {
         notify::Event::new(EventKind::Create(CreateKind::File)).add_path(PathBuf::from(path))
+    }
+
+    #[test]
+    fn retained_downloads_track_hidden_files_and_executable_modes() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        crate::attachments::tests::fixture(root);
+        let out = root.join("dist");
+        let mut state = RebuildState::default();
+        let options = build::BuildOptions::default();
+        state.rebuild(root, &out, &options, false, false).unwrap();
+        assert!(state.unchanged(root, &out));
+        let archive = out.join("attachments/tools/tools.tar.gz");
+        let first = fs::read(&archive).unwrap();
+        fs::write(root.join("bundles/tools/.settings"), "changed\n").unwrap();
+        assert!(!state.unchanged(root, &out));
+        state.rebuild(root, &out, &options, false, false).unwrap();
+        assert_ne!(first, fs::read(&archive).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let before = fs::read(&archive).unwrap();
+            fs::set_permissions(
+                root.join("bundles/tools/run.sh"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            assert!(!state.unchanged(root, &out));
+            state.rebuild(root, &out, &options, false, false).unwrap();
+            assert_ne!(before, fs::read(&archive).unwrap());
+        }
+        fs::remove_file(root.join("bundles/tools/.settings")).unwrap();
+        assert!(!state.unchanged(root, &out));
+        state.rebuild(root, &out, &options, false, false).unwrap();
     }
 
     #[test]

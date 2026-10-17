@@ -151,6 +151,9 @@ fn validate_cbpath(cbpath: &str, site: &Site) -> Result<()> {
         "robots.txt".into(),
         "sitemap.xml".into(),
     ];
+    if site.trees.iter().any(|tree| !tree.attachments.is_empty()) {
+        taken.push("attachments".into());
+    }
     for product in &site.products {
         taken.push(product.slug.clone());
         taken.push(format!("{}.md", product.slug));
@@ -211,6 +214,7 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
 }
 
 struct Prepared {
+    attachments: Vec<crate::attachments::Published>,
     links: LinkIndex,
     images: ImageIndex,
     refs: InlineRefIndex,
@@ -219,6 +223,7 @@ struct Prepared {
 impl Prepared {
     fn new(site: &Site) -> Result<Self> {
         Ok(Self {
+            attachments: crate::attachments::prepare(site)?,
             links: LinkIndex::new(site),
             images: ImageIndex::new(&site.images),
             refs: InlineRefIndex::new(site)?,
@@ -333,10 +338,12 @@ fn build_prepared(
     let out = &Output::new(out);
     let renderer = Renderer::new(options, site)?;
     let Prepared {
+        attachments,
         links,
         images,
         refs,
     } = prepared;
+    crate::attachments::publish(attachments, out, &options.base)?;
     out.write(
         &out.dir().join("index.html"),
         renderer.index(site)?.as_bytes(),

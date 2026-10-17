@@ -175,6 +175,11 @@ last.
 
 ## Files trail does not build
 
+For downloadable files or source bundles, use
+[Attachments](~trail/writing/attachments). Attachment declarations provide
+checked references, automatic packaging, and size and checksum metadata.
+Use `passthrough` for files that need an unchanged public path.
+
 ```toml
 passthrough = ["CNAME", ".well-known"]
 ```

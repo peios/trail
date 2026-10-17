@@ -35,6 +35,7 @@ impl std::error::Error for ResolveError {}
 /// segments (including the anthology's) exist only for disambiguation.
 #[derive(Debug, Default, Clone)]
 pub struct LinkIndex {
+    attachments: HashMap<String, (String, String)>,
     products: HashMap<String, ProductIndex>,
     reads: RefCell<Vec<BTreeSet<Read>>>,
     /// Page path → the anchor ids its body defines (heading ids, `[*name]`
@@ -315,6 +316,20 @@ impl LinkIndex {
             })
             .collect();
         LinkIndex {
+            attachments: site
+                .trees
+                .iter()
+                .flat_map(|tree| &tree.attachments)
+                .flat_map(|a| {
+                    [
+                        (format!("attachments/{}", a.id), (a.url(), a.title.clone())),
+                        (
+                            format!("attachments/{}/metadata", a.id),
+                            (a.metadata_url(), format!("{} metadata", a.title)),
+                        ),
+                    ]
+                })
+                .collect(),
             products,
             anchors,
             reads: Default::default(),
@@ -334,6 +349,15 @@ impl LinkIndex {
         self.resolve_page(reference).map(|(path, _)| path)
     }
 
+    /// Attachments keep their file URL in Markdown exports; pages have mirrors.
+    pub fn source_url(&self, path: &str) -> String {
+        if self.attachments.values().any(|(url, _)| url == path) {
+            path.to_owned()
+        } else {
+            format!("{path}.md")
+        }
+    }
+
     /// Resolve like `resolve`, also returning the target page's title —
     /// for surfaces that display the link rather than embed it.
     pub fn resolve_page(&self, reference: &str) -> Result<(String, String), ResolveError> {
@@ -342,6 +366,14 @@ impl LinkIndex {
     }
 
     fn resolve_page_untracked(&self, reference: &str) -> Result<(String, String), ResolveError> {
+        if let Some(target) = self.attachments.get(reference) {
+            return Ok(target.clone());
+        }
+        if reference.starts_with("attachments/") && !self.attachments.is_empty() {
+            return Err(ResolveError::NoMatch(format!(
+                "link '~{reference}' matches no attachment"
+            )));
+        }
         let mut segments = reference.split('/');
         let product_slug = segments.next().unwrap_or("");
         let suffix: Vec<&str> = segments.collect();
