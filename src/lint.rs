@@ -150,7 +150,10 @@ impl LintConfig {
         }
         for words in &self.words {
             if BUILTIN_RULES.contains(&words.rule.as_str()) {
-                bail!("[[lint.words]] rule '{}' is a built-in rule's name", words.rule);
+                bail!(
+                    "[[lint.words]] rule '{}' is a built-in rule's name",
+                    words.rule
+                );
             }
             if words.matches.is_empty() || words.matches.iter().any(|m| m.trim().is_empty()) {
                 bail!("[[lint.words]] rule '{}' has an empty match", words.rule);
@@ -191,9 +194,13 @@ pub fn run(root: &Path) -> Result<bool> {
     let config_path = root.join("trail.toml");
     let text = fs::read_to_string(&config_path)
         .with_context(|| format!("reading {}", config_path.display()))?;
-    let table: toml::Table = toml::from_str(&text).with_context(|| format!("parsing {}", config_path.display()))?;
+    let table: toml::Table =
+        toml::from_str(&text).with_context(|| format!("parsing {}", config_path.display()))?;
     let Some(lint) = table.get("lint") else {
-        bail!("{} has no [lint] table: no rules to check", config_path.display());
+        bail!(
+            "{} has no [lint] table: no rules to check",
+            config_path.display()
+        );
     };
     let config: LintConfig = lint.clone().try_into().context("reading [lint]")?;
     config.validate()?;
@@ -202,8 +209,13 @@ pub fn run(root: &Path) -> Result<bool> {
     collect_files(root, root, &mut files)?;
     let mut reports = Vec::new();
     for path in files {
-        let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-        let source = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         let findings = if relative.ends_with(".md") {
             lint_markdown(&source, &config)
         } else {
@@ -232,7 +244,11 @@ pub fn run(root: &Path) -> Result<bool> {
         );
     }
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
-    eprintln!("{}, {}", plural(errors, "error"), plural(warnings, "warning"));
+    eprintln!(
+        "{}, {}",
+        plural(errors, "error"),
+        plural(warnings, "warning")
+    );
     Ok(errors > 0)
 }
 
@@ -251,7 +267,10 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()
         }
         if path.is_dir() {
             collect_files(root, &path, files)?;
-        } else if name.ends_with(".md") || name.ends_with(".link") || (name == "trail.toml" && dir != root) {
+        } else if name.ends_with(".md")
+            || name.ends_with(".link")
+            || (name == "trail.toml" && dir != root)
+        {
             files.push(path);
         }
     }
@@ -286,7 +305,10 @@ impl Run {
     }
 
     fn source_offset(&self, at: usize) -> usize {
-        let index = self.map.partition_point(|&(text, _)| text <= at).saturating_sub(1);
+        let index = self
+            .map
+            .partition_point(|&(text, _)| text <= at)
+            .saturating_sub(1);
         let (text, source) = self.map.get(index).copied().unwrap_or((0, 0));
         source + (at - text)
     }
@@ -304,7 +326,11 @@ impl Run {
                 .find(char::is_whitespace)
                 .map_or(rest.len(), |space| start + space);
             masked.push_str(&rest[..start]);
-            masked.extend(rest[start..end].chars().flat_map(|c| std::iter::repeat_n(' ', c.len_utf8())));
+            masked.extend(
+                rest[start..end]
+                    .chars()
+                    .flat_map(|c| std::iter::repeat_n(' ', c.len_utf8())),
+            );
             rest = &rest[end..];
         }
         masked.push_str(rest);
@@ -360,7 +386,9 @@ fn read_body(body: &str) -> Body {
         }
     };
 
-    for (event, range) in Parser::new_ext(body, crate::markdown::parser_options()).into_offset_iter() {
+    for (event, range) in
+        Parser::new_ext(body, crate::markdown::parser_options()).into_offset_iter()
+    {
         match event {
             Event::Start(Tag::CodeBlock(kind)) => {
                 flush(&mut run, &mut out.runs);
@@ -371,7 +399,12 @@ fn read_body(body: &str) -> Body {
                     CodeBlockKind::Fenced(info) => (true, info.to_string()),
                     CodeBlockKind::Indented => (false, String::new()),
                 };
-                block = Some(CodeBlock { fenced, info, at: range.start, lines: Vec::new() });
+                block = Some(CodeBlock {
+                    fenced,
+                    info,
+                    at: range.start,
+                    lines: Vec::new(),
+                });
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code = false;
@@ -396,7 +429,10 @@ fn read_body(body: &str) -> Body {
                 flush(&mut run, &mut out.runs);
                 out.not_prose.push(range.clone());
             }
-            Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. }) => {
+            Event::Start(Tag::Link {
+                link_type: LinkType::Autolink | LinkType::Email,
+                ..
+            }) => {
                 url_text += 1;
                 run.push(" ", range.start);
             }
@@ -433,7 +469,8 @@ fn read_body(body: &str) -> Body {
                 run.push(&CODE_PLACEHOLDER.to_string(), range.start);
                 let quoted = &body[range.clone()];
                 let offset = quoted.find(code.as_ref()).unwrap_or(0);
-                out.code_spans.push((code.to_string(), range.start + offset));
+                out.code_spans
+                    .push((code.to_string(), range.start + offset));
                 if let Some((_, words, _)) = heading.as_mut() {
                     words.push(CODE_PLACEHOLDER);
                 }
@@ -445,8 +482,11 @@ fn read_body(body: &str) -> Body {
                 }
             }
             Event::InlineHtml(_) => {}
-            Event::Start(Tag::Emphasis | Tag::Strikethrough | Tag::Link { .. } | Tag::Image { .. })
-            | Event::End(TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link | TagEnd::Image) => {}
+            Event::Start(
+                Tag::Emphasis | Tag::Strikethrough | Tag::Link { .. } | Tag::Image { .. },
+            )
+            | Event::End(TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link | TagEnd::Image) =>
+                {}
             // Every other start or end is a block boundary.
             _ => flush(&mut run, &mut out.runs),
         }
@@ -472,7 +512,9 @@ impl Lines {
         let line = self.starts.partition_point(|&start| start <= offset);
         let start = self.starts[line - 1];
         let offset = offset.min(source.len());
-        let column = source.get(start..offset).map_or(1, |text| text.chars().count() + 1);
+        let column = source
+            .get(start..offset)
+            .map_or(1, |text| text.chars().count() + 1);
         (line, column)
     }
 }
@@ -487,11 +529,19 @@ pub fn lint_markdown(source: &str, config: &LintConfig) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut add = |offset: usize, rule: &str, message: String| {
         let (line, column) = lines.locate(source, offset);
-        findings.push(Finding { line, column, rule: rule.to_string(), message });
+        findings.push(Finding {
+            line,
+            column,
+            rule: rule.to_string(),
+            message,
+        });
     };
 
     // Frontmatter: its title and description are prose.
-    let (frontmatter, body_start) = match source.strip_prefix("---\n").and_then(|rest| rest.find("\n---\n").map(|end| (end, rest))) {
+    let (frontmatter, body_start) = match source
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.find("\n---\n").map(|end| (end, rest)))
+    {
         Some((end, rest)) => (Some(&rest[..end]), 4 + end + 5),
         None => (None, 0),
     };
@@ -536,11 +586,23 @@ pub fn lint_markdown(source: &str, config: &LintConfig) -> Vec<Finding> {
         let at = body_start + at;
         if config.on("heading-levels") {
             if *level == 1 {
-                add(at, "heading-levels", "use `##` for top-level headings; the title is the page's `#`".into());
+                add(
+                    at,
+                    "heading-levels",
+                    "use `##` for top-level headings; the title is the page's `#`".into(),
+                );
             } else if *level > previous + 1 {
-                add(at, "heading-levels", format!("heading skips from level {previous} to level {level}"));
+                add(
+                    at,
+                    "heading-levels",
+                    format!("heading skips from level {previous} to level {level}"),
+                );
             } else if *level >= 4 {
-                add(at, "heading-levels", "avoid `####`: split the page instead".into());
+                add(
+                    at,
+                    "heading-levels",
+                    "avoid `####`: split the page instead".into(),
+                );
             }
         }
         previous = *level;
@@ -549,7 +611,11 @@ pub fn lint_markdown(source: &str, config: &LintConfig) -> Vec<Finding> {
             && let Some(last) = visible.chars().last()
             && ".,:;!?".contains(last)
         {
-            add(at, "heading-punctuation", format!("heading ends with \"{last}\""));
+            add(
+                at,
+                "heading-punctuation",
+                format!("heading ends with \"{last}\""),
+            );
         }
         if config.on("heading-case")
             && let Some(message) = sentence_case(visible, &config.proper_nouns)
@@ -559,16 +625,30 @@ pub fn lint_markdown(source: &str, config: &LintConfig) -> Vec<Finding> {
     }
 
     // Code blocks.
-    for CodeBlock { fenced, info, at, lines: content } in &body.code_blocks {
+    for CodeBlock {
+        fenced,
+        info,
+        at,
+        lines: content,
+    } in &body.code_blocks
+    {
         let at = body_start + at;
         let language = info.split_whitespace().next().unwrap_or("");
         if config.on("code-language") && *fenced && language.is_empty() {
-            add(at, "code-language", "tag the code block with its language (`text` for none)".into());
+            add(
+                at,
+                "code-language",
+                "tag the code block with its language (`text` for none)".into(),
+            );
         }
         if config.on("shell-prompt") && SHELL_LANGUAGES.contains(&language) {
             for (line_at, line) in content {
                 if line.trim_start().starts_with("$ ") {
-                    add(body_start + line_at, "shell-prompt", "write the command without a `$ ` prompt".into());
+                    add(
+                        body_start + line_at,
+                        "shell-prompt",
+                        "write the command without a `$ ` prompt".into(),
+                    );
                 }
             }
         }
@@ -576,17 +656,30 @@ pub fn lint_markdown(source: &str, config: &LintConfig) -> Vec<Finding> {
 
     // Whole lines.
     let shift = |ranges: &[Range<usize>]| -> Vec<Range<usize>> {
-        ranges.iter().map(|r| r.start + body_start..r.end + body_start).collect()
+        ranges
+            .iter()
+            .map(|r| r.start + body_start..r.end + body_start)
+            .collect()
     };
     let (not_prose, code) = (shift(&body.not_prose), shift(&body.code));
     for (index, &start) in lines.starts.iter().enumerate() {
-        let end = lines.starts.get(index + 1).map_or(source.len(), |next| next - 1);
+        let end = lines
+            .starts
+            .get(index + 1)
+            .map_or(source.len(), |next| next - 1);
         let line = &source[start..end.max(start)];
         let in_code = code.iter().any(|range| range.contains(&start));
         if config.on("invisible-characters") && !in_code {
             for (column, c) in line.char_indices() {
                 if INVISIBLE.contains(&c) {
-                    add(start + column, "invisible-characters", format!("{} in source: use a plain space, or nothing", invisible_name(c)));
+                    add(
+                        start + column,
+                        "invisible-characters",
+                        format!(
+                            "{} in source: use a plain space, or nothing",
+                            invisible_name(c)
+                        ),
+                    );
                 }
             }
         }
@@ -594,8 +687,18 @@ pub fn lint_markdown(source: &str, config: &LintConfig) -> Vec<Finding> {
         if config.on("line-length") && prose {
             let width = line.chars().count();
             if width > config.line_length && !link_dominated(line, config.line_length) {
-                let at = line.char_indices().nth(config.line_length).map_or(line.len(), |(at, _)| at);
-                add(start + at, "line-length", format!("line is {width} characters; wrap prose at {}", config.line_length));
+                let at = line
+                    .char_indices()
+                    .nth(config.line_length)
+                    .map_or(line.len(), |(at, _)| at);
+                add(
+                    start + at,
+                    "line-length",
+                    format!(
+                        "line is {width} characters; wrap prose at {}",
+                        config.line_length
+                    ),
+                );
             }
         }
     }
@@ -613,7 +716,9 @@ fn frontmatter_runs(frontmatter: &str, offset: usize) -> Vec<Run> {
     let mut at = offset;
     for line in frontmatter.split_inclusive('\n') {
         let content = line.trim_end_matches('\n');
-        let key = content.split_once(':').filter(|(key, _)| !key.starts_with(' ') && !key.contains(' '));
+        let key = content
+            .split_once(':')
+            .filter(|(key, _)| !key.starts_with(' ') && !key.contains(' '));
         if let Some((key, value)) = key {
             if let Some(done) = current.take() {
                 runs.push(done);
@@ -634,7 +739,10 @@ fn frontmatter_runs(frontmatter: &str, offset: usize) -> Vec<Run> {
             let trimmed = content.trim_start();
             if !trimmed.is_empty() {
                 run.push(" ", at);
-                run.push(trimmed.trim_matches(|c| c == '"' || c == '\''), at + (content.len() - trimmed.len()));
+                run.push(
+                    trimmed.trim_matches(|c| c == '"' || c == '\''),
+                    at + (content.len() - trimmed.len()),
+                );
             }
         }
         at += line.len();
@@ -661,10 +769,17 @@ pub fn lint_toml(source: &str, config: &LintConfig) -> Vec<Finding> {
             .match_indices(key)
             .find(|(at, _)| source[..*at].ends_with('\n') || *at == 0)
             .map_or(0, |(at, _)| at);
-        let value_at = source[at..].find(['"', '\'']).map_or(at, |quote| at + quote + 1);
+        let value_at = source[at..]
+            .find(['"', '\''])
+            .map_or(at, |quote| at + quote + 1);
         let mut add = |offset: usize, rule: &str, message: String| {
             let (line, column) = lines.locate(source, offset);
-            findings.push(Finding { line, column, rule: rule.to_string(), message });
+            findings.push(Finding {
+                line,
+                column,
+                rule: rule.to_string(),
+                message,
+            });
         };
         if key == "title"
             && config.on("title-case")
@@ -689,7 +804,8 @@ pub fn lint_toml(source: &str, config: &LintConfig) -> Vec<Finding> {
 /// Every finding in one run of prose: (offset in the run, rule, message).
 fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String)> {
     let mut out = Vec::new();
-    let mut add = |at: usize, rule: &str, message: String| out.push((at, rule.to_string(), message));
+    let mut add =
+        |at: usize, rule: &str, message: String| out.push((at, rule.to_string(), message));
 
     for words in &config.words {
         if !config.on(&words.rule) {
@@ -715,7 +831,11 @@ fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String
             '\u{2014}' if config.on("em-dash") => {
                 let spaced = |c: Option<char>| c.is_none_or(char::is_whitespace);
                 if !spaced(before(i)) || !spaced(after(i)) {
-                    add(at, "em-dash", "put a space on each side of an em dash".into());
+                    add(
+                        at,
+                        "em-dash",
+                        "put a space on each side of an em dash".into(),
+                    );
                 }
             }
             '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}' if config.on("curly-quotes") => {
@@ -753,7 +873,11 @@ fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String
                     next.is_none_or(char::is_whitespace) || word_before
                 } =>
             {
-                add(at, "double-hyphen", "write an em dash as \"—\", not \"--\"".into());
+                add(
+                    at,
+                    "double-hyphen",
+                    "write an em dash as \"—\", not \"--\"".into(),
+                );
             }
             _ => {}
         }
@@ -761,9 +885,16 @@ fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String
 
     if config.on("em-dash") {
         for (start, sentence) in sentences(text) {
-            let dashes: Vec<usize> = sentence.match_indices('\u{2014}').map(|(at, _)| at).collect();
+            let dashes: Vec<usize> = sentence
+                .match_indices('\u{2014}')
+                .map(|(at, _)| at)
+                .collect();
             if dashes.len() > 2 {
-                add(start + dashes[2], "em-dash", "more than one pair of em dashes in a sentence".into());
+                add(
+                    start + dashes[2],
+                    "em-dash",
+                    "more than one pair of em dashes in a sentence".into(),
+                );
             }
         }
     }
@@ -774,7 +905,11 @@ fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String
     }
     if config.on("serial-comma") {
         for at in missing_serial_commas(text) {
-            add(at, "serial-comma", "add a serial comma before the last item".into());
+            add(
+                at,
+                "serial-comma",
+                "add a serial comma before the last item".into(),
+            );
         }
     }
     out
@@ -790,19 +925,32 @@ fn find_phrase(text: &str, phrase: &str, case_sensitive: bool) -> Vec<(usize, St
     let Some(first) = parts.first() else {
         return Vec::new();
     };
-    let same = |a: &str, b: &str| if case_sensitive { a == b } else { a.eq_ignore_ascii_case(b) };
+    let same = |a: &str, b: &str| {
+        if case_sensitive {
+            a == b
+        } else {
+            a.eq_ignore_ascii_case(b)
+        }
+    };
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let mut found = Vec::new();
     let mut from = 0;
     while from < text.len() {
         let Some(start) = (from..text.len())
             .filter(|&at| text.is_char_boundary(at))
-            .find(|&at| text.get(at..at + first.len()).is_some_and(|candidate| same(candidate, first)))
+            .find(|&at| {
+                text.get(at..at + first.len())
+                    .is_some_and(|candidate| same(candidate, first))
+            })
         else {
             break;
         };
         from = start + text[start..].chars().next().map_or(1, char::len_utf8);
-        let left_ok = !first.starts_with(is_word) || text[..start].chars().next_back().is_none_or(|c| !is_word(c));
+        let left_ok = !first.starts_with(is_word)
+            || text[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_word(c));
         if !left_ok {
             continue;
         }
@@ -810,7 +958,11 @@ fn find_phrase(text: &str, phrase: &str, case_sensitive: bool) -> Vec<(usize, St
         let mut matched = true;
         for part in &parts[1..] {
             let gap = text[end..].len() - text[end..].trim_start().len();
-            if gap == 0 || !text.get(end + gap..end + gap + part.len()).is_some_and(|candidate| same(candidate, part)) {
+            if gap == 0
+                || !text
+                    .get(end + gap..end + gap + part.len())
+                    .is_some_and(|candidate| same(candidate, part))
+            {
                 matched = false;
                 break;
             }
@@ -820,10 +972,13 @@ fn find_phrase(text: &str, phrase: &str, case_sensitive: bool) -> Vec<(usize, St
             continue;
         }
         if wildcard {
-            end += text[end..].find(|c: char| !is_word(c)).unwrap_or(text.len() - end);
+            end += text[end..]
+                .find(|c: char| !is_word(c))
+                .unwrap_or(text.len() - end);
         }
         let last = parts.last().unwrap_or(first);
-        let right_ok = !last.ends_with(is_word) || text[end..].chars().next().is_none_or(|c| !is_word(c));
+        let right_ok =
+            !last.ends_with(is_word) || text[end..].chars().next().is_none_or(|c| !is_word(c));
         if right_ok {
             found.push((start, text[start..end].to_string()));
         }
@@ -838,7 +993,8 @@ fn sentences(text: &str) -> Vec<(usize, &str)> {
     let mut start = 0;
     let bytes = text.as_bytes();
     for (at, c) in text.char_indices() {
-        if matches!(c, '.' | '?' | '!') && bytes.get(at + 1).is_none_or(|b| b.is_ascii_whitespace()) {
+        if matches!(c, '.' | '?' | '!') && bytes.get(at + 1).is_none_or(|b| b.is_ascii_whitespace())
+        {
             out.push((start, &text[start..at + 1]));
             start = at + 1;
         }
@@ -853,12 +1009,25 @@ fn sentences(text: &str) -> Vec<(usize, &str)> {
 fn hex_findings(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for (at, _) in text.match_indices("0x") {
-        if text[..at].chars().next_back().is_some_and(char::is_alphanumeric) {
+        if text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+        {
             continue;
         }
-        let digits: String = text[at + 2..].chars().take_while(char::is_ascii_hexdigit).collect();
+        let digits: String = text[at + 2..]
+            .chars()
+            .take_while(char::is_ascii_hexdigit)
+            .collect();
         if digits.chars().any(|c| c.is_ascii_lowercase()) {
-            out.push((at, format!("write hexadecimal digits in uppercase: 0x{}", digits.to_ascii_uppercase())));
+            out.push((
+                at,
+                format!(
+                    "write hexadecimal digits in uppercase: 0x{}",
+                    digits.to_ascii_uppercase()
+                ),
+            ));
         }
     }
     out
@@ -888,7 +1057,10 @@ fn check_clause(clause: &str, offset: usize, out: &mut Vec<usize>) {
         for (at, _) in clause.match_indices(conjunction) {
             let before = &clause[..at];
             // `"is," "carries," or "produces,"`: the comma is in the quote.
-            if before.trim_end_matches(['"', '\u{201D}', '\'']).ends_with(',') {
+            if before
+                .trim_end_matches(['"', '\u{201D}', '\''])
+                .ends_with(',')
+            {
                 continue;
             }
             let items: Vec<&str> = before.split(',').collect();
@@ -910,14 +1082,17 @@ fn check_clause(clause: &str, offset: usize, out: &mut Vec<usize>) {
             let first = items[0].trim();
             let first_words = first.split_whitespace().count();
             let lone_adverb = first_words == 1
-                && (first.to_ascii_lowercase().ends_with("ly") || INTRODUCERS.contains(&first.to_ascii_lowercase().as_str()));
+                && (first.to_ascii_lowercase().ends_with("ly")
+                    || INTRODUCERS.contains(&first.to_ascii_lowercase().as_str()));
             if first.is_empty()
                 || first_words > 5
                 || lone_adverb
                 || starts_with_any(first, SUBORDINATORS)
                 || starts_with_any(first, PREPOSITIONS)
                 || !items[1..].iter().all(|item| short(item))
-                || items[1..].iter().any(|item| starts_with_any(item, NOT_ITEMS) || starts_with_any(item, PREPOSITIONS))
+                || items[1..].iter().any(|item| {
+                    starts_with_any(item, NOT_ITEMS) || starts_with_any(item, PREPOSITIONS)
+                })
                 || (starts_with_any(after, NOT_ITEMS) && !after.trim_start().starts_with("so on"))
             {
                 continue;
@@ -938,33 +1113,125 @@ const SUBORDINATORS: &[&str] = &[
 /// "For example, tokens and keys"; "a name, in dot- or hyphen-separated
 /// segments".
 const PREPOSITIONS: &[&str] = &[
-    "about", "across", "against", "along", "among", "at", "behind", "below", "beside", "between",
-    "beyond", "by", "despite", "during", "except", "for", "from", "in", "inside", "into", "of", "on",
-    "onto", "outside", "over", "per", "through", "throughout", "to", "toward", "under", "unlike",
-    "upon", "via", "with", "within", "without",
+    "about",
+    "across",
+    "against",
+    "along",
+    "among",
+    "at",
+    "behind",
+    "below",
+    "beside",
+    "between",
+    "beyond",
+    "by",
+    "despite",
+    "during",
+    "except",
+    "for",
+    "from",
+    "in",
+    "inside",
+    "into",
+    "of",
+    "on",
+    "onto",
+    "outside",
+    "over",
+    "per",
+    "through",
+    "throughout",
+    "to",
+    "toward",
+    "under",
+    "unlike",
+    "upon",
+    "via",
+    "with",
+    "within",
+    "without",
 ];
 
 /// One-word openings that introduce a sentence: "Together, the
 /// specifications and the manuals …".
 const INTRODUCERS: &[&str] = &[
-    "together", "however", "otherwise", "instead", "also", "then", "first", "finally", "therefore",
-    "thus", "here", "now", "so", "still", "yet", "besides", "meanwhile", "again", "today", "later",
+    "together",
+    "however",
+    "otherwise",
+    "instead",
+    "also",
+    "then",
+    "first",
+    "finally",
+    "therefore",
+    "thus",
+    "here",
+    "now",
+    "so",
+    "still",
+    "yet",
+    "besides",
+    "meanwhile",
+    "again",
+    "today",
+    "later",
 ];
 
 /// Openings of a piece that is not a list item: a new clause ("it
 /// runs"), a contrast ("not `JOB_ID`"), an example ("such as Rust"), a
 /// continuation ("and the privileges").
 const NOT_ITEMS: &[&str] = &[
-    "it", "its", "they", "you", "this", "that", "which", "who", "whom", "whose", "what", "why", "how",
-    "he", "she", "we", "there", "these", "those", "if", "when", "where", "while", "because", "so",
-    "but", "then", "unless", "although", "though", "not", "such", "including", "like", "especially",
-    "namely", "either", "neither", "both", "and", "or", "nor",
+    "it",
+    "its",
+    "they",
+    "you",
+    "this",
+    "that",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "what",
+    "why",
+    "how",
+    "he",
+    "she",
+    "we",
+    "there",
+    "these",
+    "those",
+    "if",
+    "when",
+    "where",
+    "while",
+    "because",
+    "so",
+    "but",
+    "then",
+    "unless",
+    "although",
+    "though",
+    "not",
+    "such",
+    "including",
+    "like",
+    "especially",
+    "namely",
+    "either",
+    "neither",
+    "both",
+    "and",
+    "or",
+    "nor",
 ];
 
 fn starts_with_any(text: &str, words: &[&str]) -> bool {
     text.split_whitespace()
         .next()
-        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase())
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_ascii_lowercase()
+        })
         .is_some_and(|word| words.contains(&word.as_str()))
 }
 
@@ -990,7 +1257,10 @@ fn sentence_case(heading: &str, proper_nouns: &[String]) -> Option<String> {
         };
         if i == 0 {
             if first.is_lowercase() {
-                return Some(format!("capitalize \"{}\", or add it to proper_nouns", word.bare));
+                return Some(format!(
+                    "capitalize \"{}\", or add it to proper_nouns",
+                    word.bare
+                ));
             }
         } else if first.is_uppercase() && !colon {
             return Some(format!(
@@ -1012,10 +1282,15 @@ fn link_dominated(line: &str, limit: usize) -> bool {
     let mut kept = String::new();
     let mut rest = line;
     loop {
-        let next = [rest.find("]("), rest.find("http://"), rest.find("https://"), rest.find('<')]
-            .into_iter()
-            .flatten()
-            .min();
+        let next = [
+            rest.find("]("),
+            rest.find("http://"),
+            rest.find("https://"),
+            rest.find('<'),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let Some(at) = next else {
             kept.push_str(rest);
             break;
@@ -1089,7 +1364,10 @@ impl Suppressions {
             // A comment may sit in a blockquote ("> <!-- … -->") or a
             // list item (indented).
             let unquoted = trimmed.trim_start_matches(|c: char| c == '>' || c.is_whitespace());
-            let Some(directive) = unquoted.strip_prefix("<!--").and_then(|d| d.strip_suffix("-->")) else {
+            let Some(directive) = unquoted
+                .strip_prefix("<!--")
+                .and_then(|d| d.strip_suffix("-->"))
+            else {
                 continue;
             };
             let mut words = directive.split_whitespace();
@@ -1160,10 +1438,17 @@ mod tests {
                     Not mayhem, `simply`, or https://simply.example/may.\n\n```text\nsimply\n```\n";
         assert_eq!(
             found(body, &["words"]),
-            vec![(6, "words".into()), (6, "words".into()), (7, "words".into())]
+            vec![
+                (6, "words".into()),
+                (6, "words".into()),
+                (7, "words".into())
+            ]
         );
         // Phrases match across a line break; wildcards take any ending.
-        assert_eq!(found("Of\ncourse, the colours.", &["words", "spelling"]).len(), 2);
+        assert_eq!(
+            found("Of\ncourse, the colours.", &["words", "spelling"]).len(),
+            2
+        );
         // "US" is not "us" when the match is case-sensitive.
         assert!(found("US English.", &["words"]).is_empty());
     }
@@ -1171,14 +1456,19 @@ mod tests {
     #[test]
     fn word_rules_are_off_until_listed() {
         assert!(found("Simply the colour.", &[]).is_empty());
-        assert_eq!(found("Simply the colour.", &["spelling"]), vec![(6, "spelling".into())]);
+        assert_eq!(
+            found("Simply the colour.", &["spelling"]),
+            vec![(6, "spelling".into())]
+        );
     }
 
     #[test]
     fn frontmatter_values_are_prose_and_titles_are_cased() {
-        let source = "---\ntitle: Developing For Peios\ndescription: Simply\n  everything.\n---\n\nBody.\n";
+        let source =
+            "---\ntitle: Developing For Peios\ndescription: Simply\n  everything.\n---\n\nBody.\n";
         let findings = lint_markdown(source, &config(&["words", "title-case"]));
-        let rules: Vec<(usize, &str)> = findings.iter().map(|f| (f.line, f.rule.as_str())).collect();
+        let rules: Vec<(usize, &str)> =
+            findings.iter().map(|f| (f.line, f.rule.as_str())).collect();
         assert_eq!(rules, vec![(2, "title-case"), (3, "words")]);
         assert!(findings[0].message.contains("\"Developing for Peios\""));
     }
@@ -1187,7 +1477,10 @@ mod tests {
     fn em_dashes_need_spaces_and_come_in_one_pair() {
         assert!(found("The kernel — not it — decides.", &["em-dash"]).is_empty());
         assert_eq!(found("The kernel—not it.", &["em-dash"]).len(), 1);
-        assert_eq!(found("A — b — c — d.", &["em-dash"]), vec![(6, "em-dash".into())]);
+        assert_eq!(
+            found("A — b — c — d.", &["em-dash"]),
+            vec![(6, "em-dash".into())]
+        );
         assert_eq!(found("A -- b.", &["double-hyphen"]).len(), 1);
         assert_eq!(found("A--b.", &["double-hyphen"]).len(), 1);
         assert!(found("Pass `--force`.", &["double-hyphen"]).is_empty());
@@ -1197,7 +1490,13 @@ mod tests {
 
     #[test]
     fn typography() {
-        let rules = ["curly-quotes", "invisible-characters", "exclamation", "ampersand", "double-space"];
+        let rules = [
+            "curly-quotes",
+            "invisible-characters",
+            "exclamation",
+            "ampersand",
+            "double-space",
+        ];
         assert_eq!(found("It\u{2019}s.", &rules).len(), 1);
         assert_eq!(found("A\u{a0}b.", &rules).len(), 1);
         assert_eq!(found("Wow!", &rules).len(), 1);
@@ -1205,7 +1504,13 @@ mod tests {
         assert_eq!(found("One.  Two.", &rules).len(), 1);
         assert!(found("One. Two `a!=b && c`.", &rules).is_empty());
         // Operators, and "&" in a bold UI label, are not punctuation.
-        assert!(found("| NOT (!) | a != b | AND (&&) |\n|---|---|---|\n| x | y | z |\n", &rules).is_empty());
+        assert!(
+            found(
+                "| NOT (!) | a != b | AND (&&) |\n|---|---|---|\n| x | y | z |\n",
+                &rules
+            )
+            .is_empty()
+        );
         assert!(found("Open **Language & Formats**.", &rules).is_empty());
         // Invisible characters in code blocks are the code's business.
         assert!(found("```text\na\u{a0}b\n```\n", &rules).is_empty());
@@ -1214,14 +1519,32 @@ mod tests {
     #[test]
     fn headings() {
         let rules = ["heading-case", "heading-punctuation", "heading-levels"];
-        assert!(found("## Choosing a registry layer\n\n### The netd book\n", &rules).is_empty());
+        assert!(
+            found(
+                "## Choosing a registry layer\n\n### The netd book\n",
+                &rules
+            )
+            .is_empty()
+        );
         assert!(found("## Using the Registry Editor with SIDs and `Foo`\n", &rules).is_empty());
         assert!(found("## netd and regman\n\n## Notes: Why it matters\n", &rules).is_empty());
-        assert_eq!(found("## Choosing a Registry Layer\n", &rules), vec![(6, "heading-case".into())]);
-        assert_eq!(found("## Why?\n", &rules), vec![(6, "heading-punctuation".into())]);
-        assert_eq!(found("# Title\n", &rules), vec![(6, "heading-levels".into())]);
         assert_eq!(
-            found("## One\n\n#### Four\n\n## Two\n\n### Three\n\n#### Four\n", &rules),
+            found("## Choosing a Registry Layer\n", &rules),
+            vec![(6, "heading-case".into())]
+        );
+        assert_eq!(
+            found("## Why?\n", &rules),
+            vec![(6, "heading-punctuation".into())]
+        );
+        assert_eq!(
+            found("# Title\n", &rules),
+            vec![(6, "heading-levels".into())]
+        );
+        assert_eq!(
+            found(
+                "## One\n\n#### Four\n\n## Two\n\n### Three\n\n#### Four\n",
+                &rules
+            ),
             vec![(8, "heading-levels".into()), (14, "heading-levels".into())]
         );
     }
@@ -1229,17 +1552,29 @@ mod tests {
     #[test]
     fn code_blocks() {
         let rules = ["code-language", "shell-prompt"];
-        assert_eq!(found("```\nx\n```\n", &rules), vec![(6, "code-language".into())]);
-        assert_eq!(found("```sh\nls\n$ svctl restart netd\n```\n", &rules), vec![(8, "shell-prompt".into())]);
+        assert_eq!(
+            found("```\nx\n```\n", &rules),
+            vec![(6, "code-language".into())]
+        );
+        assert_eq!(
+            found("```sh\nls\n$ svctl restart netd\n```\n", &rules),
+            vec![(8, "shell-prompt".into())]
+        );
         assert!(found("```text\n$ shown output\n```\n", &rules).is_empty());
     }
 
     #[test]
     fn long_prose_lines() {
         let long = "word ".repeat(17);
-        assert_eq!(found(long.trim(), &["line-length"]), vec![(6, "line-length".into())]);
+        assert_eq!(
+            found(long.trim(), &["line-length"]),
+            vec![(6, "line-length".into())]
+        );
         // Tables, code and lines long only because of a link are exempt.
-        let link = format!("See [the page](~a/very/long/reference/to/some/page/that/goes/on/and/on#anchor) {}", "x");
+        let link = format!(
+            "See [the page](~a/very/long/reference/to/some/page/that/goes/on/and/on#anchor) {}",
+            "x"
+        );
         let table = format!("| {} |\n|---|\n| x |\n", long.trim());
         let code = format!("```text\n{}\n```\n", long.trim());
         for body in [link, table, code] {
@@ -1249,7 +1584,10 @@ mod tests {
 
     #[test]
     fn hex_digits_are_uppercase_in_prose_and_code_spans() {
-        assert_eq!(found("Values 0x1f and `0xc0000022`, but 0x1F.", &["hex-case"]).len(), 2);
+        assert_eq!(
+            found("Values 0x1f and `0xc0000022`, but 0x1F.", &["hex-case"]).len(),
+            2
+        );
         assert!(found("```c\nint x = 0xdeadbeef;\n```\n", &["hex-case"]).is_empty());
     }
 
@@ -1306,7 +1644,13 @@ mod tests {
         assert!(ignored(&config, "a/book/1--x.md", "hex-case"));
         assert!(!ignored(&config, "a/bookish.md", "hex-case"));
         config.rules.push("no-such-rule".into());
-        assert!(config.validate().unwrap_err().to_string().contains("unknown rule 'no-such-rule'"));
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unknown rule 'no-such-rule'")
+        );
     }
 
     #[test]

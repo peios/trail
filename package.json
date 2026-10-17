@@ -1,0 +1,12 @@
+{
+    "name": "trail-development",
+    "private": true,
+    "scripts": {
+        "format": "node tools/format.mjs --write",
+        "format:check": "node tools/format.mjs",
+        "test": "node theme/tests/commands.mjs"
+    },
+    "devDependencies": {
+        "prettier": "3.9.6"
+    }
+}

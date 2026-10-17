@@ -43,32 +43,61 @@ struct RebuildState {
 
 impl RebuildState {
     fn unchanged(&self, root: &Path, out: &Path) -> bool {
-        self.raw.is_some() && source_inputs(root, out).is_ok_and(|inputs| inputs == self.inputs)
-            && self.dependencies.iter().all(|(path, hash)| crate::plugins::fingerprint(path) == *hash)
+        self.raw.is_some()
+            && source_inputs(root, out).is_ok_and(|inputs| inputs == self.inputs)
+            && self
+                .dependencies
+                .iter()
+                .all(|(path, hash)| crate::plugins::fingerprint(path) == *hash)
     }
 
-    fn rebuild(&mut self, root: &Path, out: &Path, options: &build::BuildOptions, no_cache: bool, full: bool) -> Result<usize> {
+    fn rebuild(
+        &mut self,
+        root: &Path,
+        out: &Path,
+        options: &build::BuildOptions,
+        no_cache: bool,
+        full: bool,
+    ) -> Result<usize> {
         let cache = crate::cache::Session::new(root, !no_cache);
         let inputs = source_inputs(root, out)?;
-        let changed: HashSet<_> = inputs.iter().filter(|(path, hash)| self.inputs.get(*path) != Some(*hash))
-            .map(|(path, _)| path.clone()).collect();
+        let changed: HashSet<_> = inputs
+            .iter()
+            .filter(|(path, hash)| self.inputs.get(*path) != Some(*hash))
+            .map(|(path, _)| path.clone())
+            .collect();
         let removed = self.inputs.keys().any(|path| !inputs.contains_key(path));
-        let reuse = !no_cache && !full && !removed && self.raw.as_mut()
-            .is_some_and(|site| site.refresh_articles(&changed).unwrap_or(false));
+        let reuse = !no_cache
+            && !full
+            && !removed
+            && self
+                .raw
+                .as_mut()
+                .is_some_and(|site| site.refresh_articles(&changed).unwrap_or(false));
         if !reuse {
             self.raw = Some(Site::load_raw(root, out)?);
-            #[cfg(test)] { self.full_loads += 1; }
+            #[cfg(test)]
+            {
+                self.full_loads += 1;
+            }
         }
         self.inputs = inputs;
         let result = (|| {
             let site = self.raw.as_ref().unwrap().clone().finish()?;
             let pages = build::build_all(&site, out, options)?;
             cache.finish();
-            self.dependencies = crate::plugins::dependencies(root).into_iter()
-                .map(|path| { let hash = crate::plugins::fingerprint(&path); (path, hash) }).collect();
+            self.dependencies = crate::plugins::dependencies(root)
+                .into_iter()
+                .map(|path| {
+                    let hash = crate::plugins::fingerprint(&path);
+                    (path, hash)
+                })
+                .collect();
             Ok(pages)
         })();
-        if result.is_err() { self.raw = None; }
+        if result.is_err() {
+            self.raw = None;
+        }
         result
     }
 }
@@ -77,15 +106,26 @@ impl RebuildState {
 /// events and same-size edits with restored mtimes. External plugin inputs
 /// remain validated by plugin expansion on every build.
 fn source_inputs(root: &Path, out: &Path) -> Result<std::collections::BTreeMap<PathBuf, String>> {
-    fn walk(dir: &Path, out: &Path, seen: &mut HashSet<PathBuf>, inputs: &mut std::collections::BTreeMap<PathBuf, String>) -> Result<()> {
+    fn walk(
+        dir: &Path,
+        out: &Path,
+        seen: &mut HashSet<PathBuf>,
+        inputs: &mut std::collections::BTreeMap<PathBuf, String>,
+    ) -> Result<()> {
         let canonical = std::fs::canonicalize(dir)?;
-        if canonical == out || !seen.insert(canonical) { return Ok(()); }
+        if canonical == out || !seen.insert(canonical) {
+            return Ok(());
+        }
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') { continue; }
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
             let path = entry.path();
-            if std::fs::canonicalize(&path).ok().as_deref() == Some(out) { continue; }
+            if std::fs::canonicalize(&path).ok().as_deref() == Some(out) {
+                continue;
+            }
             if path.is_dir() {
                 inputs.insert(path.clone(), "directory".into());
                 walk(&path, out, seen, inputs)?;
@@ -145,7 +185,9 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         let root = root.clone();
         let out = out.clone();
         let options = options.clone();
-        std::thread::spawn(move || watch_and_rebuild(&root, &out, &options, &state, no_cache, builds));
+        std::thread::spawn(move || {
+            watch_and_rebuild(&root, &out, &options, &state, no_cache, builds)
+        });
     }
 
     let runtime = tokio::runtime::Runtime::new().context("starting async runtime")?;
@@ -245,7 +287,9 @@ fn watch_and_rebuild(
         let first = if reconcile {
             reconcile_at = std::time::Instant::now() + Duration::from_secs(30);
             Ok(Ok(notify::Event::new(notify::EventKind::Any)))
-        } else { event_rx.recv_timeout(reconcile_at.saturating_duration_since(std::time::Instant::now())) };
+        } else {
+            event_rx.recv_timeout(reconcile_at.saturating_duration_since(std::time::Instant::now()))
+        };
         let first = match first {
             Ok(event) => event,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -256,11 +300,19 @@ fn watch_and_rebuild(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        if reconcile && builds.unchanged(root, out) { continue; }
-        let is_change =
-            |event: &notify::Event| is_content_change(event, &canonical_root, &canonical_out, &external);
-        let uncertain = |event: &notify::Result<notify::Event>| event.as_ref()
-            .map_or(true, |e| e.need_rescan() || e.paths.is_empty() || matches!(e.kind, notify::EventKind::Any | notify::EventKind::Other));
+        if reconcile && builds.unchanged(root, out) {
+            continue;
+        }
+        let is_change = |event: &notify::Event| {
+            is_content_change(event, &canonical_root, &canonical_out, &external)
+        };
+        let uncertain = |event: &notify::Result<notify::Event>| {
+            event.as_ref().map_or(true, |e| {
+                e.need_rescan()
+                    || e.paths.is_empty()
+                    || matches!(e.kind, notify::EventKind::Any | notify::EventKind::Other)
+            })
+        };
         let mut full = uncertain(&first);
         let mut relevant = full || first.as_ref().is_ok_and(&is_change);
         // Debounce editor bursts, but ongoing access events must not starve
@@ -269,7 +321,9 @@ fn watch_and_rebuild(
         while let Ok(event) = event_rx.recv_timeout(Duration::from_millis(200)) {
             full |= uncertain(&event);
             relevant |= full || event.as_ref().is_ok_and(&is_change);
-            if std::time::Instant::now() >= debounce_end { break; }
+            if std::time::Instant::now() >= debounce_end {
+                break;
+            }
         }
         if !relevant {
             continue;
@@ -368,13 +422,18 @@ fn is_content_change(event: &notify::Event, root: &Path, out: &Path, external: &
     };
     event.paths.iter().any(|path| {
         if !path.starts_with(root) {
-            if let Some(rest) = external.trees.iter().find_map(|tree| path.strip_prefix(tree).ok()) {
+            if let Some(rest) = external
+                .trees
+                .iter()
+                .find_map(|tree| path.strip_prefix(tree).ok())
+            {
                 return !rest.starts_with("dist") && !dotted(rest);
             }
             return external.files.contains(path)
-                || external.dirs.iter().any(|dir| {
-                    path.strip_prefix(dir).is_ok_and(|rest| !dotted(rest))
-                });
+                || external
+                    .dirs
+                    .iter()
+                    .any(|dir| path.strip_prefix(dir).is_ok_and(|rest| !dotted(rest)));
         }
         !path.starts_with(out) && !dotted(path)
     })
@@ -396,7 +455,12 @@ mod tests {
         let root = dir.path().join("site");
         crate::site::write_fixture(&root);
         let config = root.join("trail.toml");
-        fs::write(&config, fs::read_to_string(&config).unwrap() + "\n[plugins.p]\ncommand = ['python3', '../plugin.py']\n").unwrap();
+        fs::write(
+            &config,
+            fs::read_to_string(&config).unwrap()
+                + "\n[plugins.p]\ncommand = ['python3', '../plugin.py']\n",
+        )
+        .unwrap();
         fs::write(dir.path().join("plugin.py"), r#"import json, pathlib, sys
 r = json.load(sys.stdin)
 with open('../runs', 'a') as f: f.write('run\n')
@@ -416,35 +480,71 @@ json.dump({'blocks': [{'id': b['id'], 'markdown': body} for b in r['blocks']], '
         fs::write(&page, original + "\nMore authored text.\n").unwrap();
         state.rebuild(&root, &out, &options, false, false).unwrap();
         assert_eq!(state.full_loads, 1);
-        assert_eq!(fs::read_to_string(dir.path().join("runs")).unwrap().lines().count(), 1);
-        assert!(fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap().contains("First dependency."));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("runs"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert!(
+            fs::read_to_string(out.join("alpha/loose/x1/index.html"))
+                .unwrap()
+                .contains("First dependency.")
+        );
         fs::write(&dep, "Other dependency.").unwrap();
         assert!(!state.unchanged(&root, &out));
         state.rebuild(&root, &out, &options, false, false).unwrap();
         assert_eq!(state.full_loads, 1);
-        assert_eq!(fs::read_to_string(dir.path().join("runs")).unwrap().lines().count(), 2);
-        assert!(fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap().contains("Other dependency."));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("runs"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        assert!(
+            fs::read_to_string(out.join("alpha/loose/x1/index.html"))
+                .unwrap()
+                .contains("Other dependency.")
+        );
     }
 
     #[test]
     fn retained_site_matches_full_builds_and_recovers_from_failures() {
         use std::fs;
         fn hashes(root: &Path) -> std::collections::BTreeMap<PathBuf, String> {
-            fn walk(root: &Path, dir: &Path, map: &mut std::collections::BTreeMap<PathBuf, String>) {
+            fn walk(
+                root: &Path,
+                dir: &Path,
+                map: &mut std::collections::BTreeMap<PathBuf, String>,
+            ) {
                 for entry in fs::read_dir(dir).unwrap() {
                     let p = entry.unwrap().path();
-                    if p.is_dir() { walk(root, &p, map); }
-                    else { map.insert(p.strip_prefix(root).unwrap().to_owned(), crate::memo::key(&[&fs::read(p).unwrap()])); }
+                    if p.is_dir() {
+                        walk(root, &p, map);
+                    } else {
+                        map.insert(
+                            p.strip_prefix(root).unwrap().to_owned(),
+                            crate::memo::key(&[&fs::read(p).unwrap()]),
+                        );
+                    }
                 }
             }
-            let mut map = Default::default(); walk(root, root, &mut map); map
+            let mut map = Default::default();
+            walk(root, root, &mut map);
+            map
         }
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("site");
         let out = root.join("dist");
         let clean = dir.path().join("clean");
         crate::site::write_fixture(&root);
-        let options = build::BuildOptions { live_reload: true, cachebust: Some("revision".into()), ..Default::default() };
+        let options = build::BuildOptions {
+            live_reload: true,
+            cachebust: Some("revision".into()),
+            ..Default::default()
+        };
         let mut state = RebuildState::default();
         let check = |state: &mut RebuildState, full: bool| {
             state.rebuild(&root, &out, &options, false, full).unwrap();
@@ -459,8 +559,17 @@ json.dump({'blocks': [{'id': b['id'], 'markdown': body} for b in r['blocks']], '
         let page = root.join("alpha.product/5--loose.topic/1--x1.md");
         let original = fs::read_to_string(&page).unwrap();
         let mtime = fs::metadata(&page).unwrap().modified().unwrap();
-        fs::write(&page, original.clone() + "\n## Changed Heading\n\nChanged prose.\n").unwrap();
-        fs::File::options().write(true).open(&page).unwrap().set_modified(mtime).unwrap();
+        fs::write(
+            &page,
+            original.clone() + "\n## Changed Heading\n\nChanged prose.\n",
+        )
+        .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&page)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
         assert!(!state.unchanged(&root, &out));
         check(&mut state, false);
         assert_eq!(state.full_loads, 1, "ordinary edits retain topology");
@@ -483,7 +592,11 @@ json.dump({'blocks': [{'id': b['id'], 'markdown': body} for b in r['blocks']], '
         fs::remove_file(page.with_file_name("99--renamed.md")).unwrap();
         check(&mut state, false);
         let config = root.join("trail.toml");
-        fs::write(&config, fs::read_to_string(&config).unwrap() + "\nhead_html = '.head.html'\n").unwrap();
+        fs::write(
+            &config,
+            fs::read_to_string(&config).unwrap() + "\nhead_html = '.head.html'\n",
+        )
+        .unwrap();
         let head = root.join(".head.html");
         fs::write(&head, "<meta name=\"test\" content=\"one\">").unwrap();
         check(&mut state, false);
@@ -494,7 +607,11 @@ json.dump({'blocks': [{'id': b['id'], 'markdown': body} for b in r['blocks']], '
         check(&mut state, true);
         assert_eq!(state.full_loads, count + 1, "rescan forces a full load");
         state.rebuild(&root, &out, &options, true, false).unwrap();
-        assert_eq!(state.full_loads, count + 2, "no-cache bypasses retained topology");
+        assert_eq!(
+            state.full_loads,
+            count + 2,
+            "no-cache bypasses retained topology"
+        );
     }
 
     #[test]
@@ -506,7 +623,9 @@ json.dump({'blocks': [{'id': b['id'], 'markdown': body} for b in r['blocks']], '
         };
         let (root, out) = (Path::new("/site"), Path::new("/site/dist"));
         let change = |path| is_content_change(&created(path), root, out, &external);
-        assert!(change("/kernel/docs/kernel.product/1--guide.topic/1--page.md"));
+        assert!(change(
+            "/kernel/docs/kernel.product/1--guide.topic/1--page.md"
+        ));
         assert!(change("/kernel/docs/trail.toml"));
         assert!(!change("/kernel/docs/dist/kernel/index.html"));
         assert!(!change("/kernel/docs/.git/index"));

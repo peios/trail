@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, path::PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use either::Either;
 use fossick::{FossickedData, Fossicker};
 use futures::future::join_all;
@@ -10,8 +10,8 @@ use options::{PagefindInboundConfig, SearchOptions};
 use output::SyntheticFile;
 use rayon::prelude::*;
 pub use service::api;
-use wax::walk::Entry;
 use wax::Glob;
+use wax::walk::Entry;
 
 use crate::index::build_indexes;
 
@@ -115,12 +115,22 @@ impl SearchState {
 
     /// Parse a fresh in-memory batch in input order with a bounded worker pool.
     pub fn fossick_batch(&mut self, files: Vec<(String, Fossicker)>, threads: usize) -> Result<()> {
-        anyhow::ensure!(self.fossicked_pages.is_empty(), "batch requires an empty index");
+        anyhow::ensure!(
+            self.fossicked_pages.is_empty(),
+            "batch requires an empty index"
+        );
         anyhow::ensure!(threads > 0, "batch requires at least one worker");
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()?;
         let results: Vec<Result<FossickedData>> = pool.install(|| {
-            files.into_par_iter().map(|(url, file)| file.fossick_sync(&self.options)
-                .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))).collect()
+            files
+                .into_par_iter()
+                .map(|(url, file)| {
+                    file.fossick_sync(&self.options)
+                        .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))
+                })
+                .collect()
         });
         // Commit only a completely successful batch. Iterating the ordered
         // results also makes the first reported failure deterministic.
@@ -128,23 +138,40 @@ impl SearchState {
         Ok(())
     }
 
-    pub fn fossick_cached_batch(&mut self, pages: Vec<(String, String)>, threads: usize, cache: &dyn api::ParseCache) -> Result<()> {
-        anyhow::ensure!(self.fossicked_pages.is_empty(), "batch requires an empty index");
+    pub fn fossick_cached_batch(
+        &mut self,
+        pages: Vec<(String, String)>,
+        threads: usize,
+        cache: &dyn api::ParseCache,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.fossicked_pages.is_empty(),
+            "batch requires an empty index"
+        );
         anyhow::ensure!(threads > 0, "batch requires at least one worker");
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()?;
         let results: Vec<Result<FossickedData>> = pool.install(|| {
-            pages.into_par_iter().map(|(url, html)| {
-                if let Some(bytes) = cache.get(&url, &html) {
-                    if let Ok(data) = serde_json::from_slice::<FossickedData>(&bytes) {
-                        if data.url == url && data.fragment.data.url == url { return Ok(data); }
+            pages
+                .into_par_iter()
+                .map(|(url, html)| {
+                    if let Some(bytes) = cache.get(&url, &html) {
+                        if let Ok(data) = serde_json::from_slice::<FossickedData>(&bytes) {
+                            if data.url == url && data.fragment.data.url == url {
+                                return Ok(data);
+                            }
+                        }
                     }
-                }
-                let data = Fossicker::new_synthetic(None, Some(url.clone()), html.clone())
-                    .fossick_sync(&self.options)
-                    .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))?;
-                if let Ok(bytes) = serde_json::to_vec(&data) { cache.put(&url, &html, &bytes); }
-                Ok(data)
-            }).collect()
+                    let data = Fossicker::new_synthetic(None, Some(url.clone()), html.clone())
+                        .fossick_sync(&self.options)
+                        .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))?;
+                    if let Ok(bytes) = serde_json::to_vec(&data) {
+                        cache.put(&url, &html, &bytes);
+                    }
+                    Ok(data)
+                })
+                .collect()
         });
         self.fossicked_pages = results.into_iter().collect::<Result<Vec<_>>>()?;
         Ok(())
@@ -414,18 +441,38 @@ impl SearchState {
         files
     }
 
-    pub async fn get_files_cached(&self, cache: &dyn output::CompressionCache, workers: usize) -> Result<Vec<SyntheticFile>> {
+    pub async fn get_files_cached(
+        &self,
+        cache: &dyn output::CompressionCache,
+        workers: usize,
+    ) -> Result<Vec<SyntheticFile>> {
         anyhow::ensure!(workers > 0, "compression requires at least one worker");
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(workers).build()?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()?;
         let outdir = &self.options.bundle_output;
-        let entries = self.built_indexes.iter().map(|index| index.get_lang_meta(&self.options)).collect();
+        let entries = self
+            .built_indexes
+            .iter()
+            .map(|index| index.get_lang_meta(&self.options))
+            .collect();
         let mut files = Vec::new();
         for index in &self.built_indexes {
             files.extend(index.cached_files(&self.options, outdir, cache, &pool)?);
         }
-        files.extend(output::write_common_to_memory(entries, self.options.write_playground, outdir, &self.options).await);
+        files.extend(
+            output::write_common_to_memory(
+                entries,
+                self.options.write_playground,
+                outdir,
+                &self.options,
+            )
+            .await,
+        );
         for file in &mut files {
-            if let Ok(path) = file.filename.strip_prefix(outdir) { file.filename = path.to_path_buf(); }
+            if let Ok(path) = file.filename.strip_prefix(outdir) {
+                file.filename = path.to_path_buf();
+            }
         }
         Ok(files)
     }

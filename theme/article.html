@@ -133,52 +133,60 @@
 
 {%- if toc %}
 <script>
-  // Scroll-spy: highlight the ToC entry for the section in view.
-  (() => {
+// Scroll-spy: highlight the ToC entry for the section in view.
+(() => {
     const links = Array.from(document.querySelectorAll(".toc a"));
     const headings = links
-      .map((link) => document.getElementById(link.hash.slice(1)))
-      .filter(Boolean);
-    if (headings.length === 0) return;
+        .map((link) => document.getElementById(link.hash.slice(1)))
+        .filter(Boolean);
+    if (headings.length === 0) {
+        return;
+    }
 
     let activeLink = null;
     const update = () => {
-      let current = headings[0];
-      for (const heading of headings) {
-        if (heading.getBoundingClientRect().top <= 96) current = heading;
-      }
-      if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 2) {
-        current = headings[headings.length - 1];
-      }
-      const link = links.find((l) => l.hash === "#" + current.id) || null;
-      if (link === activeLink) return;
-      if (activeLink) {
-        activeLink.classList.remove("active");
-        activeLink.removeAttribute("aria-current");
-      }
-      activeLink = link;
-      if (activeLink) {
-        activeLink.classList.add("active");
-        activeLink.setAttribute("aria-current", "location");
-      }
+        let current = headings[0];
+        for (const heading of headings) {
+            if (heading.getBoundingClientRect().top <= 96) {
+                current = heading;
+            }
+        }
+        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 2) {
+            current = headings[headings.length - 1];
+        }
+        const link = links.find((l) => l.hash === "#" + current.id) || null;
+        if (link === activeLink) {
+            return;
+        }
+        if (activeLink) {
+            activeLink.classList.remove("active");
+            activeLink.removeAttribute("aria-current");
+        }
+        activeLink = link;
+        if (activeLink) {
+            activeLink.classList.add("active");
+            activeLink.setAttribute("aria-current", "location");
+        }
     };
 
     let scheduled = false;
     addEventListener(
-      "scroll",
-      () => {
-        if (scheduled) return;
-        scheduled = true;
-        requestAnimationFrame(() => {
-          scheduled = false;
-          update();
-        });
-      },
-      { passive: true }
+        "scroll",
+        () => {
+            if (scheduled) {
+                return;
+            }
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                update();
+            });
+        },
+        { passive: true },
     );
     addEventListener("resize", update, { passive: true });
     update();
-  })();
+})();
 </script>
 {%- endif %}
 

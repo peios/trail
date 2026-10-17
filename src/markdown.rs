@@ -3,10 +3,8 @@ use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail, ensure};
 use lol_html::{HtmlRewriter, RewriteStrSettings, Settings, element, rewrite_str};
-use pulldown_cmark::{
-    BlockQuoteKind, CodeBlockKind, Event, LinkType, Options, Tag, TagEnd, html,
-};
-use serde::{Serialize, Deserialize};
+use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, LinkType, Options, Tag, TagEnd, html};
+use serde::{Deserialize, Serialize};
 
 use crate::highlight;
 use crate::images::{ImageInfo, ImageScope};
@@ -119,28 +117,54 @@ struct CachedRender {
 }
 
 pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
-    if !crate::cache::persistent() { return render_uncached(markdown, links, options); }
+    if !crate::cache::persistent() {
+        return render_uncached(markdown, links, options);
+    }
     let key = crate::cache::key_json(&(
-        crate::memo::key(&[markdown.as_bytes()]), options.allow_dangling, options.strict,
-        options.numbering, options.id_prefix, options.base,
+        crate::memo::key(&[markdown.as_bytes()]),
+        options.allow_dangling,
+        options.strict,
+        options.numbering,
+        options.id_prefix,
+        options.base,
         options.images.map(|s| (s.dir, s.index.cache_key())),
-        options.refs.map(|s| (s.index.cache_key(), s.page, s.book, s.book_short)),
+        options
+            .refs
+            .map(|s| (s.index.cache_key(), s.page, s.book, s.book_short)),
         options.print.map(|s| (s.cache_key, s.base)),
     ));
     if let Some(cached) = crate::cache::get::<CachedRender>("render", &key)
         && cached.links.valid(links)
-        && cached.refs.as_ref().zip(options.refs).is_none_or(|(deps, scope)| deps.valid(scope.index)) {
+        && cached
+            .refs
+            .as_ref()
+            .zip(options.refs)
+            .is_none_or(|(deps, scope)| deps.valid(scope.index))
+    {
         cached.links.replay(links);
-        if let Some((deps, scope)) = cached.refs.as_ref().zip(options.refs) { deps.replay(scope.index); }
-        if let Some(scope) = options.images { scope.index.replay_usage(&cached.images); }
+        if let Some((deps, scope)) = cached.refs.as_ref().zip(options.refs) {
+            deps.replay(scope.index);
+        }
+        if let Some(scope) = options.images {
+            scope.index.replay_usage(&cached.images);
+        }
         return Ok(cached.rendered);
     }
     let start = options.images.map(|s| s.index.usage_start());
     let capture = links.capture();
     let ref_capture = options.refs.map(|scope| scope.index.capture());
     let result = render_uncached(markdown, links, options);
-    let images = options.images.zip(start).map(|(s, start)| s.index.usage_since(start)).unwrap_or_default();
-    let cached = CachedRender { rendered: result?, images, links: capture.finish(), refs: ref_capture.map(|c| c.finish()) };
+    let images = options
+        .images
+        .zip(start)
+        .map(|(s, start)| s.index.usage_since(start))
+        .unwrap_or_default();
+    let cached = CachedRender {
+        rendered: result?,
+        images,
+        links: capture.finish(),
+        refs: ref_capture.map(|c| c.finish()),
+    };
     crate::cache::put("render", &key, &cached);
     Ok(cached.rendered)
 }
@@ -149,14 +173,15 @@ fn render_uncached(markdown: &str, links: &LinkIndex, options: RenderOptions) ->
     let markdown = expand_tab_groups(markdown)?;
     // Before parsing: `[*name]` anchors become inline HTML, so the `*`
     // can never pair with an emphasis marker elsewhere in the block.
-    let markdown = expand_citation_anchors(
-        &markdown,
-        options.refs.and_then(|scope| scope.book_short),
-    );
+    let markdown =
+        expand_citation_anchors(&markdown, options.refs.and_then(|scope| scope.book_short));
     // Equations first, so the typography pass never sees their source.
     let parsed = crate::parsed::parse(&markdown, parser_options());
     let events = crate::typography::keep_together(crate::math::mark_math(
-        parsed.iter().map(|(event, _)| crate::parsed::borrow_event(event)).collect(),
+        parsed
+            .iter()
+            .map(|(event, _)| crate::parsed::borrow_event(event))
+            .collect(),
     ));
 
     let mut out = Vec::with_capacity(events.len());
@@ -722,13 +747,22 @@ impl SectionCounter {
 /// ahead of the render pass. h2/h3 only — deeper headings consume ids
 /// but never numbers, exactly as in `render`.
 pub fn heading_outline(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
-    let key = crate::memo::key(&[markdown.as_bytes(), &[u8::from(numbering.is_some())], numbering.unwrap_or("").as_bytes()]);
-    crate::cache::compute("headings", &key, || heading_outline_uncached(markdown, numbering))
+    let key = crate::memo::key(&[
+        markdown.as_bytes(),
+        &[u8::from(numbering.is_some())],
+        numbering.unwrap_or("").as_bytes(),
+    ]);
+    crate::cache::compute("headings", &key, || {
+        heading_outline_uncached(markdown, numbering)
+    })
 }
 
 fn heading_outline_uncached(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
     let parsed = crate::parsed::parse(markdown, parser_options());
-    let events: Vec<Event> = parsed.iter().map(|(event, _)| crate::parsed::borrow_event(event)).collect();
+    let events: Vec<Event> = parsed
+        .iter()
+        .map(|(event, _)| crate::parsed::borrow_event(event))
+        .collect();
     let mut outline = Vec::new();
     let mut used_ids = HashMap::new();
     let mut counter = SectionCounter::default();
@@ -1173,28 +1207,51 @@ pub fn rewrite_source(
     images: Option<ImageScope>,
     base: &str,
 ) -> String {
-    if !crate::cache::persistent() { return rewrite_source_uncached(markdown, links, numbering, images, base); }
-    let key = crate::cache::key_json(&(crate::memo::key(&[markdown.as_bytes()]), numbering, base,
-        images.map(|s| (s.dir, s.index.cache_key()))));
-    if let Some((text, used, dependencies)) = crate::cache::get::<(String, Vec<std::path::PathBuf>, crate::links::Dependencies)>("source", &key)
-        && dependencies.valid(links) {
+    if !crate::cache::persistent() {
+        return rewrite_source_uncached(markdown, links, numbering, images, base);
+    }
+    let key = crate::cache::key_json(&(
+        crate::memo::key(&[markdown.as_bytes()]),
+        numbering,
+        base,
+        images.map(|s| (s.dir, s.index.cache_key())),
+    ));
+    if let Some((text, used, dependencies)) =
+        crate::cache::get::<(String, Vec<std::path::PathBuf>, crate::links::Dependencies)>(
+            "source", &key,
+        )
+        && dependencies.valid(links)
+    {
         dependencies.replay(links);
-        if let Some(scope) = images { scope.index.replay_usage(&used); }
+        if let Some(scope) = images {
+            scope.index.replay_usage(&used);
+        }
         return text;
     }
     let start = images.map(|s| s.index.usage_start());
     let capture = links.capture();
     let text = rewrite_source_uncached(markdown, links, numbering, images, base);
-    let used = images.zip(start).map(|(s, start)| s.index.usage_since(start)).unwrap_or_default();
+    let used = images
+        .zip(start)
+        .map(|(s, start)| s.index.usage_since(start))
+        .unwrap_or_default();
     crate::cache::put("source", &key, &(&text, used, capture.finish()));
     text
 }
 
-fn rewrite_source_uncached(markdown: &str, links: &LinkIndex, numbering: Option<&str>, images: Option<ImageScope>, base: &str) -> String {
+fn rewrite_source_uncached(
+    markdown: &str,
+    links: &LinkIndex,
+    numbering: Option<&str>,
+    images: Option<ImageScope>,
+    base: &str,
+) -> String {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut counter = SectionCounter::default();
-    for (event, range) in crate::parsed::parse(markdown, parser_options()).iter()
-        .map(|(event, range)| (crate::parsed::borrow_event(event), range.clone())) {
+    for (event, range) in crate::parsed::parse(markdown, parser_options())
+        .iter()
+        .map(|(event, range)| (crate::parsed::borrow_event(event), range.clone()))
+    {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) if dest_url.starts_with('~') => {
                 let reference = &dest_url[1..];
@@ -1420,7 +1477,10 @@ fn anchor_ids_uncached(markdown: &str) -> HashSet<String> {
     let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
     let expanded = expand_citation_anchors(&expanded, None);
     let parsed = crate::parsed::parse(&expanded, parser_options());
-    let events: Vec<Event> = parsed.iter().map(|(event, _)| crate::parsed::borrow_event(event)).collect();
+    let events: Vec<Event> = parsed
+        .iter()
+        .map(|(event, _)| crate::parsed::borrow_event(event))
+        .collect();
     let mut ids = HashSet::new();
     let mut used_ids = HashMap::new();
     for (i, event) in events.iter().enumerate() {
@@ -1451,14 +1511,21 @@ fn anchor_ids_uncached(markdown: &str) -> HashSet<String> {
 /// targets other content can rely on.
 pub fn explicit_anchor_ids(markdown: &str) -> HashSet<String> {
     let key = crate::memo::key(&[markdown.as_bytes()]);
-    crate::cache::compute("explicit-anchors", &key, || explicit_anchor_ids_uncached(markdown))
+    crate::cache::compute("explicit-anchors", &key, || {
+        explicit_anchor_ids_uncached(markdown)
+    })
 }
 
 fn explicit_anchor_ids_uncached(markdown: &str) -> HashSet<String> {
     let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
     let expanded = expand_citation_anchors(&expanded, None);
     let mut html = String::new();
-    html::push_html(&mut html, crate::parsed::parse(&expanded, parser_options()).iter().map(|(event, _)| crate::parsed::borrow_event(event)));
+    html::push_html(
+        &mut html,
+        crate::parsed::parse(&expanded, parser_options())
+            .iter()
+            .map(|(event, _)| crate::parsed::borrow_event(event)),
+    );
     html_ids(&html).unwrap_or_default()
 }
 
@@ -1675,10 +1742,7 @@ pub fn citation_anchors(markdown: &str) -> Vec<CitationAnchor> {
 /// The blank-line-delimited block containing `at`, with every anchor
 /// removed and whitespace collapsed.
 fn block_context(markdown: &str, at: usize, spans: &[(std::ops::Range<usize>, String)]) -> String {
-    let start = markdown[..at]
-        .rfind("\n\n")
-        .map(|i| i + 2)
-        .unwrap_or(0);
+    let start = markdown[..at].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
     let end = markdown[at..]
         .find("\n\n")
         .map(|i| at + i)
@@ -1744,14 +1808,35 @@ mod tests {
     fn persistent_metadata_matches_uncached_with_numbering_and_source_changes() {
         let root = tempfile::tempdir().unwrap();
         let session = crate::cache::Session::new(root.path(), true);
-        for source in ["## First\n\n[*fixed]\n", "## Changed {#custom}\n\n<div id=\"raw\">X</div>"] {
-            assert_eq!(super::anchor_ids(source), super::anchor_ids_uncached(source));
-            assert_eq!(super::anchor_ids(source), super::anchor_ids_uncached(source));
-            assert_eq!(super::explicit_anchor_ids(source), super::explicit_anchor_ids_uncached(source));
-            assert_eq!(super::explicit_anchor_ids(source), super::explicit_anchor_ids_uncached(source));
+        for source in [
+            "## First\n\n[*fixed]\n",
+            "## Changed {#custom}\n\n<div id=\"raw\">X</div>",
+        ] {
+            assert_eq!(
+                super::anchor_ids(source),
+                super::anchor_ids_uncached(source)
+            );
+            assert_eq!(
+                super::anchor_ids(source),
+                super::anchor_ids_uncached(source)
+            );
+            assert_eq!(
+                super::explicit_anchor_ids(source),
+                super::explicit_anchor_ids_uncached(source)
+            );
+            assert_eq!(
+                super::explicit_anchor_ids(source),
+                super::explicit_anchor_ids_uncached(source)
+            );
             for numbering in [None, Some(""), Some("2")] {
-                assert_eq!(super::heading_outline(source, numbering), super::heading_outline_uncached(source, numbering));
-                assert_eq!(super::heading_outline(source, numbering), super::heading_outline_uncached(source, numbering));
+                assert_eq!(
+                    super::heading_outline(source, numbering),
+                    super::heading_outline_uncached(source, numbering)
+                );
+                assert_eq!(
+                    super::heading_outline(source, numbering),
+                    super::heading_outline_uncached(source, numbering)
+                );
             }
         }
         assert_eq!(session.hits("anchors"), 2);
@@ -1812,7 +1897,8 @@ mod tests {
         assert!(rendered.broken[0].contains("names anchor '#nope'"));
         assert!(rendered.broken[0].contains("/alpha/acorn/wide/a2"));
         // Downgradable, like a missing page.
-        let rendered = super::render("See [a2](~alpha/a2#nope).", &index, allow_dangling()).unwrap();
+        let rendered =
+            super::render("See [a2](~alpha/a2#nope).", &index, allow_dangling()).unwrap();
         assert!(rendered.broken.is_empty());
         assert_eq!(rendered.dangling.len(), 1);
         // A page whose anchors the index cannot know — a product page has
@@ -2077,7 +2163,11 @@ const html = '<a id="script"></a>';
              [d](/print) [e](mailto:docs@example.com) <docs@example.com>\n\n## Part\n",
         );
         assert_eq!(rendered.broken.len(), 2, "{:?}", rendered.broken);
-        assert!(rendered.html.contains("<a href=\"mailto:docs@example.com\">docs@example.com</a>"));
+        assert!(
+            rendered
+                .html
+                .contains("<a href=\"mailto:docs@example.com\">docs@example.com</a>")
+        );
         assert!(rendered.broken[0].contains("'../410--policy.md' is a relative path"));
         assert!(rendered.broken[1].contains("'sibling.md#part' is a relative path"));
         let rendered =
@@ -2145,7 +2235,13 @@ const html = '<a id="script"></a>';
         let source = "## Overview\n\n## Overview\n\n### When it's hex\n\n\
                       [*claim] Words.\n\n<a id=\"manual\"></a>\n";
         let ids = super::anchor_ids(source);
-        for expected in ["overview", "overview-2", "when-it-s-hex", "cite-claim", "manual"] {
+        for expected in [
+            "overview",
+            "overview-2",
+            "when-it-s-hex",
+            "cite-claim",
+            "manual",
+        ] {
             assert!(ids.contains(expected), "missing {expected}: {ids:?}");
         }
         let html = render(source).html;
@@ -2179,13 +2275,8 @@ const html = '<a id="script"></a>';
         assert!(rendered.html.contains("https://example.com/spec"));
         assert!(rendered.html.contains("<a href=\"/elsewhere\">"));
         // And the mirrors move with it.
-        let rewritten = super::rewrite_source(
-            "See [a2](~alpha/a2).\n",
-            &index,
-            None,
-            None,
-            "/deadbeef",
-        );
+        let rewritten =
+            super::rewrite_source("See [a2](~alpha/a2).\n", &index, None, None, "/deadbeef");
         assert!(rewritten.contains("(/deadbeef/alpha/acorn/wide/a2.md)"));
     }
 
@@ -2368,9 +2459,17 @@ const html = '<a id="script"></a>';
     fn math_fences_and_dollar_code_spans_render_as_mathml() {
         let rendered = render("Where $`N`$ costs $5:\n\n```math\n\\frac{1}{2^N}\n```\n");
         assert!(rendered.broken.is_empty(), "{:?}", rendered.broken);
-        assert!(rendered.html.contains("<p>Where <math display=\"inline\">"), "{}", rendered.html);
+        assert!(
+            rendered.html.contains("<p>Where <math display=\"inline\">"),
+            "{}",
+            rendered.html
+        );
         assert!(rendered.html.contains(" costs $5:</p>"));
-        assert!(rendered.html.contains("<div class=\"math-display\"><math display=\"block\">"));
+        assert!(
+            rendered
+                .html
+                .contains("<div class=\"math-display\"><math display=\"block\">")
+        );
         assert!(!rendered.html.contains("code-block"));
 
         let rendered = render("```math\n\\frac{1}\n```\n");
@@ -2620,7 +2719,10 @@ const html = '<a id="script"></a>';
 
     #[test]
     fn citation_names_are_lowercase_dotted_segments() {
-        assert_eq!(citation_name("copy-up.preserves-ownership]"), Some("copy-up.preserves-ownership"));
+        assert_eq!(
+            citation_name("copy-up.preserves-ownership]"),
+            Some("copy-up.preserves-ownership")
+        );
         assert_eq!(citation_name("a1]"), Some("a1"));
         // Must start and end alphanumeric, and carry no doubled or
         // adjacent separators.
@@ -2665,7 +2767,10 @@ const html = '<a id="script"></a>';
         let body = "## The provider [*resolution.provider]\n\nProse below.\n";
         let anchors = citation_anchors(body);
         assert_eq!(anchors.len(), 1);
-        assert!(anchors[0].section, "heading anchor should be a section anchor");
+        assert!(
+            anchors[0].section,
+            "heading anchor should be a section anchor"
+        );
         // The `#` markers are not part of the section's name-in-prose.
         assert_eq!(anchors[0].context, "The provider");
 
@@ -2673,7 +2778,11 @@ const html = '<a id="script"></a>';
         // inline HTML by the time the parser sees it, so it never
         // reaches the slug.
         let rendered = render(body);
-        assert!(rendered.html.contains("<h2 id=\"the-provider\""), "{}", rendered.html);
+        assert!(
+            rendered.html.contains("<h2 id=\"the-provider\""),
+            "{}",
+            rendered.html
+        );
         assert_eq!(rendered.toc[0].title, "The provider ");
 
         // An anchor in ordinary prose is not a section anchor.

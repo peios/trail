@@ -39,8 +39,7 @@ pub fn keep_together(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
                 push_with_ranges(&mut out, &text);
             }
             // A line break in the source just before a dash.
-            Event::SoftBreak
-                if matches!(events.peek(), Some(Event::Text(next)) if next.starts_with('\u{2014}')) =>
+            Event::SoftBreak if matches!(events.peek(), Some(Event::Text(next)) if next.starts_with('\u{2014}')) =>
             {
                 out.push(Event::Text(NO_BREAK_SPACE.to_string().into()));
             }
@@ -75,14 +74,18 @@ fn next_range(text: &str) -> Option<(usize, usize)> {
         let joined = c == '\u{2013}'
             && i > 0
             && chars[i - 1].1.is_ascii_digit()
-            && chars.get(i + 1).is_some_and(|(_, next)| next.is_ascii_digit());
+            && chars
+                .get(i + 1)
+                .is_some_and(|(_, next)| next.is_ascii_digit());
         if !joined {
             continue;
         }
         let start = text[..at].rfind(char::is_whitespace).map_or(0, |space| {
             space + text[space..].chars().next().map_or(1, char::len_utf8)
         });
-        let end = text[at..].find(char::is_whitespace).map_or(text.len(), |space| at + space);
+        let end = text[at..]
+            .find(char::is_whitespace)
+            .map_or(text.len(), |space| at + space);
         return Some((start, end));
     }
     None
@@ -159,10 +162,16 @@ mod tests {
             "<p>the kernel\u{a0}— not the service\u{a0}— decides</p>\n"
         );
         // A source line break just before the dash, too.
-        assert_eq!(html("the kernel\n— not it"), "<p>the kernel\u{a0}— not it</p>\n");
+        assert_eq!(
+            html("the kernel\n— not it"),
+            "<p>the kernel\u{a0}— not it</p>\n"
+        );
         // Code is left as written.
         assert_eq!(html("`a — b`"), "<p><code>a — b</code></p>\n");
-        assert_eq!(html("```text\na — b\n```\n"), "<pre><code class=\"language-text\">a — b\n</code></pre>\n");
+        assert_eq!(
+            html("```text\na — b\n```\n"),
+            "<pre><code class=\"language-text\">a — b\n</code></pre>\n"
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
-use std::fmt;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use serde::{Serialize, Deserialize};
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use crate::site::{Anthology, AnthologyItem, Book, ProductItem, Site, Topic, TopicChild};
 
@@ -45,7 +45,10 @@ pub struct LinkIndex {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Read { Page(String), Anchor(String, String) }
+enum Read {
+    Page(String),
+    Anchor(String, String),
+}
 
 type PageResolution = Result<(String, String), String>;
 
@@ -59,31 +62,56 @@ pub struct Dependencies {
 
 impl Dependencies {
     pub fn valid(&self, index: &LinkIndex) -> bool {
-        self.pages.iter().all(|(query, answer)| index.resolve_page_untracked(query).map_err(|e| e.to_string()) == *answer)
-            && self.anchors.iter().all(|(page, fragment, answer)| index.anchors.get(page).map(|ids| ids.contains(fragment)) == *answer)
+        self.pages.iter().all(|(query, answer)| {
+            index
+                .resolve_page_untracked(query)
+                .map_err(|e| e.to_string())
+                == *answer
+        }) && self.anchors.iter().all(|(page, fragment, answer)| {
+            index.anchors.get(page).map(|ids| ids.contains(fragment)) == *answer
+        })
     }
 
     pub fn replay(&self, index: &LinkIndex) {
-        for (query, _) in &self.pages { index.record(Read::Page(query.clone())); }
-        for (page, fragment, _) in &self.anchors { index.record(Read::Anchor(page.clone(), fragment.clone())); }
+        for (query, _) in &self.pages {
+            index.record(Read::Page(query.clone()));
+        }
+        for (page, fragment, _) in &self.anchors {
+            index.record(Read::Anchor(page.clone(), fragment.clone()));
+        }
     }
 }
 
-pub struct Capture<'a> { index: &'a LinkIndex, finished: bool }
+pub struct Capture<'a> {
+    index: &'a LinkIndex,
+    finished: bool,
+}
 
 impl Capture<'_> {
     pub fn finish(mut self) -> Dependencies {
         self.finished = true;
-        let reads = self.index.reads.borrow_mut().pop().expect("active link capture");
+        let reads = self
+            .index
+            .reads
+            .borrow_mut()
+            .pop()
+            .expect("active link capture");
         let mut dependencies = Dependencies::default();
         for read in reads {
             match read {
                 Read::Page(query) => {
-                    let answer = self.index.resolve_page_untracked(&query).map_err(|e| e.to_string());
+                    let answer = self
+                        .index
+                        .resolve_page_untracked(&query)
+                        .map_err(|e| e.to_string());
                     dependencies.pages.push((query, answer));
                 }
                 Read::Anchor(page, fragment) => {
-                    let answer = self.index.anchors.get(&page).map(|ids| ids.contains(&fragment));
+                    let answer = self
+                        .index
+                        .anchors
+                        .get(&page)
+                        .map(|ids| ids.contains(&fragment));
                     dependencies.anchors.push((page, fragment, answer));
                 }
             }
@@ -93,7 +121,11 @@ impl Capture<'_> {
 }
 
 impl Drop for Capture<'_> {
-    fn drop(&mut self) { if !self.finished { self.index.reads.borrow_mut().pop(); } }
+    fn drop(&mut self) {
+        if !self.finished {
+            self.index.reads.borrow_mut().pop();
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,11 +247,16 @@ fn push_anthology_candidates(
 impl LinkIndex {
     pub fn capture(&self) -> Capture<'_> {
         self.reads.borrow_mut().push(BTreeSet::new());
-        Capture { index: self, finished: false }
+        Capture {
+            index: self,
+            finished: false,
+        }
     }
 
     fn record(&self, read: Read) {
-        for capture in self.reads.borrow_mut().iter_mut() { capture.insert(read.clone()); }
+        for capture in self.reads.borrow_mut().iter_mut() {
+            capture.insert(read.clone());
+        }
     }
     pub fn new(site: &Site) -> LinkIndex {
         Self::build(site, false)
@@ -251,7 +288,10 @@ impl LinkIndex {
             let mut suffixes: HashMap<String, Vec<usize>> = HashMap::new();
             for (i, candidate) in candidates.iter().enumerate() {
                 for start in 0..candidate.segments.len() {
-                    suffixes.entry(candidate.segments[start..].join("/")).or_default().push(i);
+                    suffixes
+                        .entry(candidate.segments[start..].join("/"))
+                        .or_default()
+                        .push(i);
                 }
             }
             products.insert(
@@ -274,7 +314,11 @@ impl LinkIndex {
                 )
             })
             .collect();
-        LinkIndex { products, anchors, reads: Default::default() }
+        LinkIndex {
+            products,
+            anchors,
+            reads: Default::default(),
+        }
     }
 
     /// Whether the page at `path` defines the anchor `fragment`. None when
@@ -312,8 +356,13 @@ impl LinkIndex {
         }
 
         let key = suffix.join("/");
-        let matches: Vec<&Candidate> = product.suffixes.get(&key).into_iter().flatten()
-            .map(|i| &product.candidates[*i]).collect();
+        let matches: Vec<&Candidate> = product
+            .suffixes
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .map(|i| &product.candidates[*i])
+            .collect();
 
         match matches.as_slice() {
             [only] => Ok((only.target.clone(), only.title.clone())),
@@ -348,15 +397,30 @@ mod tests {
         let dependencies = inner.finish();
         let parent = outer.finish();
         assert!(dependencies.valid(&index) && parent.valid(&index));
-        index.anchors.insert("/unrelated".into(), HashSet::from(["new".into()]));
+        index
+            .anchors
+            .insert("/unrelated".into(), HashSet::from(["new".into()]));
         assert!(dependencies.valid(&index));
         let replay = index.capture();
         dependencies.replay(&index);
         let replayed = replay.finish();
-        index.anchors.get_mut("/alpha/acorn/wide/a2").unwrap().insert("future".into());
+        index
+            .anchors
+            .get_mut("/alpha/acorn/wide/a2")
+            .unwrap()
+            .insert("future".into());
         assert!(!dependencies.valid(&index) && !replayed.valid(&index));
-        index.anchors.get_mut("/alpha/acorn/wide/a2").unwrap().remove("future");
-        index.products.get_mut("alpha").unwrap().suffixes.insert("missing".into(), vec![0]);
+        index
+            .anchors
+            .get_mut("/alpha/acorn/wide/a2")
+            .unwrap()
+            .remove("future");
+        index
+            .products
+            .get_mut("alpha")
+            .unwrap()
+            .suffixes
+            .insert("missing".into(), vec![0]);
         assert!(!dependencies.valid(&index));
     }
 
@@ -375,11 +439,19 @@ mod tests {
             }
             for query in queries {
                 let suffix: Vec<_> = query.split('/').collect();
-                let expected: Vec<_> = product.candidates.iter().enumerate()
-                    .filter(|(_, c)| c.segments.len() >= suffix.len()
-                        && c.segments[c.segments.len() - suffix.len()..]
-                            .iter().map(String::as_str).eq(suffix.iter().copied()))
-                    .map(|(i, _)| i).collect();
+                let expected: Vec<_> = product
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| {
+                        c.segments.len() >= suffix.len()
+                            && c.segments[c.segments.len() - suffix.len()..]
+                                .iter()
+                                .map(String::as_str)
+                                .eq(suffix.iter().copied())
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
                 let actual = product.suffixes.get(&query).cloned().unwrap_or_default();
                 assert_eq!(actual, expected, "suffix {query:?}");
             }
@@ -408,7 +480,10 @@ mod tests {
             index.has_anchor("/alpha/acorn/wide/a2", "first-section-of-a2"),
             Some(true)
         );
-        assert_eq!(index.has_anchor("/alpha/acorn/wide/a2", "nope"), Some(false));
+        assert_eq!(
+            index.has_anchor("/alpha/acorn/wide/a2", "nope"),
+            Some(false)
+        );
         // Product and anthology pages have no body to define anchors in.
         assert_eq!(index.has_anchor("/alpha", "anything"), None);
         assert_eq!(index.has_anchor("/alpha/acorn", "anything"), None);

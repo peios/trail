@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 #[cfg(feature = "extended")]
 use charabia::Segment;
 use either::Either;
@@ -15,9 +15,9 @@ use std::io::Read;
 use std::ops::Mul;
 use std::path::{Path, PathBuf};
 
+use crate::SearchOptions;
 use crate::fossick::splitting::get_indexable_words;
 use crate::fragments::{PageAnchorData, PageFragment, PageFragmentData};
-use crate::SearchOptions;
 use parser::DomParser;
 
 use self::parser::DomParserResult;
@@ -592,7 +592,6 @@ impl Fossicker {
 
         map
     }
-
 }
 
 fn strip_index_html(url: &str) -> &str {

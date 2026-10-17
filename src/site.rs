@@ -991,7 +991,13 @@ impl Site {
         let merged_inside = config.merge.iter().map(|merge| &merge.path);
         let mut products = Vec::new();
         let mut images = Vec::new();
-        load_products(root, out, keep_entries(&config, merged_inside), &mut products, &mut images)?;
+        load_products(
+            root,
+            out,
+            keep_entries(&config, merged_inside),
+            &mut products,
+            &mut images,
+        )?;
 
         let mut trees = vec![Tree::new(root.to_path_buf(), &config)];
         // Each product's tree, so a slug two trees share names both.
@@ -1085,19 +1091,35 @@ impl Site {
     pub(crate) fn refresh_articles(&mut self, changed: &HashSet<PathBuf>) -> Result<bool> {
         let articles = self.articles_mut();
         let known: HashSet<_> = articles.iter().map(|a| a.source_file.clone()).collect();
-        if !changed.is_subset(&known) { return Ok(false); }
+        if !changed.is_subset(&known) {
+            return Ok(false);
+        }
         let mut replacements = Vec::new();
         for (at, article) in articles.iter().enumerate() {
-            if !changed.contains(&article.source_file) { continue; }
-            let stem = article.source_file.file_stem().and_then(|s| s.to_str()).expect("validated article filename");
+            if !changed.contains(&article.source_file) {
+                continue;
+            }
+            let stem = article
+                .source_file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("validated article filename");
             let parent = article.path.rsplit_once('/').unwrap().0;
             // The numeric/appendix suffix is reconstructed by load_article.
-            let prefix = article.number.as_deref().map(|n| n.rfind('.').map_or("", |i| &n[..=i]));
-            replacements.push((at, load_article(&article.source_file, stem, parent, prefix)?));
+            let prefix = article
+                .number
+                .as_deref()
+                .map(|n| n.rfind('.').map_or("", |i| &n[..=i]));
+            replacements.push((
+                at,
+                load_article(&article.source_file, stem, parent, prefix)?,
+            ));
         }
         // Do not leave a partially refreshed model after a parse failure.
         let mut articles = articles;
-        for (at, article) in replacements { *articles[at] = article; }
+        for (at, article) in replacements {
+            *articles[at] = article;
+        }
         Ok(true)
     }
 
@@ -1911,19 +1933,25 @@ fn load_article(
 fn resolve_linked_articles(site: &mut Site) -> Result<()> {
     fn chapter_links(children: &[BookChild]) -> bool {
         children.iter().any(|child| match child {
-            BookChild::Chapter { chapter } => !chapter.links.is_empty() || chapter_links(&chapter.children),
+            BookChild::Chapter { chapter } => {
+                !chapter.links.is_empty() || chapter_links(&chapter.children)
+            }
             BookChild::Article { .. } => false,
         })
     }
     let topic_links = topics_mut(&mut site.products).iter().any(|topic| {
-        !topic.links.is_empty() || topic.children.iter().any(|child| match child {
-            TopicChild::Folder { folder } => !folder.links.is_empty(),
-            TopicChild::Article { .. } => false,
-        })
+        !topic.links.is_empty()
+            || topic.children.iter().any(|child| match child {
+                TopicChild::Folder { folder } => !folder.links.is_empty(),
+                TopicChild::Article { .. } => false,
+            })
     });
-    let book_links = books_mut(&mut site.products).iter()
+    let book_links = books_mut(&mut site.products)
+        .iter()
         .any(|book| !book.links.is_empty() || chapter_links(&book.children));
-    if !topic_links && !book_links { return Ok(()); }
+    if !topic_links && !book_links {
+        return Ok(());
+    }
     // Stubs resolve through the folder-aware index: unlike body links,
     // a stub may alias a whole topic subfolder.
     let index = crate::links::LinkIndex::with_folders(site);
@@ -2585,7 +2613,10 @@ fn validate_tree_config(config: &SiteConfig, root: &Path, out: &Path) -> Result<
 
 /// The root entries a tree's configuration names (or the directories
 /// holding them), which its scan for products must tolerate, plus `extra`.
-fn keep_entries<'a>(config: &'a SiteConfig, extra: impl Iterator<Item = &'a String>) -> Vec<String> {
+fn keep_entries<'a>(
+    config: &'a SiteConfig,
+    extra: impl Iterator<Item = &'a String>,
+) -> Vec<String> {
     [&config.custom_css, &config.favicon, &config.head_html]
         .into_iter()
         .flatten()
@@ -3921,7 +3952,10 @@ mod tests {
     fn derives_topic_titles_from_slugs_in_title_case() {
         assert_eq!(title_from_slug("identity"), "Identity");
         assert_eq!(title_from_slug("the-two-gates"), "The Two Gates");
-        assert_eq!(title_from_slug("startup-and-shutdown"), "Startup and Shutdown");
+        assert_eq!(
+            title_from_slug("startup-and-shutdown"),
+            "Startup and Shutdown"
+        );
         assert_eq!(
             title_from_slug("well-known-principals"),
             "Well Known Principals"

@@ -24,12 +24,18 @@ struct Store {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
-pub struct Entry { kind: String, key: String }
+pub struct Entry {
+    kind: String,
+    key: String,
+}
 
 fn record(store: &Store, kind: &str, key: &str, path: PathBuf) {
     store.used.lock().unwrap().insert(path);
     for capture in store.captures.lock().unwrap().iter_mut() {
-        capture.insert(Entry { kind: kind.into(), key: key.into() });
+        capture.insert(Entry {
+            kind: kind.into(),
+            key: key.into(),
+        });
     }
 }
 
@@ -37,26 +43,45 @@ fn record(store: &Store, kind: &str, key: &str, path: PathBuf) {
 pub fn retain(entries: &[Entry]) {
     let Some(store) = store() else { return };
     for entry in entries {
-        if !entry.kind.bytes().all(|c| c.is_ascii_lowercase() || c == b'-') { continue; }
+        if !entry
+            .kind
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c == b'-')
+        {
+            continue;
+        }
         if let Some(path) = path(&store, &entry.kind, &entry.key) {
             record(&store, &entry.kind, &entry.key, path);
         }
     }
 }
 
-pub struct Capture { store: Option<Arc<Store>>, finished: bool }
+pub struct Capture {
+    store: Option<Arc<Store>>,
+    finished: bool,
+}
 
 pub fn capture() -> Capture {
     let store = store();
-    if let Some(store) = &store { store.captures.lock().unwrap().push(HashSet::new()); }
-    Capture { store, finished: false }
+    if let Some(store) = &store {
+        store.captures.lock().unwrap().push(HashSet::new());
+    }
+    Capture {
+        store,
+        finished: false,
+    }
 }
 
 impl Capture {
     pub fn finish(mut self) -> Vec<Entry> {
         self.finished = true;
-        let mut entries: Vec<_> = self.store.as_ref().map(|s| s.captures.lock().unwrap().pop().unwrap())
-            .unwrap_or_default().into_iter().collect();
+        let mut entries: Vec<_> = self
+            .store
+            .as_ref()
+            .map(|s| s.captures.lock().unwrap().pop().unwrap())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         entries.sort_by(|a, b| (&a.kind, &a.key).cmp(&(&b.kind, &b.key)));
         entries
     }
@@ -64,7 +89,11 @@ impl Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        if !self.finished && let Some(store) = &self.store { store.captures.lock().unwrap().pop(); }
+        if !self.finished
+            && let Some(store) = &self.store
+        {
+            store.captures.lock().unwrap().pop();
+        }
     }
 }
 
@@ -85,12 +114,15 @@ impl Session {
                 .ok()
                 .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
         });
-        let store = enabled.then_some(version.as_ref()).flatten().map(|version| {
-            Arc::new(Store {
-                dir: root.join(".trail-cache").join(format!("v1-{version}")),
-                ..Store::default()
-            })
-        });
+        let store = enabled
+            .then_some(version.as_ref())
+            .flatten()
+            .map(|version| {
+                Arc::new(Store {
+                    dir: root.join(".trail-cache").join(format!("v1-{version}")),
+                    ..Store::default()
+                })
+            });
         let previous = ACTIVE.with(|active| active.replace(Some(store.clone())));
         Self { previous, store }
     }
@@ -146,15 +178,30 @@ pub fn persistent() -> bool {
 
 /// Worker tasks share used-entry accounting; only the initiating session prunes.
 #[derive(Clone)]
-pub struct Shared { store: Option<Arc<Store>>, enabled: bool }
+pub struct Shared {
+    store: Option<Arc<Store>>,
+    enabled: bool,
+}
 
-pub fn share() -> Shared { Shared { store: store(), enabled: enabled() } }
+pub fn share() -> Shared {
+    Shared {
+        store: store(),
+        enabled: enabled(),
+    }
+}
 
 impl Shared {
     pub fn scope<T>(&self, work: impl FnOnce() -> T) -> T {
-        let active = if self.enabled && self.store.is_none() { None } else { Some(self.store.clone()) };
+        let active = if self.enabled && self.store.is_none() {
+            None
+        } else {
+            Some(self.store.clone())
+        };
         let previous = ACTIVE.with(|slot| slot.replace(active));
-        let _session = Session { previous, store: self.store.clone() };
+        let _session = Session {
+            previous,
+            store: self.store.clone(),
+        };
         work()
     }
 }
@@ -179,7 +226,9 @@ pub fn read_bytes(kind: &'static str, key: &str) -> Option<Vec<u8>> {
     let store = store()?;
     let path = path(&store, kind, key)?;
     let mut file = fs::File::open(&path).ok()?;
-    let size = usize::try_from(file.metadata().ok()?.len()).ok()?.checked_sub(32)?;
+    let size = usize::try_from(file.metadata().ok()?.len())
+        .ok()?
+        .checked_sub(32)?;
     let mut digest = [0; 32];
     file.read_exact(&mut digest).ok()?;
     let mut payload = Vec::new();
@@ -241,8 +290,14 @@ pub fn put(kind: &'static str, key: &str, value: &impl Serialize) {
 }
 
 /// Reuse small, context-independent metadata without retaining parsed events.
-pub fn compute<T: Serialize + DeserializeOwned>(kind: &'static str, key: &str, build: impl FnOnce() -> T) -> T {
-    if let Some(value) = get(kind, key) { return value; }
+pub fn compute<T: Serialize + DeserializeOwned>(
+    kind: &'static str,
+    key: &str,
+    build: impl FnOnce() -> T,
+) -> T {
+    if let Some(value) = get(kind, key) {
+        return value;
+    }
     let value = build();
     put(kind, key, &value);
     value

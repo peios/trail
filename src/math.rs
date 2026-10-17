@@ -35,7 +35,8 @@ pub fn mark_math(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
             }
             Event::Code(code) => {
                 let opens = matches!(out.last(), Some(Event::Text(text)) if text.ends_with('$'));
-                let closes = matches!(events.peek(), Some(Event::Text(text)) if text.starts_with('$'));
+                let closes =
+                    matches!(events.peek(), Some(Event::Text(text)) if text.starts_with('$'));
                 if !(opens && closes) {
                     out.push(Event::Code(code));
                     continue;
@@ -92,11 +93,18 @@ mod tests {
         let mathml = to_mathml(r"\frac{1}{2^N}", false).unwrap();
         assert!(mathml.starts_with("<math"), "{mathml}");
         assert!(mathml.contains("<mfrac>"), "{mathml}");
-        assert!(mathml.contains(r#"<annotation encoding="application/x-tex">\frac{1}{2^N}</annotation>"#));
+        assert!(
+            mathml
+                .contains(r#"<annotation encoding="application/x-tex">\frac{1}{2^N}</annotation>"#)
+        );
         assert!(to_mathml("x", true).unwrap().contains(r#"display="block""#));
         let spaced = to_mathml(r"a\ (\textrm{mod}~4)", false).unwrap();
         assert!(!spaced.contains("&amp;nbsp;"), "{spaced}");
-        assert_eq!(spaced.matches("<mtext>\u{a0}</mtext>").count(), 2, "{spaced}");
+        assert_eq!(
+            spaced.matches("<mtext>\u{a0}</mtext>").count(),
+            2,
+            "{spaced}"
+        );
     }
 
     fn marked(markdown: &str) -> Vec<Event<'_>> {
@@ -110,7 +118,11 @@ mod tests {
         assert!(events.contains(&Event::InlineMath("N".into())));
         assert!(events.contains(&Event::Text(" is the factor:".into())));
         assert!(events.contains(&Event::DisplayMath("a \\\\\nb".into())));
-        assert!(!events.iter().any(|e| matches!(e, Event::Code(_) | Event::Start(Tag::CodeBlock(_)))));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::Code(_) | Event::Start(Tag::CodeBlock(_))))
+        );
     }
 
     #[test]
@@ -123,7 +135,9 @@ mod tests {
         ] {
             let events = marked(markdown);
             assert!(
-                !events.iter().any(|e| matches!(e, Event::InlineMath(_) | Event::DisplayMath(_))),
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::InlineMath(_) | Event::DisplayMath(_))),
                 "{markdown}: {events:?}"
             );
         }

@@ -33,8 +33,8 @@
 //! }
 //! ```
 
-pub use crate::output::SyntheticFile;
 pub use crate::output::CompressionCache;
+pub use crate::output::SyntheticFile;
 
 /// Opaque parsed-page storage. Implementations must namespace entries by
 /// Pagefind version and indexing options, and check stored byte integrity.
@@ -42,14 +42,14 @@ pub trait ParseCache: Sync {
     fn get(&self, url: &str, html: &str) -> Option<Vec<u8>>;
     fn put(&self, url: &str, html: &str, parsed: &[u8]);
 }
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rust_patch::Patch;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::{
-    fossick::{parser::DomParserResult, Fossicker},
-    options::PagefindServiceConfig,
     PagefindInboundConfig, SearchOptions, SearchState,
+    fossick::{Fossicker, parser::DomParserResult},
+    options::PagefindServiceConfig,
 };
 
 #[derive(Debug)]
@@ -89,26 +89,46 @@ impl PagefindIndex {
     /// Index unique explicit URLs into an empty index using a bounded pool.
     /// Input order, URL spelling and errors are preserved. Unlike directory
     /// ingestion this cannot include stale files or silently omit failures.
-    pub async fn add_html_files(&mut self, pages: Vec<(String, String)>, threads: usize) -> Result<()> {
+    pub async fn add_html_files(
+        &mut self,
+        pages: Vec<(String, String)>,
+        threads: usize,
+    ) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
         for (url, _) in &pages {
             anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
         }
-        let files = pages.into_iter().map(|(url, content)|
-            (url.clone(), Fossicker::new_synthetic(None, Some(url), content))).collect();
+        let files = pages
+            .into_iter()
+            .map(|(url, content)| {
+                (
+                    url.clone(),
+                    Fossicker::new_synthetic(None, Some(url), content),
+                )
+            })
+            .collect();
         let state = Arc::clone(&self.search_index);
         tokio::task::spawn_blocking(move || state.blocking_lock().fossick_batch(files, threads))
-            .await.map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
+            .await
+            .map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
     }
 
     /// As add_html_files, reusing successful per-page parsing before the
     /// unchanged global index assembly. Results retain input order.
-    pub async fn add_html_files_cached(&mut self, pages: Vec<(String, String)>, threads: usize, cache: &dyn ParseCache) -> Result<()> {
+    pub async fn add_html_files_cached(
+        &mut self,
+        pages: Vec<(String, String)>,
+        threads: usize,
+        cache: &dyn ParseCache,
+    ) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
         for (url, _) in &pages {
             anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
         }
-        self.search_index.lock().await.fossick_cached_batch(pages, threads, cache)
+        self.search_index
+            .lock()
+            .await
+            .fossick_cached_batch(pages, threads, cache)
     }
 
     /// Add an HTML file that isn't on disk into this search index.
@@ -133,11 +153,9 @@ impl PagefindIndex {
 
         let file = Fossicker::new_synthetic(source_path.map(PathBuf::from), url, content);
         let state = Arc::clone(&self.search_index);
-        let data = tokio::task::spawn_blocking(move || {
-            state.blocking_lock().fossick_one(file)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
+        let data = tokio::task::spawn_blocking(move || state.blocking_lock().fossick_one(file))
+            .await
+            .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
 
         Ok(IndexedFileResponse {
             page_word_count: data.fragment.data.word_count as u32,
@@ -189,11 +207,9 @@ impl PagefindIndex {
         };
         let file = Fossicker::new_with_data(url, data);
         let state = Arc::clone(&self.search_index);
-        let data = tokio::task::spawn_blocking(move || {
-            state.blocking_lock().fossick_one(file)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
+        let data = tokio::task::spawn_blocking(move || state.blocking_lock().fossick_one(file))
+            .await
+            .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
 
         Ok(IndexedFileResponse {
             page_word_count: data.fragment.data.word_count as u32,
@@ -217,7 +233,9 @@ impl PagefindIndex {
 
         let state = Arc::clone(&self.search_index);
         let page_count = tokio::task::spawn_blocking(move || {
-            state.blocking_lock().fossick_many(PathBuf::from(path), glob)
+            state
+                .blocking_lock()
+                .fossick_many(PathBuf::from(path), glob)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
@@ -257,7 +275,11 @@ impl PagefindIndex {
     }
 
     /// Reuse encoded fragments/chunks without changing the global index layout.
-    pub async fn get_files_cached(&mut self, cache: &dyn CompressionCache, workers: usize) -> Result<Vec<SyntheticFile>> {
+    pub async fn get_files_cached(
+        &mut self,
+        cache: &dyn CompressionCache,
+        workers: usize,
+    ) -> Result<Vec<SyntheticFile>> {
         let mut state = self.search_index.lock().await;
         state.build_indexes().await?;
         state.get_files_cached(cache, workers).await
@@ -296,14 +318,20 @@ mod tests {
         assert!(filenames.contains(&PathBuf::from("pagefind-ui.css")));
         assert!(filenames.contains(&PathBuf::from("wasm.en.pagefind")));
         assert!(filenames.contains(&PathBuf::from("pagefind-entry.json")));
-        assert!(filenames
-            .iter()
-            .any(|f| f.to_string_lossy().ends_with(".pf_meta")));
-        assert!(filenames
-            .iter()
-            .any(|f| f.to_string_lossy().ends_with(".pf_fragment")));
-        assert!(filenames
-            .iter()
-            .any(|f| f.to_string_lossy().ends_with(".pf_index")));
+        assert!(
+            filenames
+                .iter()
+                .any(|f| f.to_string_lossy().ends_with(".pf_meta"))
+        );
+        assert!(
+            filenames
+                .iter()
+                .any(|f| f.to_string_lossy().ends_with(".pf_fragment"))
+        );
+        assert!(
+            filenames
+                .iter()
+                .any(|f| f.to_string_lossy().ends_with(".pf_index"))
+        );
     }
 }

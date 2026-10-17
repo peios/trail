@@ -213,7 +213,12 @@ pub fn expand(site: &mut Site) -> Result<()> {
         let offset = body_line_offset(article);
         line_offsets.insert(index, offset);
         for error in block_errors {
-            errors.push(located(&roots, article, offset + error.line, &error.message));
+            errors.push(located(
+                &roots,
+                article,
+                offset + error.line,
+                &error.message,
+            ));
         }
         for block in blocks {
             if plugins.contains_key(&block.name) {
@@ -232,101 +237,122 @@ pub fn expand(site: &mut Site) -> Result<()> {
     }
 
     let reference = |article: &Article| article.path.trim_start_matches('/').to_string();
-    let authored_anchors = by_plugin
-        .keys()
-        .any(|name| plugins[name].anchors)
-        .then(|| {
-            articles
-                .iter()
-                .filter_map(|article| {
-                    let ids = crate::markdown::explicit_anchor_ids(&article.body);
-                    (!ids.is_empty()).then(|| (reference(article), ids.into_iter().collect()))
-                })
-                .collect::<AnchorIndex>()
-        });
+    let authored_anchors = by_plugin.keys().any(|name| plugins[name].anchors).then(|| {
+        articles
+            .iter()
+            .filter_map(|article| {
+                let ids = crate::markdown::explicit_anchor_ids(&article.body);
+                (!ids.is_empty()).then(|| (reference(article), ids.into_iter().collect()))
+            })
+            .collect::<AnchorIndex>()
+    });
 
     let canonical_root = canonical(&root);
     let mut dependencies = Vec::new();
     let mut replacements: HashMap<usize, Vec<(Range<usize>, String)>> = HashMap::new();
     // Each plugin's output so far, by article, for the plugins after it.
     let mut generated: HashMap<&str, Vec<(usize, String)>> = HashMap::new();
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(4);
-    let batches = run_batches(&order, &plugins, |name| by_plugin.contains_key(name), workers);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(4);
+    let batches = run_batches(
+        &order,
+        &plugins,
+        |name| by_plugin.contains_key(name),
+        workers,
+    );
     let shared_cache = crate::cache::share();
     for batch in batches {
-      let fingerprints = Fingerprints::default();
-      let outcomes = parallel_batch(&batch, |name| shared_cache.scope(|| {
-        let blocks = &by_plugin[name];
-        let config = &plugins[name];
-        let anchor_index = config.anchors.then(|| {
-            let mut index = authored_anchors.clone().unwrap_or_default();
-            for earlier in &config.after {
-                for (article, markdown) in generated.get(earlier.as_str()).into_iter().flatten() {
-                    let ids = crate::markdown::explicit_anchor_ids(markdown);
-                    if !ids.is_empty() {
-                        index.entry(reference(articles[*article])).or_default().extend(ids);
+        let fingerprints = Fingerprints::default();
+        let outcomes = parallel_batch(&batch, |name| {
+            shared_cache.scope(|| {
+                let blocks = &by_plugin[name];
+                let config = &plugins[name];
+                let anchor_index = config.anchors.then(|| {
+                    let mut index = authored_anchors.clone().unwrap_or_default();
+                    for earlier in &config.after {
+                        for (article, markdown) in
+                            generated.get(earlier.as_str()).into_iter().flatten()
+                        {
+                            let ids = crate::markdown::explicit_anchor_ids(markdown);
+                            if !ids.is_empty() {
+                                index
+                                    .entry(reference(articles[*article]))
+                                    .or_default()
+                                    .extend(ids);
+                            }
+                        }
                     }
-                }
-            }
-            index
-        });
-        let anchors = anchor_index.as_ref();
-        let program = &programs[name];
-        let request_blocks: Vec<RequestBlock> = blocks
-            .iter()
-            .enumerate()
-            .map(|(id, (index, block))| {
-                let article = &articles[*index];
-                RequestBlock {
-                    id,
-                    page: &article.path,
-                    reference: article.path.trim_start_matches('/').to_string(),
-                    file: relative_file(&roots, article),
-                    line: line_offsets[index] + block.line,
-                    argument: &block.argument,
-                    options: &block.options,
-                    body: &block.body,
-                }
+                    index
+                });
+                let anchors = anchor_index.as_ref();
+                let program = &programs[name];
+                let request_blocks: Vec<RequestBlock> = blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(id, (index, block))| {
+                        let article = &articles[*index];
+                        RequestBlock {
+                            id,
+                            page: &article.path,
+                            reference: article.path.trim_start_matches('/').to_string(),
+                            file: relative_file(&roots, article),
+                            line: line_offsets[index] + block.line,
+                            argument: &block.argument,
+                            options: &block.options,
+                            body: &block.body,
+                        }
+                    })
+                    .collect();
+                let plugin_root = canonical(&plugin_roots[name]);
+                let request = Request {
+                    protocol: PROTOCOL,
+                    plugin: name,
+                    root: plugin_root.display().to_string(),
+                    blocks: request_blocks,
+                    anchors,
+                };
+                let mut diagnostics = Vec::new();
+                let outcome = run_cached(
+                    &plugin_root,
+                    config,
+                    program,
+                    request,
+                    &mut diagnostics,
+                    &fingerprints,
+                )
+                .with_context(|| format!("running plugin '{name}'"));
+                (outcome, diagnostics)
             })
-            .collect();
-        let plugin_root = canonical(&plugin_roots[name]);
-        let request = Request {
-            protocol: PROTOCOL, plugin: name, root: plugin_root.display().to_string(),
-            blocks: request_blocks, anchors,
-        };
-        let mut diagnostics = Vec::new();
-        let outcome = run_cached(&plugin_root, config, program, request, &mut diagnostics, &fingerprints)
-            .with_context(|| format!("running plugin '{name}'"));
-        (outcome, diagnostics)
-      }));
-      // Replay and integrate in the original topological order, regardless
-      // of which independent process finished first.
-      for (name, (outcome, diagnostics)) in batch.into_iter().zip(outcomes) {
-        let _ = std::io::stderr().write_all(&diagnostics);
-        let outcome = outcome?;
-        let blocks = &by_plugin[name];
-        dependencies.extend(outcome.dependencies);
-        for (id, result) in outcome.outputs.into_iter().enumerate() {
-            let (index, block) = &blocks[id];
-            match result {
-                Ok(markdown) => {
-                    let body = &articles[*index].body;
-                    let replacement = splice_text(body, &block.range, &markdown);
-                    generated.entry(name).or_default().push((*index, markdown));
-                    replacements
-                        .entry(*index)
-                        .or_default()
-                        .push((block.range.clone(), replacement));
+        });
+        // Replay and integrate in the original topological order, regardless
+        // of which independent process finished first.
+        for (name, (outcome, diagnostics)) in batch.into_iter().zip(outcomes) {
+            let _ = std::io::stderr().write_all(&diagnostics);
+            let outcome = outcome?;
+            let blocks = &by_plugin[name];
+            dependencies.extend(outcome.dependencies);
+            for (id, result) in outcome.outputs.into_iter().enumerate() {
+                let (index, block) = &blocks[id];
+                match result {
+                    Ok(markdown) => {
+                        let body = &articles[*index].body;
+                        let replacement = splice_text(body, &block.range, &markdown);
+                        generated.entry(name).or_default().push((*index, markdown));
+                        replacements
+                            .entry(*index)
+                            .or_default()
+                            .push((block.range.clone(), replacement));
+                    }
+                    Err(message) => errors.push(located(
+                        &roots,
+                        articles[*index],
+                        line_offsets[index] + block.line,
+                        &format!("{name}: {message}"),
+                    )),
                 }
-                Err(message) => errors.push(located(
-                    &roots,
-                    articles[*index],
-                    line_offsets[index] + block.line,
-                    &format!("{name}: {message}"),
-                )),
             }
         }
-      }
     }
     dependencies.sort();
     dependencies.dedup();
@@ -370,25 +396,35 @@ fn run_batches<'a>(
             dependencies.extend(ancestors[earlier.as_str()].iter().copied());
         }
         if active(name) {
-            if !batch.is_empty() && (batch.len() >= workers.max(1)
-                || batch.iter().any(|n| dependencies.contains(n.as_str()))) {
+            if !batch.is_empty()
+                && (batch.len() >= workers.max(1)
+                    || batch.iter().any(|n| dependencies.contains(n.as_str())))
+            {
                 batches.push(std::mem::take(&mut batch));
             }
             batch.push(name);
         }
         ancestors.insert(name, dependencies);
     }
-    if !batch.is_empty() { batches.push(batch); }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
     batches
 }
 
 fn parallel_batch<T: Send>(names: &[&String], work: impl Fn(&String) -> T + Sync) -> Vec<T> {
     std::thread::scope(|scope| {
-        let handles: Vec<_> = names.iter().map(|name| {
-            let work = &work;
-            scope.spawn(move || work(name))
-        }).collect();
-        handles.into_iter().map(|handle| handle.join().expect("plugin worker panicked")).collect()
+        let handles: Vec<_> = names
+            .iter()
+            .map(|name| {
+                let work = &work;
+                scope.spawn(move || work(name))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("plugin worker panicked"))
+            .collect()
     })
 }
 
@@ -404,14 +440,21 @@ fn run_order(plugins: &BTreeMap<String, PluginConfig>) -> Result<Vec<String>> {
         }
         for earlier in &config.after {
             if !plugins.contains_key(earlier) {
-                bail!("in [plugins.{name}]: 'after' names '{earlier}', which is not a configured plugin");
+                bail!(
+                    "in [plugins.{name}]: 'after' names '{earlier}', which is not a configured plugin"
+                );
             }
         }
     }
     let mut order = Vec::new();
     let mut waiting: BTreeMap<&str, BTreeSet<&str>> = plugins
         .iter()
-        .map(|(name, config)| (name.as_str(), config.after.iter().map(String::as_str).collect()))
+        .map(|(name, config)| {
+            (
+                name.as_str(),
+                config.after.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
     while !waiting.is_empty() {
         let Some(next) = waiting
@@ -420,7 +463,10 @@ fn run_order(plugins: &BTreeMap<String, PluginConfig>) -> Result<Vec<String>> {
             .map(|(name, _)| *name)
         else {
             let cycle: Vec<&str> = waiting.keys().copied().collect();
-            bail!("the plugins' 'after' lists form a cycle among: {}", cycle.join(", "));
+            bail!(
+                "the plugins' 'after' lists form a cycle among: {}",
+                cycle.join(", ")
+            );
         };
         waiting.remove(next);
         for earlier in waiting.values_mut() {
@@ -632,14 +678,24 @@ fn run_cached(
     let count = request.blocks.len();
     let name = request.plugin;
     let environment: BTreeMap<Vec<u8>, Vec<u8>> = std::env::vars_os()
-        .map(|(k, v)| (k.as_encoded_bytes().to_vec(), v.as_encoded_bytes().to_vec())).collect();
+        .map(|(k, v)| (k.as_encoded_bytes().to_vec(), v.as_encoded_bytes().to_vec()))
+        .collect();
     let environment: Vec<_> = environment.into_iter().collect();
     let executable = resolve_program(root, program);
     let diagnostics_key = crate::cache::key_json(&request);
     let mut inputs = serde_json::to_value(&request)?;
-    for block in inputs["blocks"].as_array_mut().unwrap() { block["line"] = 0.into(); }
-    let key = crate::cache::key_json(&(config, inputs, environment, &executable,
-        executable.as_deref().and_then(|path| fingerprints.get(path))));
+    for block in inputs["blocks"].as_array_mut().unwrap() {
+        block["line"] = 0.into();
+    }
+    let key = crate::cache::key_json(&(
+        config,
+        inputs,
+        environment,
+        &executable,
+        executable
+            .as_deref()
+            .and_then(|path| fingerprints.get(path)),
+    ));
     let slot = (root.to_path_buf(), name.to_string());
     if crate::cache::enabled() {
         let cached = if crate::cache::persistent() {
@@ -650,12 +706,19 @@ fn run_cached(
         if let Some(cached) = cached
             && cached.key == key
             && (cached.stderr.is_empty() || cached.diagnostics_key == diagnostics_key)
-            && cached.dependencies.iter().all(|(path, print)| fingerprints.get(path) == *print)
+            && cached
+                .dependencies
+                .iter()
+                .all(|(path, print)| fingerprints.get(path) == *print)
         {
             diagnostics.extend_from_slice(&cached.stderr);
             return Ok(Outcome {
                 outputs: cached.outputs.into_iter().map(Ok).collect(),
-                dependencies: cached.dependencies.into_iter().map(|(path, _)| path).collect(),
+                dependencies: cached
+                    .dependencies
+                    .into_iter()
+                    .map(|(path, _)| path)
+                    .collect(),
             });
         }
     }
@@ -666,21 +729,36 @@ fn run_cached(
     let mut dependencies: Vec<PathBuf> = response
         .depends_on
         .iter()
-        .flat_map(|path| { let path = root.join(path); [canonical(&path), path] })
+        .flat_map(|path| {
+            let path = root.join(path);
+            [canonical(&path), path]
+        })
         .collect();
-    if let Some(executable) = executable { dependencies.push(executable); }
+    if let Some(executable) = executable {
+        dependencies.push(executable);
+    }
     dependencies.sort();
     dependencies.dedup();
 
     if crate::cache::enabled() && outputs.iter().all(Result::is_ok) {
         let cached = Cached {
-            key: key.clone(), stderr, diagnostics_key,
-            dependencies: dependencies.iter().map(|path| (path.clone(), fingerprint(path))).collect(),
+            key: key.clone(),
+            stderr,
+            diagnostics_key,
+            dependencies: dependencies
+                .iter()
+                .map(|path| (path.clone(), fingerprint(path)))
+                .collect(),
             outputs: outputs.iter().map(|o| o.clone().unwrap()).collect(),
         };
-        if crate::cache::persistent() { crate::cache::put("plugins", &key, &cached); }
-        else { cache().lock().unwrap().insert(slot, cached); }
-    } else { cache().lock().unwrap().remove(&slot); }
+        if crate::cache::persistent() {
+            crate::cache::put("plugins", &key, &cached);
+        } else {
+            cache().lock().unwrap().insert(slot, cached);
+        }
+    } else {
+        cache().lock().unwrap().remove(&slot);
+    }
     Ok(Outcome {
         outputs,
         dependencies,
@@ -690,7 +768,13 @@ fn run_cached(
 /// Spawn the plugin, feed it the request, and parse what it prints. The
 /// plugin's stderr is captured and replayed after it exits, so warnings
 /// reach the terminal on both cache misses and later hits.
-fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request, diagnostics: &mut Vec<u8>) -> Result<(Response, Vec<u8>)> {
+fn run(
+    root: &Path,
+    config: &PluginConfig,
+    program: &Path,
+    request: &Request,
+    diagnostics: &mut Vec<u8>,
+) -> Result<(Response, Vec<u8>)> {
     let payload = serde_json::to_vec(request)?;
     let mut child = Command::new(program)
         .args(&config.command[1..])
@@ -714,7 +798,8 @@ fn run(root: &Path, config: &PluginConfig, program: &Path, request: &Request, di
         output.status
     );
     written.context("writing the request to the plugin")?;
-    let response = serde_json::from_slice(&output.stdout).context("the plugin's response is not valid")?;
+    let response =
+        serde_json::from_slice(&output.stdout).context("the plugin's response is not valid")?;
     Ok((response, output.stderr))
 }
 
@@ -847,14 +932,20 @@ fn resolve_program(root: &Path, program: &Path) -> Option<PathBuf> {
         vec![root.join(program)]
     } else {
         std::env::split_paths(&std::env::var_os("PATH")?)
-            .map(|dir| root.join(dir).join(program)).collect()
+            .map(|dir| root.join(dir).join(program))
+            .collect()
     };
     candidates.into_iter().find_map(|path| {
         let metadata = std::fs::metadata(&path).ok()?;
-        if !metadata.is_file() { return None; }
-        #[cfg(unix)] {
+        if !metadata.is_file() {
+            return None;
+        }
+        #[cfg(unix)]
+        {
             use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o111 == 0 { return None; }
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return None;
+            }
         }
         std::fs::canonicalize(path).ok()
     })
@@ -871,7 +962,12 @@ impl Fingerprints {
         // Resolve every time: a removed/retargeted symlink must not hit its
         // previous target. Share content hashing for equivalent source paths.
         let path = std::fs::canonicalize(path).ok()?;
-        self.0.lock().unwrap().entry(path.clone()).or_insert_with(|| fingerprint(&path)).clone()
+        self.0
+            .lock()
+            .unwrap()
+            .entry(path.clone())
+            .or_insert_with(|| fingerprint(&path))
+            .clone()
     }
 }
 
@@ -931,19 +1027,29 @@ mod tests {
     #[test]
     fn batches_bound_concurrency_and_preserve_transitive_dependencies() {
         let config = |after: &[&str]| PluginConfig {
-            command: vec!["unused".into()], anchors: true,
+            command: vec!["unused".into()],
+            anchors: true,
             after: after.iter().map(|s| s.to_string()).collect(),
         };
         let plugins = BTreeMap::from([
-            ("a".into(), config(&[])), ("b".into(), config(&["a"])),
-            ("c".into(), config(&["b"])), ("d".into(), config(&[])),
+            ("a".into(), config(&[])),
+            ("b".into(), config(&["a"])),
+            ("c".into(), config(&["b"])),
+            ("d".into(), config(&[])),
             ("e".into(), config(&[])),
         ]);
         let order = run_order(&plugins).unwrap();
         let batches = run_batches(&order, &plugins, |name| name != "b", 2);
-        let actual: Vec<Vec<&str>> = batches.iter().map(|b| b.iter().map(|n| n.as_str()).collect()).collect();
+        let actual: Vec<Vec<&str>> = batches
+            .iter()
+            .map(|b| b.iter().map(|n| n.as_str()).collect())
+            .collect();
         assert_eq!(actual, vec![vec!["a"], vec!["c", "d"], vec!["e"]]);
-        assert!(run_batches(&order, &plugins, |_| true, 1).iter().all(|b| b.len() == 1));
+        assert!(
+            run_batches(&order, &plugins, |_| true, 1)
+                .iter()
+                .all(|b| b.len() == 1)
+        );
     }
 
     #[test]
@@ -1159,7 +1265,11 @@ printf '%s' '{"blocks":[{"id":0,"markdown":"Generated <a id=\"c-thing\"></a>\n\n
         let dir = site_with_plugin("cat > /dev/null\n", &[("1--page", "```{k}\n```\n")]);
         let site_config = dir.path().join("site/trail.toml");
         let config = fs::read_to_string(&site_config).unwrap();
-        fs::write(&site_config, format!("{config}\n[[merge]]\npath = \"../kernel\"\n")).unwrap();
+        fs::write(
+            &site_config,
+            format!("{config}\n[[merge]]\npath = \"../kernel\"\n"),
+        )
+        .unwrap();
         let kernel = dir.path().join("kernel");
         let topic = kernel.join("kern.product/1--ref.topic");
         fs::create_dir_all(&topic).unwrap();
@@ -1210,7 +1320,10 @@ printf '%s' '{"blocks":[{"id":0,"markdown":"Generated <a id=\"c-thing\"></a>\n\n
         files.sort();
         assert_eq!(
             files,
-            ["demo.product/1--guide.topic/1--page.md", "kern.product/1--ref.topic/1--api.md"]
+            [
+                "demo.product/1--guide.topic/1--page.md",
+                "kern.product/1--ref.topic/1--api.md"
+            ]
         );
 
         // Where both trees configure a name, the site root's wins.
@@ -1404,15 +1517,29 @@ printf '%s' '{"blocks":[{"id":0,"markdown":"<a id=\"generated\"></a>out"}]}'
             request()["anchors"],
             serde_json::json!({"demo/guide/other": ["c-thing", "kept"]})
         );
-        let runs = || fs::read_to_string(dir.path().join("runs")).unwrap().lines().count();
+        let runs = || {
+            fs::read_to_string(dir.path().join("runs"))
+                .unwrap()
+                .lines()
+                .count()
+        };
         assert_eq!(runs(), 2);
 
         // A new anchor anywhere can change what the plugin links to.
-        let other = dir.path().join("site/demo.product/1--guide.topic/2--other.md");
-        fs::write(&other, "---\ntitle: other\ntype: concept\n---\n\n<a id=\"new\"></a>\n").unwrap();
+        let other = dir
+            .path()
+            .join("site/demo.product/1--guide.topic/2--other.md");
+        fs::write(
+            &other,
+            "---\ntitle: other\ntype: concept\n---\n\n<a id=\"new\"></a>\n",
+        )
+        .unwrap();
         load(&dir).unwrap();
         assert_eq!(runs(), 3);
-        assert_eq!(request()["anchors"], serde_json::json!({"demo/guide/other": ["new"]}));
+        assert_eq!(
+            request()["anchors"],
+            serde_json::json!({"demo/guide/other": ["new"]})
+        );
     }
 
     #[test]
@@ -1435,20 +1562,29 @@ printf '%s' '{"blocks":[{"id":0,"markdown":"index"}]}'
         // [plugins.p] is the last table: its keys go at the end.
         fs::write(
             &toml,
-            format!("{config}anchors = true\nafter = [\"q\"]\n\n[plugins.q]\ncommand = [\"../q.sh\"]\n"),
+            format!(
+                "{config}anchors = true\nafter = [\"q\"]\n\n[plugins.q]\ncommand = [\"../q.sh\"]\n"
+            ),
         )
         .unwrap();
         load(&dir).unwrap();
         let request: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.path().join("request.json")).unwrap()).unwrap();
-        assert_eq!(request["anchors"], serde_json::json!({"demo/guide/docs": ["c-made"]}));
+            serde_json::from_str(&fs::read_to_string(dir.path().join("request.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            request["anchors"],
+            serde_json::json!({"demo/guide/docs": ["c-made"]})
+        );
 
         let reconfigure = |extra: &str| {
             fs::write(&toml, format!("{config}{extra}")).unwrap();
             format!("{:#}", load(&dir).unwrap_err())
         };
         let error = reconfigure("after = [\"q\"]\n\n[plugins.q]\ncommand = [\"../q.sh\"]\n");
-        assert!(error.contains("[plugins.p]: 'after'") && error.contains("anchors = true"), "{error}");
+        assert!(
+            error.contains("[plugins.p]: 'after'") && error.contains("anchors = true"),
+            "{error}"
+        );
         let error = reconfigure("anchors = true\nafter = [\"r\"]\n");
         assert!(error.contains("'after' names 'r'"), "{error}");
         let error = reconfigure(

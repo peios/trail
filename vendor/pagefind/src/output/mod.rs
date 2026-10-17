@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::index::PagefindIndexes;
-use crate::{SearchOptions, PAGEFIND_VERSION};
-use flate2::write::GzEncoder; // TODO: Replace flate2 with async-compression since we
+use crate::{PAGEFIND_VERSION, SearchOptions};
 use flate2::Compression; //   // require that crate for the input compression anyway.
+use flate2::write::GzEncoder; // TODO: Replace flate2 with async-compression since we
 use futures::future::join_all;
 use hashbrown::HashMap;
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use minifier::js::minify;
-use tokio::fs::{create_dir_all, File};
+use tokio::fs::{File, create_dir_all};
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
 
@@ -266,34 +266,70 @@ async fn write_common(
 impl PagefindIndexes {
     /// Preserve the normal encoder's bytes while reusing immutable fragments
     /// and compressing misses on a caller-bounded pool.
-    pub fn cached_files(&self, options: &SearchOptions, outdir: &PathBuf,
-        cache: &dyn CompressionCache, pool: &rayon::ThreadPool) -> anyhow::Result<Vec<SyntheticFile>> {
+    pub fn cached_files(
+        &self,
+        options: &SearchOptions,
+        outdir: &PathBuf,
+        cache: &dyn CompressionCache,
+        pool: &rayon::ThreadPool,
+    ) -> anyhow::Result<Vec<SyntheticFile>> {
         use rayon::prelude::*;
-        let mut inputs = vec![(outdir.join(format!("pagefind.{}.pf_meta", self.meta_index.0)), self.meta_index.1.as_slice())];
-        inputs.extend(self.fragments.iter().map(|(hash, data)| (outdir.join(format!("fragment/{hash}.pf_fragment")), data.as_bytes())));
-        inputs.extend(self.word_indexes.iter().map(|(hash, data)| (outdir.join(format!("index/{hash}.pf_index")), data.as_slice())));
-        inputs.extend(self.filter_indexes.iter().map(|(hash, data)| (outdir.join(format!("filter/{hash}.pf_filter")), data.as_slice())));
-        let mut files = pool.install(|| inputs.into_par_iter().map(|(filename, source)| {
-            let contents = if let Some(bytes) = cache.get(source) { bytes } else {
-                let mut gz = GzEncoder::new(Vec::new(), Compression::best());
-                gz.write_all(b"pagefind_dcd")?;
-                gz.write_all(source)?;
-                let bytes = gz.finish()?;
-                cache.put(source, &bytes);
-                bytes
-            };
-            Ok(SyntheticFile { filename, contents })
-        }).collect::<std::io::Result<Vec<_>>>())?;
+        let mut inputs = vec![(
+            outdir.join(format!("pagefind.{}.pf_meta", self.meta_index.0)),
+            self.meta_index.1.as_slice(),
+        )];
+        inputs.extend(self.fragments.iter().map(|(hash, data)| {
+            (
+                outdir.join(format!("fragment/{hash}.pf_fragment")),
+                data.as_bytes(),
+            )
+        }));
+        inputs.extend(self.word_indexes.iter().map(|(hash, data)| {
+            (
+                outdir.join(format!("index/{hash}.pf_index")),
+                data.as_slice(),
+            )
+        }));
+        inputs.extend(self.filter_indexes.iter().map(|(hash, data)| {
+            (
+                outdir.join(format!("filter/{hash}.pf_filter")),
+                data.as_slice(),
+            )
+        }));
+        let mut files = pool.install(|| {
+            inputs
+                .into_par_iter()
+                .map(|(filename, source)| {
+                    let contents = if let Some(bytes) = cache.get(source) {
+                        bytes
+                    } else {
+                        let mut gz = GzEncoder::new(Vec::new(), Compression::best());
+                        gz.write_all(b"pagefind_dcd")?;
+                        gz.write_all(source)?;
+                        let bytes = gz.finish()?;
+                        cache.put(source, &bytes);
+                        bytes
+                    };
+                    Ok(SyntheticFile { filename, contents })
+                })
+                .collect::<std::io::Result<Vec<_>>>()
+        })?;
         if self.language != "unknown" {
             if let Some(wasm_path) = self.lang_wasm_path() {
                 files.push(SyntheticFile {
                     filename: outdir.join(format!("wasm.{}.pagefind", self.language)),
-                    contents: WEB_WASM_FILES.get_file(wasm_path).expect("WASM should exist").contents().to_vec(),
+                    contents: WEB_WASM_FILES
+                        .get_file(wasm_path)
+                        .expect("WASM should exist")
+                        .contents()
+                        .to_vec(),
                 });
             } else {
                 options.logger.v_warn(format!(
                     "Note: Pagefind doesn't support stemming for the language {}. \n\
-                    Search will still work, but will not match across root words.", self.language));
+                    Search will still work, but will not match across root words.",
+                    self.language
+                ));
             }
         }
         Ok(files)
@@ -372,10 +408,12 @@ impl PagefindIndexes {
             if let Some(wasm_path) = self.lang_wasm_path() {
                 files.push(write(
                     outdir.join(format!("wasm.{}.pagefind", self.language)),
-                    vec![WEB_WASM_FILES
-                        .get_file(wasm_path)
-                        .expect("WASM should exist")
-                        .contents()],
+                    vec![
+                        WEB_WASM_FILES
+                            .get_file(wasm_path)
+                            .expect("WASM should exist")
+                            .contents(),
+                    ],
                     Compress::None,
                     if synthetic {
                         WriteBehavior::Synthetic

@@ -11,7 +11,12 @@ pub struct Memo<T> {
 
 impl<T: Clone> Memo<T> {
     pub fn new(limit: usize) -> Self {
-        Self { entries: HashMap::new(), order: VecDeque::new(), bytes: 0, limit }
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+            limit,
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<T> {
@@ -20,11 +25,17 @@ impl<T: Clone> Memo<T> {
 
     pub fn insert(&mut self, key: String, value: T, bytes: usize) {
         let bytes = bytes.saturating_add(key.len() * 2 + 128);
-        if bytes > self.limit || self.entries.contains_key(&key) { return; }
+        if bytes > self.limit || self.entries.contains_key(&key) {
+            return;
+        }
         while self.bytes + bytes > self.limit {
             if let Some(oldest) = self.order.pop_front() {
-                if let Some((_, size)) = self.entries.remove(&oldest) { self.bytes -= size; }
-            } else { break; }
+                if let Some((_, size)) = self.entries.remove(&oldest) {
+                    self.bytes -= size;
+                }
+            } else {
+                break;
+            }
         }
         self.bytes += bytes;
         self.order.push_back(key.clone());
