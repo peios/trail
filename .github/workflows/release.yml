@@ -8,12 +8,19 @@ permissions:
     contents: write
 
 jobs:
+    check:
+        uses: ./.github/workflows/check.yml
+        permissions:
+            contents: read
     build:
+        needs: check
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.96.0"
 
             - uses: Swatinem/rust-cache@v2
 
