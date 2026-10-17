@@ -1,0 +1,187 @@
+.TH TRAIL-FRONTMATTER 5 2026-10-17 "Peios trail 0.1.0"
+.SH NAME
+trail-frontmatter \- Trail article metadata
+.SH SYNOPSIS
+.nf
+<article>.md
+.fi
+.SH DESCRIPTION
+Every article begins with a YAML frontmatter block: a line of exactly
+\fB---\fR,
+the keys, and a closing \fB---\fR. It must be the first thing in the file.
+\fBUnknown keys are build errors.\fR
+.PP
+.PP
+.nf
+---
+title: Command-line reference
+type: reference
+description: Every pekit flag with its value form, the capability matrix, and exit codes.
+related:
+  - pekit/running/invocation
+  - pekit/reference/recipe-format
+inline_ref:
+  - pekit CLI
+updated: 2026-05-01
+reading_minutes: 25
+---
+.fi
+.PP
+.SS "The keys"
+.PP
+.TP
+\fBtitle\fR
+Type: string; Topic article: \fBrequired\fR; Book article: \fBrequired\fR
+.TP
+\fBtype\fR
+Type: string; Topic article: \fBrequired\fR; Book article: \fBerror\fR
+.TP
+\fBdescription\fR
+Type: string; Topic article: optional; Book article: optional
+.TP
+\fBrelated\fR
+Type: array of strings; Topic article: optional; Book article: optional
+.TP
+\fBinline_ref\fR
+Type: array of strings; Topic article: optional; Book article: optional
+.TP
+\fBupdated\fR
+Type: ISO date; Topic article: optional; Book article: optional
+.TP
+\fBreading_minutes\fR
+Type: integer; Topic article: optional; Book article: optional
+.PP
+.SS "The title field"
+.PP
+The page's name: its \fBh1\fR, breadcrumb, sidebar entry, search-result
+heading
+and \fBog:title\fR. Never derived  -  an article always states its own.
+.PP
+.SS "The type field"
+.PP
+The learn taxonomy. Required on articles in topics; **an error on articles in
+books**, where the question it answers is already settled by the document's
+order.
+.PP
+Trail does not constrain the value and does not display it on the page. It is
+carried into \fBsite.json\fR as the article's \fBtype\fR. This site uses
+\fBconcept\fR,
+\fBhow-to\fR, and \fBreference\fR.
+.PP
+.SS "The description field"
+.PP
+One sentence. It feeds:
+.PP
+.IP \(bu 2
+\fB<meta name="description">\fR and \fBog:description\fR;
+.IP \(bu 2
+the standfirst line of the page's
+  markdown mirror;
+.IP \(bu 2
+the \fBdescription\fR field in \fBsite.json\fR.
+.PP
+It is not shown on the page, and it is not the in-site search snippet  -
+Pagefind builds those from body text.
+.PP
+\fB--strict\fR fails the build on any article without one.
+Alias pages are exempt.
+.PP
+.SS "The related field"
+.PP
+Page references in the \fB~\fR grammar,
+\fBwithout the leading \fB~\fR\fR:
+.PP
+.PP
+.nf
+related:
+  - pekit/running/invocation
+  - peios/package-management/overview
+.fi
+.PP
+They render as a "Related Content" list under the article, appear in the
+markdown mirror, and become a list of resolved paths in \fBsite.json\fR.
+.PP
+Resolution is as strict as a body link: **ambiguous references always fail the
+build**; missing ones fail unless \fB--allow-dangling-links\fR downgrades them
+to
+a warning, in which case they are dropped from the list.
+.PP
+.SS "inline_ref"
+.PP
+Phrases that should link to this article wherever they appear in the site's
+prose:
+.PP
+.PP
+.nf
+inline_ref:
+  - PCDS GUID
+  - PCDS GUIDs
+.fi
+.PP
+Matching is literal, whole-word and longest-first, and skips headings, links,
+image alt text, code, and the claiming page itself. A phrase belongs to
+exactly one declarer site-wide; a collision is a build error, as is an empty
+phrase, one with leading or trailing whitespace, or one containing \fBsection
+\fR. Alias
+pages claim nothing. See
+Inline references.
+.PP
+.SS "The updated field"
+.PP
+An ISO \fBYYYY-MM-DD\fR date, validated as such:
+.PP
+.PP
+.nf
+updated: '2026/05/01' is not an ISO date (expected YYYY-MM-DD)
+.fi
+.PP
+It appears in the page's meta line and becomes the page's \fB<lastmod>\fR in
+\fBsitemap.xml\fR. Containers take the most recent date beneath them.
+.PP
+Deliberately manual: file modification times are noise, and trail does not
+read git history.
+.PP
+.PP
+never \fB2026-5-1\fR. No quoting is needed  -  an unquoted date works.
+.PP
+.SS "reading_minutes"
+.PP
+An integer overriding the estimate, which is otherwise the body's word count
+at 200 words a minute, rounded up, with a floor of 1. Code blocks count toward
+the word count.
+.PP
+Containers sum their children's values, so a book cover reports the whole
+book.
+.PP
+.SS "Errors"
+.PP
+.TP
+\fB... has no frontmatter (must start with '---')\fR
+Cause: The file does not open with \fB---\fR.
+.TP
+\fB... has unterminated frontmatter\fR
+Cause: No closing \fB---\fR.
+.TP
+\fBparsing frontmatter of ...\fR
+Cause: Invalid YAML, a missing required key, or an unknown key.
+.TP
+\fBupdated: '...' is not an ISO date (expected YYYY-MM-DD)\fR
+Cause: A malformed date.
+.PP
+Inside a book, \fBtype:\fR produces an unknown-key error, since \fBtype\fR is
+not part
+of the book article schema.
+.PP
+.SS "Frontmatter and .link aliases"
+.PP
+An alias page has no frontmatter of
+its own  -  it renders the target's body. It takes its title from the
+\fB.link\fR
+file (or from its own slug), its canonical URL from the original, and it
+claims no \fBinline_ref\fR phrases. Inside a book it also loses \fBtype\fR and
+\fBdescription\fR, as every book entry does.
+.SH SEE ALSO
+.BR trail (1),
+.BR trail.toml (5)
+.PP
+Trail Learn: https://learn.peios.org/trail/

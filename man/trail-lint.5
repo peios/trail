@@ -1,0 +1,273 @@
+.TH TRAIL-LINT 5 2026-10-17 "Peios trail 0.1.0"
+.SH NAME
+trail-lint \- Trail writing-rule configuration
+.SH SYNOPSIS
+.nf
+trail.toml
+.fi
+.SH DESCRIPTION
+\fBtrail lint\fR reads a site's sources and reports each breach of its writing
+rules, with the file, line, and column. Every rule is off until the site turns
+it on, and every word list is the site's own, so Trail holds no house style of
+its own.
+.PP
+The lint is a separate command. A build never runs it, so a site that doesn't
+use it is unaffected.
+.PP
+.PP
+.nf
+trail lint path/to/site
+.fi
+.PP
+Findings and totals go to stderr:
+.PP
+.PP
+.nf
+trail: guide.product/1--basics.topic/100--intro.md:12:41: "e.g.": use "for example" [words]
+trail: warning: guide.product/1--basics.topic/100--intro.md:30:18: add a serial comma before the last item [serial-comma]
+trail: 1 error, 1 warning
+.fi
+.PP
+The exit status is \fB1\fR if any breach is an error, and \fB0\fR otherwise.
+The
+command-line reference has the details.
+.PP
+.SS "Turning rules on"
+.PP
+Rules are configured in a \fB[lint]\fR table in the root \fBtrail.toml\fR,
+below every
+plain key:
+.PP
+.PP
+.nf
+[lint]
+rules = ["words", "spelling", "em-dash", "heading-levels", "line-length"]
+line_length = 78
+proper_nouns = ["Peios", "Registry Editor", "netd"]
+
+[[lint.words]]
+match = ["e.g."]
+use = "for example"
+
+[[lint.words]]
+match = ["simply", "just", "of course"]
+message = "don't condescend; cut it"
+
+[[lint.words]]
+rule = "spelling"
+match = ["colour*", "behaviour*", "catalogue"]
+message = "use the US spelling"
+.fi
+.PP
+.TP
+\fBrules\fR
+Type: array of strings; The rules that run: built-in rules, and the \fBrule\fR
+names of word lists. A name that matches no rule is an error.
+.TP
+\fBwarnings\fR
+Type: array of strings; Rules that report warnings, not errors.
+\fBserial-comma\fR always does.
+.TP
+\fBline_length\fR
+Type: integer; The longest a prose line can be, in characters. Default 78.
+.TP
+\fBproper_nouns\fR
+Type: array of strings; Names whose casing is fixed, for the title and heading
+case rules. A name can be several words.
+.TP
+\fBwords\fR
+Type: array of tables; Word lists.
+.TP
+\fBignore\fR
+Type: array of tables; Rules that don't apply under a path.
+.PP
+A malformed \fB[lint]\fR table fails \fBtrail build\fR too, so a typo can't
+hide until
+someone runs the lint.
+.PP
+.SS "Word lists"
+.PP
+Each \fB[[lint.words]]\fR table bans some words or phrases:
+.PP
+.TP
+\fBmatch\fR
+Required. The words or phrases to find. They match whole words, ignoring case,
+and a phrase matches across a line break. A trailing \fB*\fR matches any
+ending: \fBcolour*\fR finds "colors" and "colored".
+.TP
+\fBrule\fR
+The rule the list belongs to. Default \fBwords\fR. Give lists that should be
+turned on and off separately their own rule names, such as \fBspelling\fR.
+.TP
+\fBuse\fR
+What to write instead. The message says \fB"colour": use "color"\fR.
+.TP
+\fBmessage\fR
+Why, when \fBuse\fR doesn't say it.
+.TP
+\fBcase_sensitive\fR
+Match case exactly. With it, \fBmay\fR doesn't match the specification keyword
+\fBMAY\fR, and \fBus\fR doesn't match "US".
+.PP
+.SS "What counts as prose"
+.PP
+The lint reads sources as written, without building them, so nothing a build
+generates is checked. Prose is the text a reader sees, so these are never
+checked as words:
+.PP
+.IP \(bu 2
+code spans and code blocks;
+.IP \(bu 2
+raw HTML;
+.IP \(bu 2
+link destinations and URLs;
+.IP \(bu 2
+frontmatter keys.
+.PP
+An article's frontmatter \fBtitle\fR and \fBdescription\fR, and every
+\fBtrail.toml\fR and
+link file's \fBtitle\fR and \fBdescription\fR, are prose. The root
+\fBtrail.toml\fR isn't
+checked.
+.PP
+.SS "The built-in rules"
+.PP
+Each rule's name is what turns it on, appears in its reports, and suppresses
+it.
+.PP
+.TP
+\fBem-dash\fR
+Reports: An em dash without a space on each side, and more than one pair of em
+dashes in a sentence.
+.TP
+\fBdouble-hyphen\fR
+Reports: \fB--\fR used as a dash: \fBa -- b\fR or \fBa--b\fR. A flag such as
+\fB--force\fR is not a dash; it belongs in code formatting.
+.TP
+\fBcurly-quotes\fR
+Reports: Typographic quotes and apostrophes: \fB‘ ’ “ ”\fR.
+.TP
+\fBinvisible-characters\fR
+Reports: No-break, narrow no-break, figure, and zero-width spaces, word
+joiners, and byte order marks, anywhere outside a code block.
+.TP
+\fBexclamation\fR
+Reports: An exclamation point used as punctuation. Operators such as \fB!=\fR
+don't count.
+.TP
+\fBampersand\fR
+Reports: \fB&\fR in prose or a title. Bold text, which names a UI element
+exactly as it appears, and the operator \fB&&\fR don't count.
+.TP
+\fBdouble-space\fR
+Reports: Two spaces after a period.
+.TP
+\fBtitle-case\fR
+Reports: A frontmatter, \fBtrail.toml\fR, or link file title not in title
+case. The message gives the title as it should be.
+.TP
+\fBheading-case\fR
+Reports: A heading not in sentence case: a capital after the first word.
+.TP
+\fBheading-punctuation\fR
+Reports: A heading ending in \fB.\fR, \fB,\fR, \fB:\fR, \fB;\fR, \fB!\fR, or
+\fB?\fR.
+.TP
+\fBheading-levels\fR
+Reports: A \fB#\fR heading (the title is the page's only \fB#\fR), a skipped
+level, and any heading below \fB###\fR.
+.TP
+\fBcode-language\fR
+Reports: A fenced code block without a language. Use \fBtext\fR for none.
+.TP
+\fBshell-prompt\fR
+Reports: A line starting with \fB$ \fR in a \fBsh\fR, \fBbash\fR, \fBshell\fR,
+or \fBzsh\fR block.
+.TP
+\fBline-length\fR
+Reports: A prose line longer than \fBline_length\fR.
+.TP
+\fBhex-case\fR
+Reports: Lowercase digits in a \fB0x\fR literal in prose or a code span.
+.TP
+\fBserial-comma\fR
+Reports: A list of three or more items without a comma before its final "and"
+or "or". A warning.
+.PP
+Some rules are heuristics. They aim never to report what isn't a breach, and
+so they miss some that are.
+.PP
+.IP \(bu 2
+\fB\fBtitle-case\fR and \fBheading-case\fR\fR leave alone any word in
+\fBproper_nouns\fR,
+  and any word whose casing is its own: an acronym ("GXWI", "SIDs"), or a name
+  with a capital or digit inside it ("IPv6"). A word after a colon starts a
+  subtitle and can be capitalized. A lowercase name such as "netd" is fine at
+  the start of a title or heading once it is in \fBproper_nouns\fR.
+.IP \(bu 2
+\fB\fBline-length\fR\fR exempts tables, code blocks, raw HTML, frontmatter,
+and
+  link reference definitions. A line is also exempt when it fits once its link
+  destinations and URLs are taken out.
+.IP \(bu 2
+\fB\fBhex-case\fR\fR looks inside code spans, unlike every other rule, because
+a
+  hexadecimal value in prose is usually written as code: \fB0x1F\fR. Code
+blocks
+  follow the code's own style and are not checked.
+.IP \(bu 2
+\fB\fBserial-comma\fR\fR counts a comma-separated run as a list only when
+every
+  item but the first is at most three words. It also skips a run that starts
+  with an introductory clause or phrase ("If the key exists, read it and write
+  it"), contrasts ("\fBx\fR, not \fBy\fR or \fBz\fR"), gives examples ("such
+as A or B"),
+  or quotes. A missed list is better than a wrong report, so it's a warning.
+.PP
+.SS "Suppressing a rule"
+.PP
+When a page breaks a rule on purpose, such as a style guide quoting the words
+it bans, suppress the rule rather than turning it off for the whole site.
+.PP
+For one line, put a comment on the line before it:
+.PP
+.PP
+.nf
+<!-- lint-disable-next-line words -->
+- Don't: "In this article, we will discuss logon sessions."
+.fi
+.PP
+For a stretch of a page, put comments around it:
+.PP
+.PP
+.nf
+<!-- lint-disable words -->
+Never write a lowercase "may" in prose.
+<!-- lint-enable words -->
+.fi
+.PP
+Name one or more rules, or none for every rule. A comment can sit in a
+blockquote (\fB> <!-- ... -->\fR) or be indented into a list item.
+.PP
+Put the comments between blocks, not inside a paragraph. A comment line ends
+the paragraph it interrupts, which changes the page. The comments are
+invisible on the page, but the page's
+Markdown mirror shows them, because
+mirrors show the source as written.
+.PP
+For a whole page or a whole book, name its path in \fB[[lint.ignore]]\fR:
+.PP
+.PP
+.nf
+[[lint.ignore]]
+path = "guide.product/3--conventions.book"
+rules = ["hex-case"]
+.fi
+.PP
+The path is relative to the site root, and covers a file or everything under a
+directory. With no \fBrules\fR, every rule is ignored there.
+.SH SEE ALSO
+.BR trail (1),
+.BR trail.toml (5)
+.PP
+Trail Learn: https://learn.peios.org/trail/

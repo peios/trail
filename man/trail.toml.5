@@ -1,0 +1,430 @@
+.TH TRAIL.TOML 5 2026-10-17 "Peios trail 0.1.0"
+.SH NAME
+trail.toml \- trail configuration files
+.SH SYNOPSIS
+.nf
+trail.toml
+.fi
+.SH DESCRIPTION
+\fBtrail.toml\fR appears at every level of the tree, with a different schema
+at
+each. \fBUnknown keys are build errors everywhere\fR, so a typo fails loudly
+instead of doing nothing.
+.PP
+.SS "The site root"
+.PP
+Required at the site root. Four keys are mandatory.
+.PP
+.TP
+\fBsitename\fR
+Type: string; Default: \fBrequired\fR; The site's identity: header wordmark
+(last word accented), \fB<title>\fR suffix, search placeholder,
+\fBog:site_name\fR.
+.TP
+\fBtitle\fR
+Type: string; Default: \fBrequired\fR; The front page's headline; its
+\fBog:title\fR and the base for its meta description.
+.TP
+\fBdescription\fR
+Type: string; Default: \fBrequired\fR; The front page's standfirst and meta
+description; the first line of \fBllms.txt\fR.
+.TP
+\fBfooter\fR
+Type: string; Default: \fBrequired\fR; The line at the foot of every page.
+.TP
+\fBurl\fR
+Type: string; Default: none; The site's public base URL, for example
+\fBhttps://learn.peios.org\fR. Trailing slashes are trimmed.
+.TP
+\fBfeatured\fR
+Type: array of strings; Default: \fB[]\fR; Product slugs, in order. Sorts
+products, and selects which appear on the front page.
+.TP
+\fBaccent\fR
+Type: \fB#rrggbb\fR; Default: theme default; The site accent color.
+.TP
+\fBaccent_dark\fR
+Type: \fB#rrggbb\fR; Default: derived; The dark-mode accent. Derived by mixing
+\fBaccent\fR 75% toward white when absent.
+.TP
+\fBcustom_css\fR
+Type: path; Default: none; A stylesheet shipped at \fB/assets/custom.css\fR,
+loaded after the built-in one.
+.TP
+\fBfavicon\fR
+Type: path; Default: none; Shipped at the output root under its own name,
+linked from every page.
+.TP
+\fBhead_html\fR
+Type: path; Default: none; A file injected verbatim at the end of every page's
+\fB<head>\fR.
+.TP
+\fBedit_url\fR
+Type: string; Default: none; "Edit this page" URL template. Must contain
+\fB{path}\fR.
+.TP
+\fBnav\fR
+Type: array of tables; Default: \fB[]\fR; Header links. See below.
+.TP
+\fBpassthrough\fR
+Type: array of paths; Default: \fB[]\fR; Root entries copied into the output
+verbatim. See below.
+.TP
+\fBproduct_theming\fR
+Type: bool; Default: \fBtrue\fR; Whether each product tints its own pages.
+.TP
+\fBbuilt_by_trail\fR
+Type: bool; Default: \fBtrue\fR; Whether "Built with Trail." appears under the
+footer.
+.TP
+\fBplugins\fR
+Type: tables; Default: none; Commands that expand plugin blocks. See below.
+.TP
+\fBmerge\fR
+Type: array of tables; Default: \fB[]\fR; Other trees whose products join the
+site. See below.
+.TP
+\fBlint\fR
+Type: table; Default: none; The writing rules \fBtrail lint\fR checks. See
+Checking style. Builds ignore it, but a malformed table fails them.
+.PP
+.PP
+.nf
+sitename = "Peios Learn"
+title = "Documentation for everything Peios"
+description = "Concepts, guides, and reference for the Peios operating system…"
+url = "https://learn.peios.org"
+accent = "#3b82f6"
+featured = ["peios", "pekit", "provium", "universal-directory", "trail"]
+footer = "Peios Learn — documentation for the Peios project."
+
+[[nav]]
+label = "Specs"
+url = "~peios/pgss"
+.fi
+.PP
+.SS "Validation"
+.PP
+.IP \(bu 2
+\fBaccent\fR and \fBaccent_dark\fR must be \fB#rrggbb\fR. \fBaccent_dark\fR
+without \fBaccent\fR
+  is an error.
+.IP \(bu 2
+\fBcustom_css\fR, \fBfavicon\fR and \fBhead_html\fR are paths relative to the
+site root,
+  and \fBthe file must exist\fR. Naming one is also what makes it legal to
+keep
+  in the site root; the first path component is what is tolerated there.
+.IP \(bu 2
+\fBedit_url\fR must contain the literal \fB{path}\fR, which is replaced with
+the
+  article's source path relative to the site root (or, for a page in a
+  merged tree, relative to that
+  tree's root, using that tree's \fBedit_url\fR).
+.IP \(bu 2
+Every slug in \fBfeatured\fR must name an existing product.
+.PP
+.SS "passthrough"
+.PP
+Root entries trail neither builds nor understands, copied into the output as
+they are:
+.PP
+.PP
+.nf
+passthrough = ["CNAME", ".well-known", "ads.txt"]
+.fi
+.PP
+Each entry is a plain relative path naming a file or a directory that exists
+in the site root; directories are copied whole, nesting included. Naming an
+entry is also what makes it \fBlegal\fR to keep in the site root, exactly as
+\fBfavicon\fR and friends do  -  so this is how a repository that is also a
+trail
+site keeps its \fBCNAME\fR beside its \fBtrail.toml\fR.
+.PP
+Errors: an entry that is empty, absolute, or contains \fB..\fR; one naming
+something that does not exist; one naming the build output directory.
+.PP
+Passthrough entries are copied \fBlast\fR, after everything trail generates,
+so
+an entry deliberately named after a generated file replaces it. Naming
+\fBrobots.txt\fR is a supported way to ship your own; naming \fBassets\fR
+would bury
+the stylesheet, and trail will not stop you.
+.PP
+.SS "[[nav]]"
+.PP
+.TP
+\fBlabel\fR
+Type: string; \fBrequired.\fR The link text.
+.TP
+\fBurl\fR
+Type: string; \fBrequired.\fR An external URL, a root-relative path, or a
+\fB~\fR page reference.
+.PP
+References here are resolved \fBstrictly at load time\fR  -  a broken nav link
+fails the build even under \fB--allow-dangling-links\fR, because site chrome
+appears on every page.
+.PP
+.PP
+every key after a table header to that table, so a \fBfooter =\fR written
+below
+them is read as a nav item's field and fails with
+\fBunknown field 'footer', expected 'label' or 'url'\fR. Put every plain key
+above the first \fB[[nav]]\fR.
+.PP
+A shelf is not a link target, so a nav entry cannot point at one  -  aim at
+the
+anthology above it, or a page inside it.
+.PP
+.SS "[plugins.<name>]"
+.PP
+One table per plugin, keyed by the name its
+blocks use (\fB{name}\fR).
+.PP
+.TP
+\fBcommand\fR
+Type: array of strings; \fBrequired.\fR The program and its arguments, run
+without a shell, from the site root. A program containing \fB/\fR is a path
+relative to the site root; a bare name is looked up on \fBPATH\fR.
+.TP
+\fBanchors\fR
+Type: bool; Default \fBfalse\fR. Send the plugin every page's anchors, so it
+can link to targets that other pages define.
+.TP
+\fBafter\fR
+Type: array of strings; Default none. Plugins that run before this one, whose
+output's anchors join this one's anchors. Needs \fBanchors = true\fR.
+.PP
+.PP
+.nf
+[plugins.kernel-doc]
+command = ["python3", "../tools/docs/trail-kernel-doc/trail-kernel-doc", "--srctree", ".."]
+anchors = true
+
+[plugins.kernel-include]
+command = ["python3", "../tools/docs/trail-kernel-doc/trail-kernel-include", "--srctree", ".."]
+anchors = true
+after = ["kernel-doc"]
+.fi
+.PP
+Errors:
+.PP
+.IP \(bu 2
+a name other than lowercase letters, digits, \fB-\fR and \fB_\fR;
+.IP \(bu 2
+an empty \fBcommand\fR;
+.IP \(bu 2
+a program path that does not exist;
+.IP \(bu 2
+\fBafter\fR without \fBanchors = true\fR, naming a plugin that is not
+configured, or
+  forming a cycle.
+.PP
+A program path inside the site root is tolerated there, the same way
+\fBfavicon\fR
+and friends are.
+.PP
+Like \fB[[nav]]\fR, plugin tables must come \fBafter every plain key\fR, since
+TOML
+gives any key below a table header to that table. In what order \fB[[nav]]\fR,
+\fB[plugins.*]\fR and \fB[[merge]]\fR come relative to each other does not
+matter.
+.PP
+In a merged tree's \fBtrail.toml\fR,
+"the site root" in all of the above means that tree's root: its plugins
+resolve and run there.
+.PP
+.SS "[[merge]]"
+.PP
+One table per merged tree, in the
+order its plugins and passthrough entries yield to one another.
+.PP
+.TP
+\fBpath\fR
+Type: string; \fBrequired.\fR The tree's directory, relative to the site root.
+.PP
+.PP
+.nf
+[[merge]]
+path = "../kernel/docs"
+.fi
+.PP
+Every \fB*.product\fR in the tree joins the site. A merged tree's
+\fBtrail.toml\fR is
+optional; when present it must be valid, and only its \fBedit_url\fR,
+\fBpassthrough\fR and \fBplugins\fR apply. Everything else, including its own
+\fB[[merge]]\fR list, is ignored.
+.PP
+Errors:
+.PP
+.IP \(bu 2
+an empty \fBpath\fR, or one that is not a directory;
+.IP \(bu 2
+a \fBpath\fR that is the site root itself;
+.IP \(bu 2
+a product slug that two trees share;
+.IP \(bu 2
+anything in the tree's root that would be an error in a site root, except a
+  \fBdist/\fR directory.
+.PP
+A \fBpath\fR inside the site root is tolerated there, the same way
+\fBfavicon\fR and
+friends are.
+.PP
+.SS "What url unlocks"
+.PP
+Without it: no \fBsitemap.xml\fR, no \fBSitemap:\fR line in \fBrobots.txt\fR,
+no \fBog:url\fR,
+relative canonical URLs, and relative outward links in \fB/print\fR bundles.
+Set
+it before deploying.
+.PP
+.SS "A product"
+.PP
+Required in every \fB<slug>.product\fR directory.
+.PP
+.TP
+\fBtitle\fR
+Type: string; \fBrequired.\fR The product's display name.
+.TP
+\fBmonogram\fR
+Type: string; \fBrequired.\fR The short string on the product's tile.
+.TP
+\fBcolor\fR
+Type: \fB#rrggbb\fR; \fBrequired.\fR The product accent.
+.TP
+\fBdescription\fR
+Type: string; \fBrequired.\fR One sentence: the card text, the page
+standfirst, the \fBllms.txt\fR entry.
+.TP
+\fBinline_ref\fR
+Type: array of strings; Phrases linking to the product's landing page.
+.PP
+.PP
+.nf
+title = "pekit"
+monogram = "pk"
+color = "#22c55e"
+description = "The recipe-driven build and packaging tool."
+inline_ref = ["pekit"]
+.fi
+.PP
+.SS "An anthology"
+.PP
+Required in every \fB.antho\fR directory.
+.PP
+.TP
+\fBtitle\fR
+Type: string; \fBrequired.\fR
+.TP
+\fBdescription\fR
+Type: string; \fBrequired.\fR The card text, the page standfirst, the
+\fBllms.txt\fR entry.
+.TP
+\fBinline_ref\fR
+Type: array of strings; Phrases linking to the anthology's landing page.
+.PP
+.SS "A book"
+.PP
+Required in every \fB.book\fR directory.
+.PP
+.TP
+\fBtitle\fR
+Type: string; \fBrequired.\fR
+.TP
+\fBdescription\fR
+Type: string; \fBrequired.\fR
+.TP
+\fBshort\fR
+Type: string; An abbreviation used where the full title will not fit: the
+sidebar heading, the card pill, the line above the cover title.
+.TP
+\fBinline_ref\fR
+Type: array of strings; Phrases linking to the book's cover. These can carry a
+\fBsection \fR section suffix in prose.
+.PP
+.PP
+.nf
+title = "Peios Generic System Standards"
+short = "PGSS"
+description = "Cross-platform system standards from the Peios Project"
+inline_ref = ["PGSS", "Peios Generic System Standards"]
+.fi
+.PP
+.SS "A topic, subfolder, or chapter"
+.PP
+Optional. Both keys are optional.
+.PP
+.TP
+\fBtitle\fR
+Type: string; Overrides the slug-derived title.
+.TP
+\fBinline_ref\fR
+Type: array of strings; Phrases linking to the container's \fBfirst
+article\fR. Declaring them on a container with no articles is an error.
+.PP
+.PP
+.nf
+title = "Reference"
+.fi
+.PP
+.SS "A shelf"
+.PP
+Optional, and takes \fBtitle\fR only.
+.PP
+.TP
+\fBtitle\fR
+Type: string; Overrides the slug-derived title.
+.PP
+\fB\fBinline_ref\fR on a shelf is an error.\fR A shelf has no page and no
+articles
+of its own, so the phrase would have nowhere to land  -  declare it on the
+shelf's items instead.
+.PP
+.SS "Derived titles"
+.PP
+Wherever \fBtitle\fR is optional and absent, it comes from the slug: hyphens
+become spaces, and the words take title case. The first and last words and
+every major word are capitalised. Between them, these stay lowercase:
+.PP
+.IP \(bu 2
+articles: a, an, the;
+.IP \(bu 2
+coordinating conjunctions: and, but, or, nor, for, so, yet;
+.IP \(bu 2
+"as";
+.IP \(bu 2
+prepositions, such as to, of, in, on, at, by, from, with, about, between,
+  through and without.
+.PP
+So \fB2--writing-tests.topic\fR becomes "Writing Tests",
+\fBdeveloping-for-peios\fR
+becomes "Developing for Peios", and \fBwhat-an-event-is\fR becomes "What an
+Event
+Is".
+.PP
+Words that are as often adverbs or particles as prepositions, such as "up",
+"off" and "over", are capitalised: a slug can't say which it means, and
+"Setting Up the Network" needs the capital.
+.PP
+Write the key when the derived title is wrong. A slug is lowercase, so it
+can't carry acronyms, proper nouns or a name's own casing ("GXWI", "netd").
+.PP
+.SS "inline_ref everywhere"
+.PP
+The key means the same thing at every level: a list of phrases that should
+become links to this thing wherever they appear in the site's prose. Phrases
+are exclusive site-wide  -  two declarers claiming one phrase is an error  -
+and
+must not be empty, carry leading or trailing whitespace, or contain \fBsection
+\fR. See
+Inline references.
+.SS "Writing rules"
+.PP
+The optional \fB[lint]\fR table configures the separate lint command.
+See trail-lint(5) for rule names, word lists, defaults, and suppressions.
+.SH SEE ALSO
+.BR trail (1),
+.BR trail.toml (5)
+.PP
+Trail Learn: https://learn.peios.org/trail/
