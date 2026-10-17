@@ -1484,15 +1484,12 @@ fn anchor_ids_uncached(markdown: &str) -> HashSet<String> {
     let mut ids = HashSet::new();
     let mut used_ids = HashMap::new();
     for (i, event) in events.iter().enumerate() {
-        match event {
-            Event::Start(Tag::Heading { id, .. }) => {
-                let base = match id {
-                    Some(explicit) => explicit.to_string(),
-                    None => slugify(&heading_text(&events[i + 1..])),
-                };
-                ids.insert(unique_id(&mut used_ids, base));
-            }
-            _ => {}
+        if let Event::Start(Tag::Heading { id, .. }) = event {
+            let base = match id {
+                Some(explicit) => explicit.to_string(),
+                None => slugify(&heading_text(&events[i + 1..])),
+            };
+            ids.insert(unique_id(&mut used_ids, base));
         }
     }
     // Parse the complete HTML rather than isolated raw events, which can
@@ -1689,15 +1686,15 @@ fn scan_line(line: &str, offset: usize, found: &mut Vec<(std::ops::Range<usize>,
             }
             continue;
         }
-        if bytes[at] == b'[' && bytes.get(at + 1) == Some(&b'*') {
-            if let Some(name) = citation_name(&line[at + 2..])
-                && line[at + 2 + name.len()..].starts_with(']')
-            {
-                let end = at + 2 + name.len() + 1;
-                found.push((offset + at..offset + end, name.to_string()));
-                at = end;
-                continue;
-            }
+        if bytes[at] == b'['
+            && bytes.get(at + 1) == Some(&b'*')
+            && let Some(name) = citation_name(&line[at + 2..])
+            && line[at + 2 + name.len()..].starts_with(']')
+        {
+            let end = at + 2 + name.len() + 1;
+            found.push((offset + at..offset + end, name.to_string()));
+            at = end;
+            continue;
         }
         at += 1;
     }

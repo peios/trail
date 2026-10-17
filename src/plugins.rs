@@ -147,6 +147,8 @@ struct Cached {
 
 /// Keyed by (canonical site root, plugin name): one process can load
 /// several sites (the test suite does).
+/// Process-owned; each successful expansion replaces that plugin's entry.
+/// Copy entries under the lock, then perform plugin execution and I/O outside it.
 fn cache() -> &'static Mutex<HashMap<(PathBuf, String), Cached>> {
     static CACHE: OnceLock<Mutex<HashMap<(PathBuf, String), Cached>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
@@ -154,6 +156,8 @@ fn cache() -> &'static Mutex<HashMap<(PathBuf, String), Cached>> {
 
 /// Every plugin's dependencies from the latest load of each site root,
 /// for the serve watcher.
+/// Process-owned; expansion replaces a site's entry under this mutex. Readers
+/// take a snapshot and release the lock before registering filesystem watches.
 fn dependency_registry() -> &'static Mutex<HashMap<PathBuf, Vec<PathBuf>>> {
     static DEPENDENCIES: OnceLock<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> = OnceLock::new();
     DEPENDENCIES.get_or_init(Default::default)
@@ -328,7 +332,9 @@ pub fn expand(site: &mut Site) -> Result<()> {
         // Replay and integrate in the original topological order, regardless
         // of which independent process finished first.
         for (name, (outcome, diagnostics)) in batch.into_iter().zip(outcomes) {
-            let _ = std::io::stderr().write_all(&diagnostics);
+            std::io::stderr()
+                .write_all(&diagnostics)
+                .context("plugin diagnostics: cannot write to stderr")?;
             let outcome = outcome?;
             let blocks = &by_plugin[name];
             dependencies.extend(outcome.dependencies);
@@ -955,19 +961,23 @@ fn resolve_program(root: &Path, program: &Path) -> Option<PathBuf> {
 /// it. A plugin that scans a directory lists the directory, so that a new
 /// file there reruns it, and each file it read, so that edits do.
 #[derive(Default)]
-struct Fingerprints(std::sync::Mutex<HashMap<PathBuf, Option<String>>>);
+struct Fingerprints(Mutex<HashMap<PathBuf, std::sync::Arc<OnceLock<Option<String>>>>>);
 
 impl Fingerprints {
     fn get(&self, path: &Path) -> Option<String> {
         // Resolve every time: a removed/retargeted symlink must not hit its
         // previous target. Share content hashing for equivalent source paths.
         let path = std::fs::canonicalize(path).ok()?;
-        self.0
+        let slot = self
+            .0
             .lock()
             .unwrap()
             .entry(path.clone())
-            .or_insert_with(|| fingerprint(&path))
-            .clone()
+            .or_default()
+            .clone();
+        // Only the per-path slot waits during disk I/O. Unrelated dependencies
+        // can hash concurrently, and equivalent paths still hash once per batch.
+        slot.get_or_init(|| fingerprint(&path)).clone()
     }
 }
 

@@ -98,6 +98,9 @@ impl Drop for Capture {
 }
 
 thread_local! {
+    // The current Session owns this thread's active store. Nested sessions
+    // restore the previous value on drop; worker threads enter an explicit
+    // shared context rather than inheriting another thread's mutable state.
     static ACTIVE: RefCell<Option<Option<Arc<Store>>>> = const { RefCell::new(None) };
 }
 
