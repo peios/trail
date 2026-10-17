@@ -6,7 +6,7 @@ use std::{
     cell::RefCell,
     collections::HashSet,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
@@ -178,9 +178,14 @@ fn path(store: &Store, kind: &str, key: &str) -> Option<PathBuf> {
 pub fn read_bytes(kind: &'static str, key: &str) -> Option<Vec<u8>> {
     let store = store()?;
     let path = path(&store, kind, key)?;
-    let bytes = fs::read(&path).ok()?;
-    let (digest, payload) = bytes.split_at_checked(32)?;
-    if blake3::hash(payload).as_bytes() != digest {
+    let mut file = fs::File::open(&path).ok()?;
+    let size = usize::try_from(file.metadata().ok()?.len()).ok()?.checked_sub(32)?;
+    let mut digest = [0; 32];
+    file.read_exact(&mut digest).ok()?;
+    let mut payload = Vec::new();
+    payload.try_reserve_exact(size).ok()?;
+    file.read_to_end(&mut payload).ok()?;
+    if blake3::hash(&payload).as_bytes() != &digest {
         return None;
     }
     record(&store, kind, key, path);
@@ -188,7 +193,7 @@ pub fn read_bytes(kind: &'static str, key: &str) -> Option<Vec<u8>> {
     {
         *store.hits.lock().unwrap().entry(kind).or_default() += 1;
     }
-    Some(payload.to_vec())
+    Some(payload)
 }
 
 pub fn write_bytes(kind: &'static str, key: &str, bytes: &[u8]) {

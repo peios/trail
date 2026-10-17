@@ -9,7 +9,7 @@ pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "web
 /// An image file discovered during site loading, co-located with the
 /// articles that use it: where it sits on disk, and the site-absolute URL
 /// it publishes at (its container's URL plus its own file name).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageAsset {
     pub source: PathBuf,
     pub url: String,
@@ -19,7 +19,7 @@ pub struct ImageAsset {
 /// article's relative `![](...)` destination resolves. Tracks which
 /// images were actually referenced, so the build copies those — and only
 /// those — into the output and can warn about the rest.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageIndex {
     by_source: HashMap<PathBuf, ImageInfo>,
     used: RefCell<HashSet<PathBuf>>,

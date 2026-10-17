@@ -8,7 +8,7 @@ use crate::site::{Anthology, AnthologyItem, Book, ProductItem, Site, Topic, Topi
 
 /// Why a reference failed to resolve. Dangling kinds (unknown product,
 /// no match) can be downgraded to warnings; ambiguity never is.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResolveError {
     UnknownProduct(String),
     NoMatch(String),
@@ -33,7 +33,7 @@ impl std::error::Error for ResolveError {}
 /// and article pages). Exactly one match resolves; zero or several are
 /// errors — the shortest unambiguous suffix is always enough, and deeper
 /// segments (including the anthology's) exist only for disambiguation.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LinkIndex {
     products: HashMap<String, ProductIndex>,
     reads: RefCell<Vec<BTreeSet<Read>>>,
@@ -96,7 +96,7 @@ impl Drop for Capture<'_> {
     fn drop(&mut self) { if !self.finished { self.index.reads.borrow_mut().pop(); } }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ProductIndex {
     path: String,
     title: String,
@@ -105,7 +105,7 @@ struct ProductIndex {
     suffixes: HashMap<String, Vec<usize>>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 struct Candidate {
     /// URL-path segments below the product, e.g. ["acorn", "wide", "a1"].
     segments: Vec<String>,

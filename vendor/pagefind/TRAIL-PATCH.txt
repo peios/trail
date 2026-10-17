@@ -14,7 +14,16 @@ It preserves the original gzip encoding and common files. The caller must
 verify cache payload integrity. Global index packing remains unchanged;
 unchanged fragments and chunks can reuse their compressed bytes after edits.
 
-Changed upstream files: src/lib.rs, src/service/api.rs and src/output/mod.rs. The patch is
+PagefindIndex::add_html_files_cached adds caller-owned ParseCache storage
+for opaque serialized per-page FossickedData. The caller namespaces by
+Pagefind version and indexing options and verifies payload integrity.
+Missing or invalid payloads are reparsed. Global index assembly, page
+number assignment and ordered batch commit remain unchanged. Tests compare
+all output bytes after edits, deletions, URL changes, reordered inputs,
+multiple languages and corrupt payloads.
+
+Changed upstream files: src/lib.rs, src/service/api.rs, src/output/mod.rs,
+src/fossick/mod.rs and src/fragments/mod.rs. The patch is
 retained in batch-api.patch. Trail's search tests compare all generated
 index bytes against the unmodified single-page API with 1 and 4 workers,
 and cover duplicate URLs, a nonempty index and zero workers. Compression

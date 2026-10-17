@@ -32,7 +32,7 @@ lazy_static! {
 pub mod parser;
 mod splitting;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FossickedWord {
     pub position: u32,
     pub weight: u8,
@@ -40,7 +40,7 @@ pub struct FossickedWord {
     pub original_word: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MetaFossickedWord {
     pub field_id: u16,
     pub position: u32,
@@ -48,7 +48,7 @@ pub struct MetaFossickedWord {
     pub original_word: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FossickedData {
     pub url: String,
     pub fragment: PageFragment,

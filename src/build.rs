@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -61,6 +62,7 @@ const MERMAID_FILES: &[(&str, &[u8])] = &[
 struct PageSink {
     search: Vec<SearchPage>,
     broken: Vec<String>,
+    rendered: std::collections::HashMap<String, Result<markdown::Rendered>>,
 }
 
 /// How a build behaves, beyond the site itself.
@@ -216,6 +218,75 @@ impl Prepared {
     }
 }
 
+/// Render independent article bodies on at most four workers. Each worker
+/// owns dependency captures and parser/highlighter memory; the publishing pass
+/// consumes results in tree order, including errors and advisory diagnostics.
+fn render_articles_parallel(site: &Site, prepared: &Prepared, options: &BuildOptions)
+    -> std::collections::HashMap<String, Result<markdown::Rendered>>
+{
+    let articles = site.articles();
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(4);
+    if articles.len() < 64 || workers == 1 { return Default::default(); }
+    fn anthology_books<'a>(anthology: &'a Anthology, books: &mut Vec<&'a Book>) {
+        for item in anthology.items() {
+            match item {
+                AnthologyItem::Book { book } => books.push(book),
+                AnthologyItem::Anthology { anthology } => anthology_books(anthology, books),
+                _ => {}
+            }
+        }
+    }
+    let mut all_books = Vec::new();
+    for product in &site.products {
+        for item in product.items() {
+            match item {
+                ProductItem::Book { book } => all_books.push(book),
+                ProductItem::Anthology { anthology } => anthology_books(anthology, &mut all_books),
+                _ => {}
+            }
+        }
+    }
+    let books: std::collections::HashMap<_, _> = all_books.into_iter()
+        .flat_map(|book| book.articles().into_iter().map(move |(_, a)| (a.path.as_str(), book))).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let shared = crate::cache::share();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..workers {
+            let links = prepared.links.clone();
+            let refs = prepared.refs.clone();
+            let images = prepared.images.clone();
+            let (articles, books, next, shared) = (&articles, &books, &next, &shared);
+            handles.push(scope.spawn(move || shared.scope(|| {
+                let start = images.usage_start();
+                let mut rendered = Vec::new();
+                loop {
+                    let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(article) = articles.get(at) else { break; };
+                    let book = books.get(article.path.as_str());
+                    let result = markdown::render(&article.body, &links, markdown::RenderOptions {
+                        allow_dangling: options.allow_dangling_links, strict: options.strict,
+                        numbering: article.number.as_deref(),
+                        images: Some(ImageScope { index: &images, dir: &article.source_dir }),
+                        refs: Some(markdown::RefScope { index: &refs, page: &article.path,
+                            book: book.map(|b| b.path.as_str()), book_short: book.and_then(|b| b.short.as_deref()) }),
+                        base: &options.base, ..Default::default()
+                    });
+                    rendered.push((article.path.clone(), result));
+                }
+                (rendered, images.usage_since(start))
+            })));
+        }
+        let mut results = std::collections::HashMap::new();
+        for handle in handles {
+            let (rendered, images) = handle.join().expect("article renderer panicked");
+            prepared.images.replay_usage(&images);
+            results.extend(rendered);
+        }
+        results
+    })
+}
+
 fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Prepared) -> Result<usize> {
     let out = &Output::new(out);
     let renderer = Renderer::new(options, site)?;
@@ -249,7 +320,7 @@ fn build_prepared(site: &Site, out: &Path, options: &BuildOptions, prepared: &Pr
     let mut uses_mermaid = false;
     // Every page except the front page is fed to the search indexer; the
     // data-pagefind-* attributes in the templates decide what text counts.
-    let mut sink = PageSink::default();
+    let mut sink = PageSink { rendered: render_articles_parallel(site, prepared, options), ..PageSink::default() };
     for product in &site.products {
         let html = renderer.product(site, product)?;
         write_page(&mut sink, out, options, &product.path, html)?;
@@ -408,7 +479,7 @@ fn write_articles(
                      article: &crate::site::Article,
                      sink: &mut PageSink|
      -> Result<bool> {
-        let rendered = markdown::render(
+        let rendered = sink.rendered.remove(&article.path).unwrap_or_else(|| markdown::render(
             &article.body,
             links,
             markdown::RenderOptions {
@@ -427,7 +498,7 @@ fn write_articles(
                 base: &options.base,
                 ..markdown::RenderOptions::default()
             },
-        )
+        ))
         .with_context(|| format!("in article '{}'", article.path))?;
         report_links(sink, article, &rendered);
         let related = resolve_related(article, links, options, sink);
@@ -533,7 +604,7 @@ fn write_book(
         .map(|(_, article)| (article.path.as_str(), article.title.as_str()))
         .collect();
     for (chapters, article) in &entries {
-        let rendered = markdown::render(
+        let rendered = sink.rendered.remove(&article.path).unwrap_or_else(|| markdown::render(
             &article.body,
             links,
             markdown::RenderOptions {
@@ -553,7 +624,7 @@ fn write_book(
                 base: &options.base,
                 ..markdown::RenderOptions::default()
             },
-        )
+        ))
         .with_context(|| format!("in article '{}'", article.path))?;
         report_links(sink, article, &rendered);
         uses_mermaid |= rendered.has_mermaid;
@@ -702,6 +773,7 @@ fn page_path(out: &Path, url_path: &str) -> PathBuf {
 pub(crate) struct Output {
     dir: PathBuf,
     written: RefCell<HashSet<PathBuf>>,
+    compare_buffer: RefCell<Vec<u8>>,
 }
 
 impl Output {
@@ -709,6 +781,7 @@ impl Output {
         Output {
             dir: dir.to_path_buf(),
             written: RefCell::new(HashSet::new()),
+            compare_buffer: RefCell::new(vec![0; 64 * 1024]),
         }
     }
 
@@ -720,9 +793,7 @@ impl Output {
         self.written.borrow_mut().insert(path.to_path_buf());
         // Cached and freshly generated bytes both pass through this writer,
         // sparing disk writes and keeping mtimes stable for rsync-style deploys.
-        if let Ok(existing) = fs::read(path)
-            && existing == contents
-        {
+        if self.matches(path, contents) {
             return Ok(());
         }
         if let Some(parent) = path.parent() {
@@ -730,6 +801,18 @@ impl Output {
                 .with_context(|| format!("creating directory {}", parent.display()))?;
         }
         fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
+    }
+
+    fn matches(&self, path: &Path, contents: &[u8]) -> bool {
+        let Ok(mut file) = fs::File::open(path) else { return false; };
+        if !file.metadata().is_ok_and(|m| m.len() == contents.len() as u64) { return false; }
+        let mut buffer = self.compare_buffer.borrow_mut();
+        for chunk in contents.chunks(buffer.len()) {
+            let bytes = &mut buffer[..chunk.len()];
+            if file.read_exact(bytes).is_err() || bytes != chunk { return false; }
+        }
+        // Also reject a file that grew while it was being compared.
+        matches!(file.read(&mut buffer[..1]), Ok(0))
     }
 
     /// Delete every file this build didn't write, then any directories
@@ -783,6 +866,56 @@ mod tests {
         let mut result = std::collections::BTreeMap::new();
         walk(root, root, &mut result);
         result
+    }
+
+    #[test]
+    fn output_comparison_repairs_same_size_edits_and_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = Output::new(dir.path());
+        let path = dir.path().join("large.html");
+        let bytes = vec![b'a'; 200_000];
+        output.write(&path, &bytes).unwrap();
+        let time = fs::metadata(&path).unwrap().modified().unwrap();
+        output.write(&path, &bytes).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), time);
+        let mut changed = bytes.clone(); changed[90_000] = b'b';
+        fs::write(&path, changed).unwrap();
+        fs::File::options().write(true).open(&path).unwrap().set_modified(time).unwrap();
+        output.write(&path, &bytes).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, &bytes[..100]).unwrap();
+        output.write(&path, &bytes).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(&path).unwrap();
+        output.write(&path, &[]).unwrap();
+        assert!(fs::read(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parallel_article_results_match_serial_with_ordered_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        site::write_fixture(root);
+        let topic = root.join("alpha.product/5--loose.topic");
+        for n in 100..180 {
+            fs::write(topic.join(format!("{n}--parallel-{n}.md")), format!("---\ntitle: Page {n}\ntype: concept\n---\n\n## Heading\n\n[Missing](~alpha/missing) and [Absolute](/absolute).\n\n```rust\nfn main() {{}}\n```\n")).unwrap();
+        }
+        let _session = crate::cache::Session::new(root, false);
+        let site = Site::load(root, &root.join("dist")).unwrap();
+        let prepared = Prepared::new(&site).unwrap();
+        let options = BuildOptions { strict: true, allow_dangling_links: true, ..Default::default() };
+        let mut results = render_articles_parallel(&site, &prepared, &options);
+        if std::thread::available_parallelism().map_or(1, |n| n.get()) == 1 { return; }
+        for article in site.articles().into_iter().filter(|a| a.slug.starts_with("parallel-")) {
+            let serial = markdown::render(&article.body, &prepared.links, markdown::RenderOptions {
+                allow_dangling: true, strict: true,
+                images: Some(ImageScope { index: &prepared.images, dir: &article.source_dir }),
+                refs: Some(markdown::RefScope { index: &prepared.refs, page: &article.path, book: None, book_short: None }),
+                ..Default::default()
+            }).unwrap();
+            let parallel = results.remove(&article.path).unwrap().unwrap();
+            assert_eq!(serde_json::to_value(parallel).unwrap(), serde_json::to_value(serial).unwrap());
+        }
     }
 
     #[test]

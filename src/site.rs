@@ -9,7 +9,7 @@ use crate::images::{IMAGE_EXTENSIONS, ImageAsset};
 use crate::plugins::PluginConfig;
 
 /// The site model: everything the renderer needs, loaded and validated.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Site {
     pub config: SiteConfig,
     /// All products in display order: featured first (in `featured` order),
@@ -35,7 +35,7 @@ pub struct Site {
 
 /// One directory of products a site is built from, with the settings that
 /// belong to its files rather than to the site.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tree {
     /// The site root, or the site root joined with a `[[merge]]` path, so
     /// it prefixes every source file loaded from the tree.
@@ -71,7 +71,7 @@ pub fn deepest_root<'a>(roots: impl IntoIterator<Item = &'a Path>, file: &Path) 
 /// without validating anything else, so `serve` keeps watching them while
 /// the site fails to load.
 pub fn merged_roots(root: &Path) -> Vec<PathBuf> {
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone)]
     struct Merges {
         #[serde(default)]
         merge: Vec<MergeConfig>,
@@ -91,7 +91,7 @@ pub fn merged_roots(root: &Path) -> Vec<PathBuf> {
 }
 
 /// The root `trail.toml`. Unknown keys are load errors.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SiteConfig {
     pub sitename: String,
@@ -186,7 +186,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Product {
     pub slug: String,
     /// Site-absolute URL path, e.g. "/peios". Built from validated slugs.
@@ -270,7 +270,7 @@ impl Product {
 /// A direct child of a product: a page-bearing item, or a shelf grouping
 /// items. The nesting rule "a shelf never contains a shelf" is encoded
 /// here: shelf items are `ProductItem`, which has no shelf variant.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProductChild {
     Item(ProductItem),
     Shelf(Shelf<ProductItem>),
@@ -294,7 +294,7 @@ impl ProductChild {
 
 /// A page-bearing product-level grouping. Serialized with a `kind` tag so
 /// templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ProductItem {
     Anthology {
@@ -332,7 +332,7 @@ impl ProductItem {
 /// A presentational grouping: a titled subsection of its parent's page.
 /// It has no page and no URL segment of its own — its items live in the
 /// parent's URL space, which is why slug uniqueness is checked flattened.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Shelf<T> {
     pub slug: String,
     pub order: u32,
@@ -362,7 +362,7 @@ struct ProductConfig {
     inline_ref: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Anthology {
     pub slug: String,
     /// Site-absolute URL path, e.g. "/peios/security-fundamentals".
@@ -436,7 +436,7 @@ impl Anthology {
 
 /// A direct child of an anthology: a page-bearing item, or a shelf
 /// grouping items (never another shelf — see `ProductChild`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AnthologyChild {
     Item(AnthologyItem),
     Shelf(Shelf<AnthologyItem>),
@@ -460,7 +460,7 @@ impl AnthologyChild {
 
 /// A page-bearing anthology-level grouping. Serialized with a `kind` tag
 /// so templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AnthologyItem {
     Topic {
@@ -519,7 +519,7 @@ struct TitleConfig {
     inline_ref: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Topic {
     pub slug: String,
     /// Site-absolute URL path; topics can sit in an anthology
@@ -584,7 +584,7 @@ impl Serialize for Topic {
 
 /// One entry in a topic's ordered body. Serialized with a `kind` tag so
 /// templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TopicChild {
     Article {
@@ -747,7 +747,7 @@ struct BookArticleConfig {
 /// A book: a formal, ordered document (a specification, a TRM) with its
 /// own cover page. Its body is one ordered sequence of articles and
 /// chapters; chapters nest arbitrarily deep.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Book {
     pub slug: String,
     /// Site-absolute URL path of the cover page, e.g. "/demo/pgss".
@@ -803,7 +803,7 @@ impl Book {
 
 /// One entry in a book's or chapter's ordered body. Serialized with a
 /// `kind` tag so templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum BookChild {
     Article {
@@ -850,7 +850,7 @@ impl BookChild {
 
 /// A chapter of a book: a plain `<order>--<slug>` directory. Chapters have
 /// no page of their own — links to a chapter open its first article.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Chapter {
     pub slug: String,
     /// URL path prefix of the chapter's articles. There is no page here;
@@ -930,6 +930,10 @@ impl Site {
     /// anything else (dot-entries aside) is an error, so typos surface at
     /// build time instead of silently vanishing from the site.
     pub fn load(root: &Path, out: &Path) -> Result<Site> {
+        Self::load_raw(root, out)?.finish()
+    }
+
+    pub(crate) fn load_raw(root: &Path, out: &Path) -> Result<Site> {
         let mut config: SiteConfig = read_toml(&root.join("trail.toml"))?;
         if let Some(url) = &mut config.url {
             while url.ends_with('/') {
@@ -1026,7 +1030,7 @@ impl Site {
             (None, None) => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
         });
 
-        let mut site = Site {
+        Ok(Site {
             config,
             products,
             images,
@@ -1035,12 +1039,16 @@ impl Site {
             head_html,
             root: root.to_path_buf(),
             trees,
-        };
+        })
+    }
+
+    pub(crate) fn finish(mut self) -> Result<Site> {
+        let site = &mut self;
         // Plugin output is ordinary body content from here on: `.link`
         // aliases copy it, reading times count it, and everything the
         // build derives from bodies (anchors, mirrors, search) sees it.
-        crate::plugins::expand(&mut site)?;
-        resolve_linked_articles(&mut site)?;
+        crate::plugins::expand(site)?;
+        resolve_linked_articles(site)?;
         // Reading times and dates roll up from the leaves, so this runs
         // after `.link` aliases have joined their containers.
         for product in &mut site.products {
@@ -1051,7 +1059,7 @@ impl Site {
         // resolve through the body-link grammar — strictly, at load,
         // because site chrome must never dangle.
         let resolved = {
-            let index = std::sync::LazyLock::new(|| crate::links::LinkIndex::new(&site));
+            let index = std::sync::LazyLock::new(|| crate::links::LinkIndex::new(site));
             let mut resolved = Vec::with_capacity(site.config.nav.len());
             for item in &site.config.nav {
                 resolved.push(match item.url.strip_prefix('~') {
@@ -1068,7 +1076,29 @@ impl Site {
                 item.url = url;
             }
         }
-        Ok(site)
+        Ok(self)
+    }
+
+    /// Refresh existing authored leaves while retaining validated topology and
+    /// link stubs. Plugins, aliases, totals and navigation are finalized afresh.
+    /// Structural edits are handled by load_raw instead.
+    pub(crate) fn refresh_articles(&mut self, changed: &HashSet<PathBuf>) -> Result<bool> {
+        let articles = self.articles_mut();
+        let known: HashSet<_> = articles.iter().map(|a| a.source_file.clone()).collect();
+        if !changed.is_subset(&known) { return Ok(false); }
+        let mut replacements = Vec::new();
+        for (at, article) in articles.iter().enumerate() {
+            if !changed.contains(&article.source_file) { continue; }
+            let stem = article.source_file.file_stem().and_then(|s| s.to_str()).expect("validated article filename");
+            let parent = article.path.rsplit_once('/').unwrap().0;
+            // The numeric/appendix suffix is reconstructed by load_article.
+            let prefix = article.number.as_deref().map(|n| n.rfind('.').map_or("", |i| &n[..=i]));
+            replacements.push((at, load_article(&article.source_file, stem, parent, prefix)?));
+        }
+        // Do not leave a partially refreshed model after a parse failure.
+        let mut articles = articles;
+        for (at, article) in replacements { *articles[at] = article; }
+        Ok(true)
     }
 
     /// The tree a source file was loaded from.

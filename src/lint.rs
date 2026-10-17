@@ -55,7 +55,7 @@ const SHELL_LANGUAGES: &[&str] = &["sh", "bash", "shell", "zsh"];
 const CODE_PLACEHOLDER: char = '\u{E000}';
 
 /// The root trail.toml's `[lint]` table.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LintConfig {
     /// The rules that run: built-in rule names, and the `rule` names of
@@ -84,7 +84,7 @@ fn default_line_length() -> usize {
 }
 
 /// Words or phrases prose must not use.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct WordRule {
     /// What to find, as whole words. A trailing `*` matches any ending:
@@ -112,7 +112,7 @@ fn default_word_rule() -> String {
 
 /// Rules that don't apply under a path: a book whose own conventions
 /// differ, or a page that quotes what the rules forbid.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct IgnoreRule {
     /// A file or directory, relative to the site root.

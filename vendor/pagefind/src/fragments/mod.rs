@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PageAnchorData {
     pub element: String,
     pub id: String,
@@ -10,7 +10,7 @@ pub struct PageAnchorData {
     pub location: u32,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PageFragmentData {
     pub url: String,
     pub content: String,
@@ -20,7 +20,7 @@ pub struct PageFragmentData {
     pub anchors: Vec<PageAnchorData>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PageFragment {
     pub page_number: usize,
     pub data: PageFragmentData,

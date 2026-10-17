@@ -254,6 +254,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
     let batches = run_batches(&order, &plugins, |name| by_plugin.contains_key(name), workers);
     let shared_cache = crate::cache::share();
     for batch in batches {
+      let fingerprints = Fingerprints::default();
       let outcomes = parallel_batch(&batch, |name| shared_cache.scope(|| {
         let blocks = &by_plugin[name];
         let config = &plugins[name];
@@ -294,7 +295,7 @@ pub fn expand(site: &mut Site) -> Result<()> {
             blocks: request_blocks, anchors,
         };
         let mut diagnostics = Vec::new();
-        let outcome = run_cached(&plugin_root, config, program, request, &mut diagnostics)
+        let outcome = run_cached(&plugin_root, config, program, request, &mut diagnostics, &fingerprints)
             .with_context(|| format!("running plugin '{name}'"));
         (outcome, diagnostics)
       }));
@@ -626,6 +627,7 @@ fn run_cached(
     program: &Path,
     request: Request,
     diagnostics: &mut Vec<u8>,
+    fingerprints: &Fingerprints,
 ) -> Result<Outcome> {
     let count = request.blocks.len();
     let name = request.plugin;
@@ -637,7 +639,7 @@ fn run_cached(
     let mut inputs = serde_json::to_value(&request)?;
     for block in inputs["blocks"].as_array_mut().unwrap() { block["line"] = 0.into(); }
     let key = crate::cache::key_json(&(config, inputs, environment, &executable,
-        executable.as_deref().and_then(fingerprint)));
+        executable.as_deref().and_then(|path| fingerprints.get(path))));
     let slot = (root.to_path_buf(), name.to_string());
     if crate::cache::enabled() {
         let cached = if crate::cache::persistent() {
@@ -648,7 +650,7 @@ fn run_cached(
         if let Some(cached) = cached
             && cached.key == key
             && (cached.stderr.is_empty() || cached.diagnostics_key == diagnostics_key)
-            && cached.dependencies.iter().all(|(path, print)| fingerprint(path) == *print)
+            && cached.dependencies.iter().all(|(path, print)| fingerprints.get(path) == *print)
         {
             diagnostics.extend_from_slice(&cached.stderr);
             return Ok(Outcome {
@@ -861,7 +863,19 @@ fn resolve_program(root: &Path, program: &Path) -> Option<PathBuf> {
 /// A file's content, or for a directory the names of everything beneath
 /// it. A plugin that scans a directory lists the directory, so that a new
 /// file there reruns it, and each file it read, so that edits do.
-fn fingerprint(path: &Path) -> Option<String> {
+#[derive(Default)]
+struct Fingerprints(std::sync::Mutex<HashMap<PathBuf, Option<String>>>);
+
+impl Fingerprints {
+    fn get(&self, path: &Path) -> Option<String> {
+        // Resolve every time: a removed/retargeted symlink must not hit its
+        // previous target. Share content hashing for equivalent source paths.
+        let path = std::fs::canonicalize(path).ok()?;
+        self.0.lock().unwrap().entry(path.clone()).or_insert_with(|| fingerprint(&path)).clone()
+    }
+}
+
+pub(crate) fn fingerprint(path: &Path) -> Option<String> {
     if path.is_dir() {
         let mut names = Vec::new();
         list_tree(path, Path::new(""), &mut names);
@@ -898,6 +912,21 @@ fn canonical(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprints_deduplicate_paths_but_refresh_each_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input");
+        std::fs::write(&path, "first").unwrap();
+        let prints = Fingerprints::default();
+        assert_eq!(prints.get(&path), prints.get(&dir.path().join("./input")));
+        assert_eq!(prints.0.lock().unwrap().len(), 1);
+        let previous = prints.get(&path);
+        std::fs::write(&path, "other").unwrap();
+        assert_ne!(Fingerprints::default().get(&path), previous);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(prints.get(&path), None);
+    }
 
     #[test]
     fn batches_bound_concurrency_and_preserve_transitive_dependencies() {

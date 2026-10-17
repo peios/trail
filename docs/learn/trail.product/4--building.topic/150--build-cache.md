@@ -56,8 +56,9 @@ destinations.
 Search files are reused only when the ordered set of indexed URLs and
 rendered HTML is unchanged. Adding, editing, renaming, or deleting an
 indexed page rebuilds the search index, while unchanged fragments and
-chunks reuse their compressed bytes. Search parsing and global index
-packing still run after an edit. Deleted pages and unused images are still
+chunks reuse their compressed bytes. Unchanged pages also reuse their
+parsed search data. Global index packing still runs after an edit.
+Deleted pages and unused images are still
 removed from the output after a successful build.
 
 Plugins must declare every file they read in `depends_on`, including
@@ -78,12 +79,32 @@ be run with `--no-cache` when that input changes. See
 
 ## Reuse within a build
 
-Trail also shares parsed Markdown and highlighted code across article and
-print passes. These memory caches have limits: 256 MiB of accounted parsed
+Article bodies render on up to four workers, limited by the available
+parallelism. Small sites use one worker. Results and diagnostics retain
+page order. Trail also shares parsed Markdown and highlighted code across
+article and print passes. These memory caches have limits: 256 MiB of
+accounted parsed
 events and 64 MiB of highlighted output per build thread. Search parsing
 and compression each use up to eight workers, limited by the available
 parallelism. The site and its cache-busting copy share prepared link,
 image, and inline-reference indexes.
+
+## Development server rebuilds
+
+`serve` keeps the authored site structure in memory. Changes to existing
+articles refresh those articles. Added, removed, or renamed files and
+configuration changes reload the structure. Plugin expansion, aliases,
+reading times, links, and other derived results are checked on each build.
+An uncertain watcher event also triggers a full reload.
+
+The server compares source contents during rebuilds. It also checks for
+missed changes every 30 seconds, including declared plugin dependencies.
+These checks do not reload the browser when nothing changed. `--no-cache`
+disables reuse of the retained site structure.
+
+Output comparisons use bounded buffers. Unchanged files keep their
+modification times; missing or modified output files are repaired during
+the next build, even when their size and modification time are unchanged.
 
 The cache does not remove build features. Strict validation, diagnostics,
 Markdown mirrors, print bundles, search, and the cache-busting copy remain

@@ -1,6 +1,6 @@
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -113,6 +113,21 @@
+@@ -113,6 +113,43 @@
          Ok(self.fossicked_pages.len() - existing_page_count)
      }
  
@@ -19,10 +19,32 @@
 +        Ok(())
 +    }
 +
++    pub fn fossick_cached_batch(&mut self, pages: Vec<(String, String)>, threads: usize, cache: &dyn api::ParseCache) -> Result<()> {
++        anyhow::ensure!(self.fossicked_pages.is_empty(), "batch requires an empty index");
++        anyhow::ensure!(threads > 0, "batch requires at least one worker");
++        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
++        let results: Vec<Result<FossickedData>> = pool.install(|| {
++            pages.into_par_iter().map(|(url, html)| {
++                if let Some(bytes) = cache.get(&url, &html) {
++                    if let Ok(data) = serde_json::from_slice::<FossickedData>(&bytes) {
++                        if data.url == url && data.fragment.data.url == url { return Ok(data); }
++                    }
++                }
++                let data = Fossicker::new_synthetic(None, Some(url.clone()), html.clone())
++                    .fossick_sync(&self.options)
++                    .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))?;
++                if let Ok(bytes) = serde_json::to_vec(&data) { cache.put(&url, &html, &bytes); }
++                Ok(data)
++            }).collect()
++        });
++        self.fossicked_pages = results.into_iter().collect::<Result<Vec<_>>>()?;
++        Ok(())
++    }
++
      pub fn fossick_one(&mut self, file: Fossicker) -> Result<FossickedData> {
          let result = file.fossick_sync(&self.options);
          if let Some(result) = result.as_ref().ok() {
-@@ -377,6 +392,22 @@
+@@ -377,6 +414,22 @@
          files
      }
  
@@ -47,15 +69,22 @@
  
 --- a/src/service/api.rs
 +++ b/src/service/api.rs
-@@ -34,6 +34,7 @@
+@@ -34,6 +34,14 @@
  //! ```
  
  pub use crate::output::SyntheticFile;
 +pub use crate::output::CompressionCache;
++
++/// Opaque parsed-page storage. Implementations must namespace entries by
++/// Pagefind version and indexing options, and check stored byte integrity.
++pub trait ParseCache: Sync {
++    fn get(&self, url: &str, html: &str) -> Option<Vec<u8>>;
++    fn put(&self, url: &str, html: &str, parsed: &[u8]);
++}
  use anyhow::{bail, Result};
  use rust_patch::Patch;
  use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
-@@ -76,6 +77,21 @@
+@@ -76,6 +84,31 @@
          Ok(Self {
              search_index: Arc::new(tokio::sync::Mutex::new(SearchState::new(options))),
          })
@@ -74,10 +103,20 @@
 +        let state = Arc::clone(&self.search_index);
 +        tokio::task::spawn_blocking(move || state.blocking_lock().fossick_batch(files, threads))
 +            .await.map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
++    }
++
++    /// As add_html_files, reusing successful per-page parsing before the
++    /// unchanged global index assembly. Results retain input order.
++    pub async fn add_html_files_cached(&mut self, pages: Vec<(String, String)>, threads: usize, cache: &dyn ParseCache) -> Result<()> {
++        let mut seen = std::collections::HashSet::new();
++        for (url, _) in &pages {
++            anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
++        }
++        self.search_index.lock().await.fossick_cached_batch(pages, threads, cache)
      }
  
      /// Add an HTML file that isn't on disk into this search index.
-@@ -222,6 +238,13 @@
+@@ -222,6 +255,13 @@
          state.build_indexes().await?;
          Ok(state.get_files().await)
      }
@@ -149,3 +188,61 @@
      fn lang_wasm_path(&self) -> Option<String> {
          let base_language = self.language.split('-').next().unwrap();
          let wasm_path = format!(
+--- a/src/fossick/mod.rs
++++ b/src/fossick/mod.rs
+@@ -32,7 +32,7 @@
+ pub mod parser;
+ mod splitting;
+ 
+-#[derive(Debug, Clone, PartialEq)]
++#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+ pub struct FossickedWord {
+     pub position: u32,
+     pub weight: u8,
+@@ -40,7 +40,7 @@
+     pub original_word: Option<String>,
+ }
+ 
+-#[derive(Debug, Clone, PartialEq)]
++#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+ pub struct MetaFossickedWord {
+     pub field_id: u16,
+     pub position: u32,
+@@ -48,7 +48,7 @@
+     pub original_word: Option<String>,
+ }
+ 
+-#[derive(Debug, Clone)]
++#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub struct FossickedData {
+     pub url: String,
+     pub fragment: PageFragment,
+--- a/src/fragments/mod.rs
++++ b/src/fragments/mod.rs
+@@ -2,7 +2,7 @@
+ 
+ use serde::Serialize;
+ 
+-#[derive(Serialize, Debug, Clone)]
++#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+ pub struct PageAnchorData {
+     pub element: String,
+     pub id: String,
+@@ -10,7 +10,7 @@
+     pub location: u32,
+ }
+ 
+-#[derive(Serialize, Debug, Clone)]
++#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+ pub struct PageFragmentData {
+     pub url: String,
+     pub content: String,
+@@ -20,7 +20,7 @@
+     pub anchors: Vec<PageAnchorData>,
+ }
+ 
+-#[derive(Debug, Clone)]
++#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub struct PageFragment {
+     pub page_number: usize,
+     pub data: PageFragmentData,

@@ -128,6 +128,28 @@ impl SearchState {
         Ok(())
     }
 
+    pub fn fossick_cached_batch(&mut self, pages: Vec<(String, String)>, threads: usize, cache: &dyn api::ParseCache) -> Result<()> {
+        anyhow::ensure!(self.fossicked_pages.is_empty(), "batch requires an empty index");
+        anyhow::ensure!(threads > 0, "batch requires at least one worker");
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
+        let results: Vec<Result<FossickedData>> = pool.install(|| {
+            pages.into_par_iter().map(|(url, html)| {
+                if let Some(bytes) = cache.get(&url, &html) {
+                    if let Ok(data) = serde_json::from_slice::<FossickedData>(&bytes) {
+                        if data.url == url && data.fragment.data.url == url { return Ok(data); }
+                    }
+                }
+                let data = Fossicker::new_synthetic(None, Some(url.clone()), html.clone())
+                    .fossick_sync(&self.options)
+                    .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))?;
+                if let Ok(bytes) = serde_json::to_vec(&data) { cache.put(&url, &html, &bytes); }
+                Ok(data)
+            }).collect()
+        });
+        self.fossicked_pages = results.into_iter().collect::<Result<Vec<_>>>()?;
+        Ok(())
+    }
+
     pub fn fossick_one(&mut self, file: Fossicker) -> Result<FossickedData> {
         let result = file.fossick_sync(&self.options);
         if let Some(result) = result.as_ref().ok() {

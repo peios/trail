@@ -20,7 +20,7 @@ use crate::site::{
 };
 
 /// Where a phrase points.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum PhraseTarget {
     /// A page path: the declaring article, or a directory's landing.
     Page(String),
@@ -29,7 +29,7 @@ pub enum PhraseTarget {
 }
 
 /// One declared phrase and its target.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Phrase {
     pub text: String,
     pub target: PhraseTarget,
@@ -65,7 +65,7 @@ pub struct Citation {
     pub section: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct InlineRefIndex {
     reads: std::cell::RefCell<Vec<std::collections::BTreeSet<(String, String)>>>,
     /// Leftmost-longest matcher over every phrase; None when no phrase

@@ -35,6 +35,13 @@
 
 pub use crate::output::SyntheticFile;
 pub use crate::output::CompressionCache;
+
+/// Opaque parsed-page storage. Implementations must namespace entries by
+/// Pagefind version and indexing options, and check stored byte integrity.
+pub trait ParseCache: Sync {
+    fn get(&self, url: &str, html: &str) -> Option<Vec<u8>>;
+    fn put(&self, url: &str, html: &str, parsed: &[u8]);
+}
 use anyhow::{bail, Result};
 use rust_patch::Patch;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -92,6 +99,16 @@ impl PagefindIndex {
         let state = Arc::clone(&self.search_index);
         tokio::task::spawn_blocking(move || state.blocking_lock().fossick_batch(files, threads))
             .await.map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
+    }
+
+    /// As add_html_files, reusing successful per-page parsing before the
+    /// unchanged global index assembly. Results retain input order.
+    pub async fn add_html_files_cached(&mut self, pages: Vec<(String, String)>, threads: usize, cache: &dyn ParseCache) -> Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for (url, _) in &pages {
+            anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
+        }
+        self.search_index.lock().await.fossick_cached_batch(pages, threads, cache)
     }
 
     /// Add an HTML file that isn't on disk into this search index.
