@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -6,9 +6,10 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::images::{IMAGE_EXTENSIONS, ImageAsset};
+use crate::plugins::PluginConfig;
 
 /// The site model: everything the renderer needs, loaded and validated.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Site {
     pub config: SiteConfig,
     /// All products in display order: featured first (in `featured` order),
@@ -25,13 +26,72 @@ pub struct Site {
     pub favicon: Option<PathBuf>,
     /// The head_html snippet's contents, injected into every head.
     pub head_html: Option<String>,
-    /// The site root directory, for deriving source-relative paths
-    /// (edit links).
+    /// The site root directory.
     pub root: PathBuf,
+    /// The trees the products came from: the site root first, then each
+    /// `[[merge]]` tree in the order listed.
+    pub trees: Vec<Tree>,
+}
+
+/// One directory of products a site is built from, with the settings that
+/// belong to its files rather than to the site.
+#[derive(Debug, Clone)]
+pub struct Tree {
+    /// The site root, or the site root joined with a `[[merge]]` path, so
+    /// it prefixes every source file loaded from the tree.
+    pub root: PathBuf,
+    pub edit_url: Option<String>,
+    pub passthrough: Vec<String>,
+    pub plugins: BTreeMap<String, PluginConfig>,
+}
+
+impl Tree {
+    fn new(root: PathBuf, config: &SiteConfig) -> Tree {
+        Tree {
+            root,
+            edit_url: config.edit_url.clone(),
+            passthrough: config.passthrough.clone(),
+            plugins: config.plugins.clone(),
+        }
+    }
+}
+
+/// Of `roots`, the index of the deepest one holding `file`: a tree merged
+/// from inside the site root is still a tree of its own.
+pub fn deepest_root<'a>(roots: impl IntoIterator<Item = &'a Path>, file: &Path) -> Option<usize> {
+    roots
+        .into_iter()
+        .enumerate()
+        .filter(|(_, root)| file.starts_with(root))
+        .max_by_key(|(_, root)| root.components().count())
+        .map(|(index, _)| index)
+}
+
+/// The directories the site at `root` merges, read from its trail.toml
+/// without validating anything else, so `serve` keeps watching them while
+/// the site fails to load.
+pub fn merged_roots(root: &Path) -> Vec<PathBuf> {
+    #[derive(Deserialize, Clone)]
+    struct Merges {
+        #[serde(default)]
+        merge: Vec<MergeConfig>,
+    }
+    let Ok(text) = fs::read_to_string(root.join("trail.toml")) else {
+        return Vec::new();
+    };
+    let Ok(merges) = toml::from_str::<Merges>(&text) else {
+        return Vec::new();
+    };
+    merges
+        .merge
+        .iter()
+        .map(|merge| root.join(&merge.path))
+        .filter(|tree| tree.is_dir())
+        .collect()
 }
 
 /// The root `trail.toml`. Unknown keys are load errors.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SiteConfig {
     pub sitename: String,
@@ -89,6 +149,27 @@ pub struct SiteConfig {
     pub product_theming: bool,
     #[serde(default = "default_true")]
     pub built_by_trail: bool,
+    /// External commands that expand `{name}` fences in article bodies,
+    /// keyed by the name the fence uses. See `plugins`.
+    #[serde(default, skip_serializing)]
+    pub plugins: BTreeMap<String, PluginConfig>,
+    /// Other trees whose products join this site. Each keeps its own
+    /// edit links, passthrough entries and plugins; everything else about
+    /// the site comes from this file.
+    #[serde(default, skip_serializing)]
+    pub merge: Vec<MergeConfig>,
+    /// The writing rules `trail lint` checks. Building ignores them, but
+    /// a malformed table still fails the load.
+    #[serde(default, skip_serializing)]
+    pub lint: Option<crate::lint::LintConfig>,
+}
+
+/// One `[[merge]]` table in the root trail.toml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeConfig {
+    /// The tree's directory, relative to the site root.
+    pub path: String,
 }
 
 /// One header navigation link. The url may be external, or a `~` page
@@ -105,7 +186,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Product {
     pub slug: String,
     /// Site-absolute URL path, e.g. "/peios". Built from validated slugs.
@@ -189,7 +270,7 @@ impl Product {
 /// A direct child of a product: a page-bearing item, or a shelf grouping
 /// items. The nesting rule "a shelf never contains a shelf" is encoded
 /// here: shelf items are `ProductItem`, which has no shelf variant.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProductChild {
     Item(ProductItem),
     Shelf(Shelf<ProductItem>),
@@ -213,7 +294,7 @@ impl ProductChild {
 
 /// A page-bearing product-level grouping. Serialized with a `kind` tag so
 /// templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ProductItem {
     Anthology {
@@ -251,7 +332,7 @@ impl ProductItem {
 /// A presentational grouping: a titled subsection of its parent's page.
 /// It has no page and no URL segment of its own — its items live in the
 /// parent's URL space, which is why slug uniqueness is checked flattened.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Shelf<T> {
     pub slug: String,
     pub order: u32,
@@ -281,7 +362,7 @@ struct ProductConfig {
     inline_ref: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Anthology {
     pub slug: String,
     /// Site-absolute URL path, e.g. "/peios/security-fundamentals".
@@ -355,7 +436,7 @@ impl Anthology {
 
 /// A direct child of an anthology: a page-bearing item, or a shelf
 /// grouping items (never another shelf — see `ProductChild`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AnthologyChild {
     Item(AnthologyItem),
     Shelf(Shelf<AnthologyItem>),
@@ -379,7 +460,7 @@ impl AnthologyChild {
 
 /// A page-bearing anthology-level grouping. Serialized with a `kind` tag
 /// so templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AnthologyItem {
     Topic {
@@ -438,7 +519,7 @@ struct TitleConfig {
     inline_ref: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Topic {
     pub slug: String,
     /// Site-absolute URL path; topics can sit in an anthology
@@ -503,7 +584,7 @@ impl Serialize for Topic {
 
 /// One entry in a topic's ordered body. Serialized with a `kind` tag so
 /// templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TopicChild {
     Article {
@@ -600,6 +681,10 @@ pub struct Article {
     /// `reading_minutes:` overrides it. Containers add theirs up, so a
     /// book card can say how long the whole thing takes.
     pub reading_minutes: u32,
+    /// Whether `reading_minutes` came from frontmatter, so plugin
+    /// expansion knows not to recount it from the expanded body.
+    #[serde(skip)]
+    pub authored_minutes: bool,
     /// For a page created by a `.link` reference: the path of the
     /// canonical article whose content this page re-renders. Linked
     /// pages stay out of the search index — the original covers it.
@@ -662,7 +747,7 @@ struct BookArticleConfig {
 /// A book: a formal, ordered document (a specification, a TRM) with its
 /// own cover page. Its body is one ordered sequence of articles and
 /// chapters; chapters nest arbitrarily deep.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Book {
     pub slug: String,
     /// Site-absolute URL path of the cover page, e.g. "/demo/pgss".
@@ -718,7 +803,7 @@ impl Book {
 
 /// One entry in a book's or chapter's ordered body. Serialized with a
 /// `kind` tag so templates can dispatch on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum BookChild {
     Article {
@@ -765,7 +850,7 @@ impl BookChild {
 
 /// A chapter of a book: a plain `<order>--<slug>` directory. Chapters have
 /// no page of their own — links to a chapter open its first article.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Chapter {
     pub slug: String,
     /// URL path prefix of the chapter's articles. There is no page here;
@@ -845,6 +930,10 @@ impl Site {
     /// anything else (dot-entries aside) is an error, so typos surface at
     /// build time instead of silently vanishing from the site.
     pub fn load(root: &Path, out: &Path) -> Result<Site> {
+        Self::load_raw(root, out)?.finish()
+    }
+
+    pub(crate) fn load_raw(root: &Path, out: &Path) -> Result<Site> {
         let mut config: SiteConfig = read_toml(&root.join("trail.toml"))?;
         if let Some(url) = &mut config.url {
             while url.ends_with('/') {
@@ -853,6 +942,9 @@ impl Site {
         }
         if let Some(accent) = &config.accent {
             validate_color(accent).context("in the site accent")?;
+        }
+        if let Some(lint) = &config.lint {
+            lint.validate()?;
         }
         if let Some(accent_dark) = &config.accent_dark {
             ensure!(
@@ -894,57 +986,39 @@ impl Site {
             }
             None => None,
         };
-        if let Some(template) = &config.edit_url {
-            ensure!(
-                template.contains("{path}"),
-                "edit_url must contain a {{path}} placeholder for the \
-                 article's source path"
-            );
-        }
-        for entry in &config.passthrough {
-            validate_passthrough(entry, root, out)?;
-        }
-        // Configured root files (or the directories holding them) are
-        // content the root scan below must tolerate.
-        let keep_entries: Vec<String> = [&config.custom_css, &config.favicon, &config.head_html]
-            .into_iter()
-            .flatten()
-            .chain(&config.passthrough)
-            .filter_map(|path| Path::new(path).components().next())
-            .map(|component| component.as_os_str().to_string_lossy().into_owned())
-            .collect();
-
+        validate_tree_config(&config, root, out)?;
+        // A tree merged from inside the root is content the scan tolerates.
+        let merged_inside = config.merge.iter().map(|merge| &merge.path);
         let mut products = Vec::new();
         let mut images = Vec::new();
-        for entry in read_dir_sorted(root)? {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.')
-                || is_same_path(&entry.path(), out)
-                || keep_entries.contains(&name)
-            {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                let Some(slug) = name.strip_suffix(".product") else {
+        load_products(
+            root,
+            out,
+            keep_entries(&config, merged_inside),
+            &mut products,
+            &mut images,
+        )?;
+
+        let mut trees = vec![Tree::new(root.to_path_buf(), &config)];
+        // Each product's tree, so a slug two trees share names both.
+        let mut owners: HashMap<String, usize> =
+            products.iter().map(|p| (p.slug.clone(), 0)).collect();
+        for merge in &config.merge {
+            let first = products.len();
+            let tree = load_merged_tree(root, out, merge, &mut products, &mut images)
+                .with_context(|| format!("merging the tree at '{}'", merge.path))?;
+            for product in &products[first..] {
+                if let Some(other) = owners.insert(product.slug.clone(), trees.len()) {
                     bail!(
-                        "unexpected directory '{name}' in site root: \
-                         only *.product directories are allowed"
+                        "product '{}' is in two trees, {} and {}: merged trees \
+                         cannot share a product slug",
+                        product.slug,
+                        trees[other].root.display(),
+                        tree.root.display()
                     );
-                };
-                validate_slug(slug).with_context(|| format!("in directory '{name}'"))?;
-                ensure!(
-                    slug != "assets" && slug != "pagefind",
-                    "'{slug}' is a reserved product slug (it collides with the \
-                     '/{slug}' output directory)"
-                );
-                products.push(
-                    load_product(&path, slug, &mut images)
-                        .with_context(|| format!("loading product '{slug}'"))?,
-                );
-            } else if name != "trail.toml" {
-                bail!("unexpected file '{name}' in site root: only trail.toml is allowed");
+                }
             }
+            trees.push(tree);
         }
 
         for slug in &config.featured {
@@ -962,7 +1036,7 @@ impl Site {
             (None, None) => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
         });
 
-        let mut site = Site {
+        Ok(Site {
             config,
             products,
             images,
@@ -970,8 +1044,17 @@ impl Site {
             favicon,
             head_html,
             root: root.to_path_buf(),
-        };
-        resolve_linked_articles(&mut site)?;
+            trees,
+        })
+    }
+
+    pub(crate) fn finish(mut self) -> Result<Site> {
+        let site = &mut self;
+        // Plugin output is ordinary body content from here on: `.link`
+        // aliases copy it, reading times count it, and everything the
+        // build derives from bodies (anchors, mirrors, search) sees it.
+        crate::plugins::expand(site)?;
+        resolve_linked_articles(site)?;
         // Reading times and dates roll up from the leaves, so this runs
         // after `.link` aliases have joined their containers.
         for product in &mut site.products {
@@ -982,7 +1065,7 @@ impl Site {
         // resolve through the body-link grammar — strictly, at load,
         // because site chrome must never dangle.
         let resolved = {
-            let index = crate::links::LinkIndex::new(&site);
+            let index = std::sync::LazyLock::new(|| crate::links::LinkIndex::new(site));
             let mut resolved = Vec::with_capacity(site.config.nav.len());
             for item in &site.config.nav {
                 resolved.push(match item.url.strip_prefix('~') {
@@ -999,7 +1082,51 @@ impl Site {
                 item.url = url;
             }
         }
-        Ok(site)
+        Ok(self)
+    }
+
+    /// Refresh existing authored leaves while retaining validated topology and
+    /// link stubs. Plugins, aliases, totals and navigation are finalized afresh.
+    /// Structural edits are handled by load_raw instead.
+    pub(crate) fn refresh_articles(&mut self, changed: &HashSet<PathBuf>) -> Result<bool> {
+        let articles = self.articles_mut();
+        let known: HashSet<_> = articles.iter().map(|a| a.source_file.clone()).collect();
+        if !changed.is_subset(&known) {
+            return Ok(false);
+        }
+        let mut replacements = Vec::new();
+        for (at, article) in articles.iter().enumerate() {
+            if !changed.contains(&article.source_file) {
+                continue;
+            }
+            let stem = article
+                .source_file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("validated article filename");
+            let parent = article.path.rsplit_once('/').unwrap().0;
+            // The numeric/appendix suffix is reconstructed by load_article.
+            let prefix = article
+                .number
+                .as_deref()
+                .map(|n| n.rfind('.').map_or("", |i| &n[..=i]));
+            replacements.push((
+                at,
+                load_article(&article.source_file, stem, parent, prefix)?,
+            ));
+        }
+        // Do not leave a partially refreshed model after a parse failure.
+        let mut articles = articles;
+        for (at, article) in replacements {
+            *articles[at] = article;
+        }
+        Ok(true)
+    }
+
+    /// The tree a source file was loaded from.
+    pub fn tree_of(&self, file: &Path) -> &Tree {
+        let roots = self.trees.iter().map(|tree| tree.root.as_path());
+        &self.trees[deepest_root(roots, file).unwrap_or(0)]
     }
 
     /// The products shown as cards on the front page, in `featured` order.
@@ -1048,6 +1175,59 @@ impl Site {
                         out.extend(book.articles().into_iter().map(|(_, article)| article));
                     }
                     ProductItem::Anthology { anthology } => from_anthology(anthology, &mut out),
+                }
+            }
+        }
+        out
+    }
+
+    /// Every article, mutably, in no particular order. `.link` aliases
+    /// are included only once they have been resolved.
+    pub(crate) fn articles_mut(&mut self) -> Vec<&mut Article> {
+        fn from_topic<'a>(topic: &'a mut Topic, out: &mut Vec<&'a mut Article>) {
+            for child in &mut topic.children {
+                match child {
+                    TopicChild::Article { article } => out.push(article),
+                    TopicChild::Folder { folder } => out.extend(folder.articles.iter_mut()),
+                }
+            }
+        }
+        fn from_book<'a>(children: &'a mut [BookChild], out: &mut Vec<&'a mut Article>) {
+            for child in children {
+                match child {
+                    BookChild::Article { article } => out.push(article),
+                    BookChild::Chapter { chapter } => from_book(&mut chapter.children, out),
+                }
+            }
+        }
+        fn from_anthology<'a>(anthology: &'a mut Anthology, out: &mut Vec<&'a mut Article>) {
+            for child in &mut anthology.children {
+                let items: Box<dyn Iterator<Item = &'a mut AnthologyItem>> = match child {
+                    AnthologyChild::Item(item) => Box::new(std::iter::once(item)),
+                    AnthologyChild::Shelf(shelf) => Box::new(shelf.items.iter_mut()),
+                };
+                for item in items {
+                    match item {
+                        AnthologyItem::Topic { topic } => from_topic(topic, out),
+                        AnthologyItem::Book { book } => from_book(&mut book.children, out),
+                        AnthologyItem::Anthology { anthology } => from_anthology(anthology, out),
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for product in &mut self.products {
+            for child in &mut product.children {
+                let items: Box<dyn Iterator<Item = &mut ProductItem>> = match child {
+                    ProductChild::Item(item) => Box::new(std::iter::once(item)),
+                    ProductChild::Shelf(shelf) => Box::new(shelf.items.iter_mut()),
+                };
+                for item in items {
+                    match item {
+                        ProductItem::Topic { topic } => from_topic(topic, &mut out),
+                        ProductItem::Book { book } => from_book(&mut book.children, &mut out),
+                        ProductItem::Anthology { anthology } => from_anthology(anthology, &mut out),
+                    }
                 }
             }
         }
@@ -1738,6 +1918,7 @@ fn load_article(
         inline_refs,
         updated,
         reading_minutes,
+        authored_minutes: minutes.is_some(),
         original: None,
         body,
         source_dir: file.parent().map(Path::to_path_buf).unwrap_or_default(),
@@ -1750,6 +1931,27 @@ fn load_article(
 /// whole tree has loaded, since targets can live anywhere; targets must
 /// be articles that exist on disk — a link cannot target another link.
 fn resolve_linked_articles(site: &mut Site) -> Result<()> {
+    fn chapter_links(children: &[BookChild]) -> bool {
+        children.iter().any(|child| match child {
+            BookChild::Chapter { chapter } => {
+                !chapter.links.is_empty() || chapter_links(&chapter.children)
+            }
+            BookChild::Article { .. } => false,
+        })
+    }
+    let topic_links = topics_mut(&mut site.products).iter().any(|topic| {
+        !topic.links.is_empty()
+            || topic.children.iter().any(|child| match child {
+                TopicChild::Folder { folder } => !folder.links.is_empty(),
+                TopicChild::Article { .. } => false,
+            })
+    });
+    let book_links = books_mut(&mut site.products)
+        .iter()
+        .any(|book| !book.links.is_empty() || chapter_links(&book.children));
+    if !topic_links && !book_links {
+        return Ok(());
+    }
     // Stubs resolve through the folder-aware index: unlike body links,
     // a stub may alias a whole topic subfolder.
     let index = crate::links::LinkIndex::with_folders(site);
@@ -2087,7 +2289,7 @@ fn resolve_book_links(
 
 /// Estimated reading time for a body, at a middling 200 words a minute.
 /// Code blocks count as prose: they are read, just differently.
-fn reading_minutes(body: &str) -> u32 {
+pub(crate) fn reading_minutes(body: &str) -> u32 {
     (body.split_whitespace().count() as u32)
         .div_ceil(200)
         .max(1)
@@ -2228,19 +2430,9 @@ fn grouping_config(dir: &Path, slug: &str) -> Result<GroupingConfig> {
     })
 }
 
-/// "the-two-gates" → "The Two Gates".
+/// "developing-for-peios" → "Developing for Peios" (Chicago title case).
 fn title_from_slug(slug: &str) -> String {
-    slug.split('-')
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::titlecase::title_from_slug(slug)
 }
 
 /// The subdirectories of a grouping, with files other than trail.toml rejected.
@@ -2404,6 +2596,131 @@ fn validate_color(color: &str) -> Result<()> {
 /// exists in the site root. Absolute paths and `..` are rejected — a
 /// passthrough copies what it names into the output, so it must not be
 /// able to reach outside the site to do it.
+/// Check the settings a tree keeps for itself when it is merged.
+fn validate_tree_config(config: &SiteConfig, root: &Path, out: &Path) -> Result<()> {
+    if let Some(template) = &config.edit_url {
+        ensure!(
+            template.contains("{path}"),
+            "edit_url must contain a {{path}} placeholder for the \
+             article's source path"
+        );
+    }
+    for entry in &config.passthrough {
+        validate_passthrough(entry, root, out)?;
+    }
+    Ok(())
+}
+
+/// The root entries a tree's configuration names (or the directories
+/// holding them), which its scan for products must tolerate, plus `extra`.
+fn keep_entries<'a>(
+    config: &'a SiteConfig,
+    extra: impl Iterator<Item = &'a String>,
+) -> Vec<String> {
+    [&config.custom_css, &config.favicon, &config.head_html]
+        .into_iter()
+        .flatten()
+        .chain(&config.passthrough)
+        .chain(
+            config
+                .plugins
+                .values()
+                .filter_map(|plugin| plugin.command.first())
+                .filter(|program| program.contains('/')),
+        )
+        .chain(extra)
+        .filter_map(|path| Path::new(path).components().next())
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Load the `*.product` directories of the tree at `root`.
+///
+/// The root may contain only `trail.toml`, `*.product` directories and
+/// the entries in `keep`; anything else (dot-entries aside) is an error,
+/// so typos surface at build time instead of silently vanishing from the
+/// site.
+fn load_products(
+    root: &Path,
+    out: &Path,
+    keep: Vec<String>,
+    products: &mut Vec<Product>,
+    images: &mut Vec<ImageAsset>,
+) -> Result<()> {
+    for entry in read_dir_sorted(root)? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || is_same_path(&entry.path(), out) || keep.contains(&name) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let Some(slug) = name.strip_suffix(".product") else {
+                bail!(
+                    "unexpected directory '{name}' in site root: \
+                     only *.product directories are allowed"
+                );
+            };
+            validate_slug(slug).with_context(|| format!("in directory '{name}'"))?;
+            ensure!(
+                slug != "assets" && slug != "pagefind",
+                "'{slug}' is a reserved product slug (it collides with the \
+                 '/{slug}' output directory)"
+            );
+            products.push(
+                load_product(&path, slug, images)
+                    .with_context(|| format!("loading product '{slug}'"))?,
+            );
+        } else if name != "trail.toml" {
+            bail!("unexpected file '{name}' in site root: only trail.toml is allowed");
+        }
+    }
+    Ok(())
+}
+
+/// Load a `[[merge]]` tree's products and the settings it keeps. Its
+/// trail.toml is optional; when present it must be valid, but only its
+/// edit link, passthrough entries and plugins apply — the site root's
+/// trail.toml settles everything else, including what is merged.
+fn load_merged_tree(
+    site_root: &Path,
+    out: &Path,
+    merge: &MergeConfig,
+    products: &mut Vec<Product>,
+    images: &mut Vec<ImageAsset>,
+) -> Result<Tree> {
+    ensure!(!merge.path.is_empty(), "a merge path cannot be empty");
+    let root = site_root.join(&merge.path);
+    ensure!(
+        root.is_dir(),
+        "merge path '{}' is not a directory (paths are relative to the site root)",
+        merge.path
+    );
+    ensure!(
+        !is_same_path(&root, site_root),
+        "merge path '{}' is the site root itself",
+        merge.path
+    );
+    let file = root.join("trail.toml");
+    let config: Option<SiteConfig> = file.exists().then(|| read_toml(&file)).transpose()?;
+    let mut keep = Vec::new();
+    if let Some(config) = &config {
+        validate_tree_config(config, &root, out)?;
+        keep = keep_entries(config, std::iter::empty());
+    }
+    // The tree's own build output, from building it as a site of its own.
+    keep.push("dist".to_string());
+    load_products(&root, out, keep, products, images)?;
+    Ok(match &config {
+        Some(config) => Tree::new(root, config),
+        None => Tree {
+            root,
+            edit_url: None,
+            passthrough: Vec::new(),
+            plugins: BTreeMap::new(),
+        },
+    })
+}
+
 fn validate_passthrough(entry: &str, root: &Path, out: &Path) -> Result<()> {
     ensure!(!entry.is_empty(), "passthrough entries cannot be empty");
     let path = Path::new(entry);
@@ -3632,9 +3949,13 @@ mod tests {
     }
 
     #[test]
-    fn derives_topic_titles_by_capitalising_slug_words() {
+    fn derives_topic_titles_from_slugs_in_title_case() {
         assert_eq!(title_from_slug("identity"), "Identity");
         assert_eq!(title_from_slug("the-two-gates"), "The Two Gates");
+        assert_eq!(
+            title_from_slug("startup-and-shutdown"),
+            "Startup and Shutdown"
+        );
         assert_eq!(
             title_from_slug("well-known-principals"),
             "Well Known Principals"

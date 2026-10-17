@@ -20,7 +20,7 @@ use crate::site::{
 };
 
 /// Where a phrase points.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum PhraseTarget {
     /// A page path: the declaring article, or a directory's landing.
     Page(String),
@@ -29,14 +29,14 @@ pub enum PhraseTarget {
 }
 
 /// One declared phrase and its target.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Phrase {
     pub text: String,
     pub target: PhraseTarget,
 }
 
 /// A `§` target inside a book: an article page, optionally one heading.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SectionTarget {
     pub path: String,
     pub fragment: Option<String>,
@@ -65,11 +65,13 @@ pub struct Citation {
     pub section: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct InlineRefIndex {
+    reads: std::cell::RefCell<Vec<std::collections::BTreeSet<(String, String)>>>,
     /// Leftmost-longest matcher over every phrase; None when no phrase
     /// is declared anywhere.
     matcher: Option<AhoCorasick>,
+    cache_key: std::sync::OnceLock<String>,
     /// Phrase details, indexed by the matcher's pattern ids.
     phrases: Vec<Phrase>,
     /// Per-book section index: book path → section number → target.
@@ -81,6 +83,11 @@ pub struct InlineRefIndex {
 }
 
 impl InlineRefIndex {
+    pub fn cache_key(&self) -> &str {
+        self.cache_key
+            .get_or_init(|| crate::cache::key_json(&self.phrases))
+    }
+
     pub fn new(site: &Site) -> Result<InlineRefIndex> {
         let mut builder = Builder::default();
         for product in &site.products {
@@ -111,12 +118,78 @@ impl InlineRefIndex {
 
     /// Look up a section number ("2.1", "A.3") within a book.
     pub fn section(&self, book: &str, number: &str) -> Option<&SectionTarget> {
+        for reads in self.reads.borrow_mut().iter_mut() {
+            reads.insert((book.into(), number.into()));
+        }
         self.sections.get(book)?.get(number)
+    }
+
+    pub fn capture(&self) -> SectionCapture<'_> {
+        self.reads.borrow_mut().push(Default::default());
+        SectionCapture {
+            index: self,
+            finished: false,
+        }
     }
 
     /// Every citation anchor in the site, in tree order.
     pub fn citations(&self) -> &[Citation] {
         &self.citations
+    }
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct SectionDependencies(Vec<(String, String, Option<SectionTarget>)>);
+
+impl SectionDependencies {
+    pub fn valid(&self, index: &InlineRefIndex) -> bool {
+        self.0.iter().all(|(book, number, target)| {
+            index.sections.get(book).and_then(|s| s.get(number)) == target.as_ref()
+        })
+    }
+    pub fn replay(&self, index: &InlineRefIndex) {
+        for (book, number, _) in &self.0 {
+            index.section(book, number);
+        }
+    }
+}
+
+pub struct SectionCapture<'a> {
+    index: &'a InlineRefIndex,
+    finished: bool,
+}
+
+impl SectionCapture<'_> {
+    pub fn finish(mut self) -> SectionDependencies {
+        self.finished = true;
+        let reads = self
+            .index
+            .reads
+            .borrow_mut()
+            .pop()
+            .expect("active section capture");
+        SectionDependencies(
+            reads
+                .into_iter()
+                .map(|(book, number)| {
+                    let target = self
+                        .index
+                        .sections
+                        .get(&book)
+                        .and_then(|s| s.get(&number))
+                        .cloned();
+                    (book, number, target)
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Drop for SectionCapture<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.index.reads.borrow_mut().pop();
+        }
     }
 }
 
@@ -374,6 +447,8 @@ impl Builder {
             )
         };
         Ok(InlineRefIndex {
+            reads: Default::default(),
+            cache_key: Default::default(),
             matcher,
             phrases: self.phrases,
             sections: self.sections,
@@ -384,6 +459,23 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn section_dependencies_ignore_unread_books_and_detect_missing_sections() {
+        let (_dir, mut index) = fixture_index();
+        let capture = index.capture();
+        index.section("/alpha/manual", "1");
+        index.section("/alpha/manual", "missing");
+        let dependencies = capture.finish();
+        index.sections.remove("/alpha/field-guide");
+        assert!(dependencies.valid(&index));
+        let target = index.sections["/alpha/manual"]["1"].clone();
+        index
+            .sections
+            .get_mut("/alpha/manual")
+            .unwrap()
+            .insert("missing".into(), target);
+        assert!(!dependencies.valid(&index));
+    }
     use super::*;
 
     fn fixture_index() -> (tempfile::TempDir, InlineRefIndex) {
@@ -451,7 +543,11 @@ mod tests {
         assert_eq!(citation.number.as_deref(), Some("2.1"));
         // Block context, with the marker gone and the code sample's
         // lookalike never having been an anchor at all.
-        assert!(citation.context.starts_with("The installer preserves ownership."));
+        assert!(
+            citation
+                .context
+                .starts_with("The installer preserves ownership.")
+        );
         // The real marker is stripped; the inline-code lookalike in the
         // same block is left exactly as written, because it was never an
         // anchor to begin with.
@@ -466,15 +562,16 @@ mod tests {
         crate::site::write_fixture(dir.path());
         // A second declaration of the install article's name, from
         // another article of the same book.
-        let path = dir
-            .path()
-            .join("alpha.product/7--manual.book/1--intro.md");
+        let path = dir.path().join("alpha.product/7--manual.book/1--intro.md");
         let body = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, body + "\nAgain. [*install.preserves-ownership]\n").unwrap();
         let site = Site::load(dir.path(), &dir.path().join("dist")).unwrap();
         let err = InlineRefIndex::new(&site).unwrap_err();
         assert!(err.to_string().contains("declared twice"), "{err}");
-        assert!(err.to_string().contains("install.preserves-ownership"), "{err}");
+        assert!(
+            err.to_string().contains("install.preserves-ownership"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -490,7 +587,10 @@ mod tests {
         std::fs::write(&path, body + "\nStatement. [*loose.anchor]\n").unwrap();
         let site = Site::load(dir.path(), &dir.path().join("dist")).unwrap();
         let err = InlineRefIndex::new(&site).unwrap_err();
-        assert!(err.to_string().contains("only valid inside a book"), "{err}");
+        assert!(
+            err.to_string().contains("only valid inside a book"),
+            "{err}"
+        );
     }
 
     #[test]

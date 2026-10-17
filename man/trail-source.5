@@ -1,0 +1,267 @@
+.TH TRAIL-SOURCE 5 2026-10-17 "Peios trail 0.1.0"
+.SH NAME
+trail-source \- Trail source tree names and layout
+.SH SYNOPSIS
+.nf
+<root>/
+.fi
+.SH DESCRIPTION
+Trail derives the whole site from the tree, so every name in it is meaningful
+and every unrecognised name is a build error. This page is the exhaustive
+grammar. Anatomy of a site is the
+same material as a walkthrough.
+.PP
+.SS "The name shapes"
+.PP
+.TP
+\fB<slug>.product\fR
+Example: \fBpekit.product\fR; What: A product. Site root only; no order
+prefix.
+.TP
+\fB<order>--<slug>.antho\fR
+Example: \fB1--security.antho\fR; What: An anthology.
+.TP
+\fB<order>--<slug>.topic\fR
+Example: \fB4--reference.topic\fR; What: A topic.
+.TP
+\fB<order>--<slug>.book\fR
+Example: \fB2--pgss.book\fR; What: A book.
+.TP
+\fB<order>--<slug>.shelf\fR
+Example: \fB3--tooling.shelf\fR; What: A shelf.
+.TP
+\fB<order>--<slug>\fR
+Example: \fB300--tokens\fR; What: A topic subfolder or a book chapter. No
+suffix.
+.TP
+\fB<order>--<slug>.md\fR
+Example: \fB100--sids.md\fR; What: An article.
+.TP
+\fB<order>--<slug>.link\fR
+Example: \fB3--faq.link\fR; What: A link alias.
+.TP
+\fB<slug>.<ext>\fR
+Example: \fBlogon-flow.svg\fR; What: A co-located image. No order prefix.
+.TP
+\fBtrail.toml\fR
+What: Configuration, at every level.
+.PP
+.SS "<order>"
+.PP
+A non-negative integer, parsed as written. \fB1\fR, \fB100\fR, and \fB007\fR
+are all valid
+and all mean their numeric value.
+.PP
+.IP \(bu 2
+It is a \fBsort key only\fR  -  never shown, never part of a URL  -  **except
+  inside a book**, where it _is_ the
+  published section number.
+.IP \(bu 2
+Gaps are fine and normal.
+.IP \(bu 2
+\fBTwo siblings sharing an order is an error\fR, since their relative order
+  would then depend on nothing visible.
+.IP \(bu 2
+Anything not parseable as an integer is an error: no \fB1.5\fR, no \fB-1\fR,
+no
+  \fBfirst\fR.
+.PP
+.SS "a<N> — appendix orders"
+.PP
+\fBInside a book only.\fR An order written \fBa1\fR, \fBa2\fR, ... marks an
+appendix
+entry, which is lettered rather than numbered and sorts after every numbered
+sibling at its level.
+.PP
+.IP \(bu 2
+Letters are bijective base 26: \fBa1\fR → A, \fBa26\fR → Z, \fBa27\fR → AA.
+.IP \(bu 2
+The letter comes from the number, not from position, so gaps show through
+  here too.
+.IP \(bu 2
+\fBa0\fR is an error: appendix orders start at \fBa1\fR.
+.IP \(bu 2
+Outside a book, an \fBa<N>--\fR prefix is a non-numeric order prefix, and
+  therefore an error.
+.PP
+.SS "<slug>"
+.PP
+Lowercase kebab-case:
+.PP
+.PP
+.nf
+ASCII lowercase letters, digits and hyphens
+not empty
+not starting or ending with a hyphen
+.fi
+.PP
+\fBgetting-started\fR, \fBpgss\fR, \fBrfc-2119\fR are fine.
+\fBGetting_Started\fR, \fB-draft\fR,
+\fBtokens/\fR, \fBcafé\fR are not.
+.PP
+The slug is the URL segment, and it is what you write in a
+\fB~link\fR.
+.PP
+.SS "<kind>"
+.PP
+Exactly one of \fBantho\fR, \fBtopic\fR, \fBbook\fR, \fBshelf\fR. Any other
+suffix is an
+error, as is a grouping directory with no suffix at all in a place where one
+is expected.
+.PP
+.SS "What each directory can contain"
+.PP
+Anything not listed is a build error. Entries whose name starts with \fB.\fR
+are
+skipped everywhere, so \fB.git\fR, \fB.DS_Store\fR and editor droppings are
+invisible
+to trail.
+.PP
+.TP
+\fBSite root\fR
+Subdirectories: \fB*.product\fR, the output dir; Files: \fBtrail.toml\fR;
+whatever \fBfavicon\fR, \fBcustom_css\fR, \fBhead_html\fR, \fBpassthrough\fR,
+and \fB[[merge]]\fR name
+.TP
+\fBProduct\fR
+Subdirectories: \fB.antho\fR, \fB.topic\fR, \fB.book\fR, \fB.shelf\fR; Files:
+\fBtrail.toml\fR
+.TP
+\fBAnthology\fR
+Subdirectories: \fB.antho\fR, \fB.topic\fR, \fB.book\fR, \fB.shelf\fR; Files:
+\fBtrail.toml\fR
+.TP
+\fBShelf\fR
+Subdirectories: \fB.antho\fR, \fB.topic\fR, \fB.book\fR  -  never another
+\fB.shelf\fR; Files: \fBtrail.toml\fR
+.TP
+\fBTopic\fR
+Subdirectories: \fB<order>--<slug>\fR subfolders; Files: \fBtrail.toml\fR,
+\fB.md\fR, \fB.link\fR, images
+.TP
+\fBTopic subfolder\fR
+Subdirectories: _(none  -  one level only)_; Files: \fBtrail.toml\fR,
+\fB.md\fR, \fB.link\fR, images
+.TP
+\fBBook\fR
+Subdirectories: \fB<order>--<slug>\fR chapters; Files: \fBtrail.toml\fR,
+\fB.md\fR, \fB.link\fR, images
+.TP
+\fBBook chapter\fR
+Subdirectories: \fB<order>--<slug>\fR chapters, to any depth; Files:
+\fBtrail.toml\fR, \fB.md\fR, \fB.link\fR, images
+.PP
+The dividing line: **directories that hold groupings hold no files but
+\fBtrail.toml\fR; directories that hold articles hold no grouping
+directories.**
+.PP
+.SS "trail.toml by level"
+.PP
+.TP
+Site root
+Required?: \fBrequired\fR; Keys: see the \fBtrail.toml\fR reference
+.TP
+Product
+Required?: \fBrequired\fR; Keys: \fBtitle\fR, \fBmonogram\fR, \fBcolor\fR,
+\fBdescription\fR, \fBinline_ref\fR
+.TP
+Anthology
+Required?: \fBrequired\fR; Keys: \fBtitle\fR, \fBdescription\fR,
+\fBinline_ref\fR
+.TP
+Book
+Required?: \fBrequired\fR; Keys: \fBtitle\fR, \fBdescription\fR, \fBshort\fR,
+\fBinline_ref\fR
+.TP
+Topic
+Required?: optional; Keys: \fBtitle\fR, \fBinline_ref\fR
+.TP
+Topic subfolder
+Required?: optional; Keys: \fBtitle\fR, \fBinline_ref\fR
+.TP
+Book chapter
+Required?: optional; Keys: \fBtitle\fR, \fBinline_ref\fR
+.TP
+Shelf
+Required?: optional; Keys: \fBtitle\fR only  -  \fB\fBinline_ref\fR is an
+error\fR
+.PP
+Unknown keys are errors at every level. Where \fBtitle\fR is optional and
+absent,
+it is derived from the slug: hyphens to spaces, in title case
+(\fBthe-two-gates\fR
+→ "The Two Gates", \fBdeveloping-for-peios\fR → "Developing for Peios").
+Derived titles has the casing
+rule.
+.PP
+.SS "Reserved names"
+.PP
+.TP
+\fBprint\fR
+Where: article slugs; Why: every container publishes a \fB/print\fR page
+.TP
+\fBassets\fR
+Where: product slugs; Why: collides with \fB/assets\fR in the output
+.TP
+\fBpagefind\fR
+Where: product slugs; Why: collides with \fB/pagefind\fR in the output
+.PP
+.SS "Images"
+.PP
+A co-located image is \fB<slug>.<ext>\fR where the stem is a valid slug and
+the
+extension is \fBlowercase\fR and one of:
+.PP
+.PP
+.nf
+png   jpg   jpeg   gif   svg   webp   avif
+.fi
+.PP
+Anything else in an article directory falls through to the "unexpected file"
+error.
+.PP
+.SS "Sorting"
+.PP
+Siblings sort by order, ascending. Inside a book, appendix entries sort after
+every numbered entry at the same level, whatever their numbers.
+.PP
+Products are the exception: no order prefix, so they sort by the root config's
+\fBfeatured\fR list first (in that list's order), then the rest by title.
+.PP
+.SS "Duplicates"
+.PP
+Within one container, both order and slug must be unique:
+.PP
+.PP
+.nf
+items 'concepts' and 'guides' share order 1
+duplicate article slug 'overview'
+.fi
+.PP
+The noun is \fBitem\fR for a container's mixed children (topics, books,
+anthologies, shelves), and \fBarticle\fR inside a topic subfolder or where
+only
+articles can sit. Slugs are reported without their order prefixes.
+.PP
+Shelf contents are checked \fBflattened into their parent\fR, because a shelf
+adds no URL segment  -  two shelves in one product cannot both hold a
+\fBgetting-started\fR topic, since both would want the same URL.
+.PP
+.SS "URLs"
+.PP
+A page's URL is the product slug, then the slug of every container between it
+and the page, with two exceptions: shelves contribute nothing, and order
+prefixes contribute nothing.
+.PP
+.PP
+.nf
+peios.product/1--security.antho/2--tokens.topic/300--issuing/100--flow.md
+  →  /peios/security/tokens/issuing/flow
+.fi
+.PP
+Pages are written to disk as \fB<path>/index.html\fR.
+.SH SEE ALSO
+.BR trail (1),
+.BR trail.toml (5)
+.PP
+Trail Learn: https://learn.peios.org/trail/

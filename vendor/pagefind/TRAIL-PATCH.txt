@@ -1,0 +1,36 @@
+Base: crates.io pagefind 1.5.2. Source and embedded assets are copied from
+the published crate, not from a moving Git branch. License: MIT; LICENSE
+is from https://raw.githubusercontent.com/Pagefind/pagefind/v1.5.2/LICENSE.
+
+Local extension: PagefindIndex::add_html_files accepts an ordered batch of
+unique explicit URLs for an empty index and a positive worker count.
+SearchState::fossick_batch parses with a private bounded Rayon pool,
+retains input order, and commits only if every page parses successfully.
+The existing single-page and directory APIs are unchanged.
+
+PagefindIndex::get_files_cached additionally compresses independent output
+chunks using a private bounded pool and a caller-provided CompressionCache.
+It preserves the original gzip encoding and common files. The caller must
+verify cache payload integrity. Global index packing remains unchanged;
+unchanged fragments and chunks can reuse their compressed bytes after edits.
+
+PagefindIndex::add_html_files_cached adds caller-owned ParseCache storage
+for opaque serialized per-page FossickedData. The caller namespaces by
+Pagefind version and indexing options and verifies payload integrity.
+Missing or invalid payloads are reparsed. Global index assembly, page
+number assignment and ordered batch commit remain unchanged. Tests compare
+all output bytes after edits, deletions, URL changes, reordered inputs,
+multiple languages and corrupt payloads.
+
+Changed upstream files: src/lib.rs, src/service/api.rs, src/output/mod.rs,
+src/fossick/mod.rs and src/fragments/mod.rs. The patch is
+retained in batch-api.patch. Trail's search tests compare all generated
+index bytes against the unmodified single-page API with 1 and 4 workers,
+and cover duplicate URLs, a nonempty index and zero workers. Compression
+tests compare every file against the original API across cold/warm builds,
+body edits, additions, removals and multiple languages.
+
+Remove this local copy when an upstream release provides equivalent
+in-memory batching, after rerunning those tests and the full-site output
+comparison. Do not replace it with directory scanning: that changes
+the selected page set and parsing-error behavior.

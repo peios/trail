@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail, ensure};
 use lol_html::{HtmlRewriter, RewriteStrSettings, Settings, element, rewrite_str};
-use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
-use serde::Serialize;
+use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, LinkType, Options, Tag, TagEnd, html};
+use serde::{Deserialize, Serialize};
 
 use crate::highlight;
 use crate::images::{ImageInfo, ImageScope};
@@ -12,7 +12,7 @@ use crate::links::{LinkIndex, ResolveError};
 use crate::refs::{InlineRefIndex, PhraseTarget, SectionTarget};
 
 /// One "On this page" entry: an h2 or h3 with its generated anchor id.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct TocEntry {
     pub level: u8,
     pub id: String,
@@ -21,7 +21,7 @@ pub struct TocEntry {
     pub number: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Rendered {
     pub html: String,
     pub toc: Vec<TocEntry>,
@@ -82,6 +82,8 @@ pub struct RenderOptions<'a> {
 pub struct PrintScope<'a> {
     /// Page path → the bundle's anchor id for that page.
     pub anchors: &'a HashMap<String, String>,
+    /// Precomputed once per bundle, not once for each article.
+    pub cache_key: &'a str,
     /// The site's base URL, for pages outside the bundle. Without one
     /// they stay root-relative — still correct on the site itself.
     pub base: Option<&'a str>,
@@ -106,15 +108,81 @@ pub struct RefScope<'a> {
 /// ```` ```mermaid ```` fences become `<pre class="mermaid">` blocks for
 /// client-side mermaid to render. `~` link destinations are resolved
 /// through the link index.
+#[derive(Serialize, Deserialize)]
+struct CachedRender {
+    rendered: Rendered,
+    images: Vec<std::path::PathBuf>,
+    links: crate::links::Dependencies,
+    refs: Option<crate::refs::SectionDependencies>,
+}
+
 pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
+    if !crate::cache::persistent() {
+        return render_uncached(markdown, links, options);
+    }
+    let key = crate::cache::key_json(&(
+        crate::memo::key(&[markdown.as_bytes()]),
+        options.allow_dangling,
+        options.strict,
+        options.numbering,
+        options.id_prefix,
+        options.base,
+        options.images.map(|s| (s.dir, s.index.cache_key())),
+        options
+            .refs
+            .map(|s| (s.index.cache_key(), s.page, s.book, s.book_short)),
+        options.print.map(|s| (s.cache_key, s.base)),
+    ));
+    if let Some(cached) = crate::cache::get::<CachedRender>("render", &key)
+        && cached.links.valid(links)
+        && cached
+            .refs
+            .as_ref()
+            .zip(options.refs)
+            .is_none_or(|(deps, scope)| deps.valid(scope.index))
+    {
+        cached.links.replay(links);
+        if let Some((deps, scope)) = cached.refs.as_ref().zip(options.refs) {
+            deps.replay(scope.index);
+        }
+        if let Some(scope) = options.images {
+            scope.index.replay_usage(&cached.images);
+        }
+        return Ok(cached.rendered);
+    }
+    let start = options.images.map(|s| s.index.usage_start());
+    let capture = links.capture();
+    let ref_capture = options.refs.map(|scope| scope.index.capture());
+    let result = render_uncached(markdown, links, options);
+    let images = options
+        .images
+        .zip(start)
+        .map(|(s, start)| s.index.usage_since(start))
+        .unwrap_or_default();
+    let cached = CachedRender {
+        rendered: result?,
+        images,
+        links: capture.finish(),
+        refs: ref_capture.map(|c| c.finish()),
+    };
+    crate::cache::put("render", &key, &cached);
+    Ok(cached.rendered)
+}
+
+fn render_uncached(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Result<Rendered> {
     let markdown = expand_tab_groups(markdown)?;
     // Before parsing: `[*name]` anchors become inline HTML, so the `*`
     // can never pair with an emphasis marker elsewhere in the block.
-    let markdown = expand_citation_anchors(
-        &markdown,
-        options.refs.and_then(|scope| scope.book_short),
-    );
-    let events: Vec<Event> = Parser::new_ext(&markdown, parser_options()).collect();
+    let markdown =
+        expand_citation_anchors(&markdown, options.refs.and_then(|scope| scope.book_short));
+    // Equations first, so the typography pass never sees their source.
+    let parsed = crate::parsed::parse(&markdown, parser_options());
+    let events = crate::typography::keep_together(crate::math::mark_math(
+        parsed
+            .iter()
+            .map(|(event, _)| crate::parsed::borrow_event(event))
+            .collect(),
+    ));
 
     let mut out = Vec::with_capacity(events.len());
     let mut toc = Vec::new();
@@ -177,6 +245,19 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                 out.push(Event::Html(
                     format!("<span class=\"heading-number\">{number}</span> ").into(),
                 ));
+            }
+        } else if let Event::InlineMath(tex) | Event::DisplayMath(tex) = &events[i] {
+            let display = matches!(events[i], Event::DisplayMath(_));
+            match crate::math::to_mathml(tex, display) {
+                Ok(mathml) if display => out.push(Event::Html(
+                    format!("<div class=\"math-display\">{mathml}</div>\n").into(),
+                )),
+                Ok(mathml) => out.push(Event::InlineHtml(mathml.into())),
+                Err(error) => {
+                    // Not downgradable: the equation is the author's own text.
+                    broken.push(format!("equation '{tex}' is not valid TeX: {error}"));
+                    out.push(Event::Code(tex.clone()));
+                }
             }
         } else if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(language))) = &events[i]
             && language.as_ref() == "mermaid"
@@ -322,7 +403,11 @@ pub fn render(markdown: &str, links: &LinkIndex, options: RenderOptions) -> Resu
                 title: title.clone(),
                 id: id.clone(),
             }));
-        } else if let Event::Start(Tag::Link { dest_url, .. }) = &events[i]
+        } else if let Event::Start(Tag::Link {
+            link_type, dest_url, ..
+        }) = &events[i]
+            // An email autolink's destination is the bare address.
+            && *link_type != LinkType::Email
             && is_relative(dest_url)
         {
             link_depth += 1;
@@ -662,7 +747,22 @@ impl SectionCounter {
 /// ahead of the render pass. h2/h3 only — deeper headings consume ids
 /// but never numbers, exactly as in `render`.
 pub fn heading_outline(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
-    let events: Vec<Event> = Parser::new_ext(markdown, parser_options()).collect();
+    let key = crate::memo::key(&[
+        markdown.as_bytes(),
+        &[u8::from(numbering.is_some())],
+        numbering.unwrap_or("").as_bytes(),
+    ]);
+    crate::cache::compute("headings", &key, || {
+        heading_outline_uncached(markdown, numbering)
+    })
+}
+
+fn heading_outline_uncached(markdown: &str, numbering: Option<&str>) -> Vec<TocEntry> {
+    let parsed = crate::parsed::parse(markdown, parser_options());
+    let events: Vec<Event> = parsed
+        .iter()
+        .map(|(event, _)| crate::parsed::borrow_event(event))
+        .collect();
     let mut outline = Vec::new();
     let mut used_ids = HashMap::new();
     let mut counter = SectionCounter::default();
@@ -1081,7 +1181,10 @@ fn image_tag(info: &ImageInfo, alt: &str, title: Option<&str>) -> String {
 }
 
 /// ENABLE_GFM parses `> [!NOTE]`-style blockquote alerts (admonitions).
-fn parser_options() -> Options {
+/// ENABLE_MATH stays off: a pair of `$` in ordinary prose ("$PATH and
+/// $HOME") would become an equation. `math::mark_math` finds equations in
+/// forms prose never takes.
+pub(crate) fn parser_options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_FOOTNOTES
@@ -1104,9 +1207,51 @@ pub fn rewrite_source(
     images: Option<ImageScope>,
     base: &str,
 ) -> String {
+    if !crate::cache::persistent() {
+        return rewrite_source_uncached(markdown, links, numbering, images, base);
+    }
+    let key = crate::cache::key_json(&(
+        crate::memo::key(&[markdown.as_bytes()]),
+        numbering,
+        base,
+        images.map(|s| (s.dir, s.index.cache_key())),
+    ));
+    if let Some((text, used, dependencies)) =
+        crate::cache::get::<(String, Vec<std::path::PathBuf>, crate::links::Dependencies)>(
+            "source", &key,
+        )
+        && dependencies.valid(links)
+    {
+        dependencies.replay(links);
+        if let Some(scope) = images {
+            scope.index.replay_usage(&used);
+        }
+        return text;
+    }
+    let start = images.map(|s| s.index.usage_start());
+    let capture = links.capture();
+    let text = rewrite_source_uncached(markdown, links, numbering, images, base);
+    let used = images
+        .zip(start)
+        .map(|(s, start)| s.index.usage_since(start))
+        .unwrap_or_default();
+    crate::cache::put("source", &key, &(&text, used, capture.finish()));
+    text
+}
+
+fn rewrite_source_uncached(
+    markdown: &str,
+    links: &LinkIndex,
+    numbering: Option<&str>,
+    images: Option<ImageScope>,
+    base: &str,
+) -> String {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut counter = SectionCounter::default();
-    for (event, range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
+    for (event, range) in crate::parsed::parse(markdown, parser_options())
+        .iter()
+        .map(|(event, range)| (crate::parsed::borrow_event(event), range.clone()))
+    {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) if dest_url.starts_with('~') => {
                 let reference = &dest_url[1..];
@@ -1324,21 +1469,27 @@ fn html_ids(html: &str) -> Result<HashSet<String>> {
 /// in raw HTML. The link index collects these so a `#fragment` on a
 /// reference can be checked against the page it names.
 pub fn anchor_ids(markdown: &str) -> HashSet<String> {
+    let key = crate::memo::key(&[markdown.as_bytes()]);
+    crate::cache::compute("anchors", &key, || anchor_ids_uncached(markdown))
+}
+
+fn anchor_ids_uncached(markdown: &str) -> HashSet<String> {
     let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
     let expanded = expand_citation_anchors(&expanded, None);
-    let events: Vec<Event> = Parser::new_ext(&expanded, parser_options()).collect();
+    let parsed = crate::parsed::parse(&expanded, parser_options());
+    let events: Vec<Event> = parsed
+        .iter()
+        .map(|(event, _)| crate::parsed::borrow_event(event))
+        .collect();
     let mut ids = HashSet::new();
     let mut used_ids = HashMap::new();
     for (i, event) in events.iter().enumerate() {
-        match event {
-            Event::Start(Tag::Heading { id, .. }) => {
-                let base = match id {
-                    Some(explicit) => explicit.to_string(),
-                    None => slugify(&heading_text(&events[i + 1..])),
-                };
-                ids.insert(unique_id(&mut used_ids, base));
-            }
-            _ => {}
+        if let Event::Start(Tag::Heading { id, .. }) = event {
+            let base = match id {
+                Some(explicit) => explicit.to_string(),
+                None => slugify(&heading_text(&events[i + 1..])),
+            };
+            ids.insert(unique_id(&mut used_ids, base));
         }
     }
     // Parse the complete HTML rather than isolated raw events, which can
@@ -1349,6 +1500,30 @@ pub fn anchor_ids(markdown: &str) -> HashSet<String> {
     html::push_html(&mut html, events.into_iter());
     ids.extend(html_ids(&html).unwrap_or_default());
     ids
+}
+
+/// The anchors an article body names itself: ids in raw HTML, and
+/// citation anchors. Every id except the slugs Trail derives from heading
+/// text, which change whenever a heading is reworded, so these are the
+/// targets other content can rely on.
+pub fn explicit_anchor_ids(markdown: &str) -> HashSet<String> {
+    let key = crate::memo::key(&[markdown.as_bytes()]);
+    crate::cache::compute("explicit-anchors", &key, || {
+        explicit_anchor_ids_uncached(markdown)
+    })
+}
+
+fn explicit_anchor_ids_uncached(markdown: &str) -> HashSet<String> {
+    let expanded = expand_tab_groups(markdown).unwrap_or_else(|_| markdown.to_string());
+    let expanded = expand_citation_anchors(&expanded, None);
+    let mut html = String::new();
+    html::push_html(
+        &mut html,
+        crate::parsed::parse(&expanded, parser_options())
+            .iter()
+            .map(|(event, _)| crate::parsed::borrow_event(event)),
+    );
+    html_ids(&html).unwrap_or_default()
 }
 
 /// A link destination in none of the forms a page can serve: not a `~`
@@ -1511,15 +1686,15 @@ fn scan_line(line: &str, offset: usize, found: &mut Vec<(std::ops::Range<usize>,
             }
             continue;
         }
-        if bytes[at] == b'[' && bytes.get(at + 1) == Some(&b'*') {
-            if let Some(name) = citation_name(&line[at + 2..])
-                && line[at + 2 + name.len()..].starts_with(']')
-            {
-                let end = at + 2 + name.len() + 1;
-                found.push((offset + at..offset + end, name.to_string()));
-                at = end;
-                continue;
-            }
+        if bytes[at] == b'['
+            && bytes.get(at + 1) == Some(&b'*')
+            && let Some(name) = citation_name(&line[at + 2..])
+            && line[at + 2 + name.len()..].starts_with(']')
+        {
+            let end = at + 2 + name.len() + 1;
+            found.push((offset + at..offset + end, name.to_string()));
+            at = end;
+            continue;
         }
         at += 1;
     }
@@ -1564,10 +1739,7 @@ pub fn citation_anchors(markdown: &str) -> Vec<CitationAnchor> {
 /// The blank-line-delimited block containing `at`, with every anchor
 /// removed and whitespace collapsed.
 fn block_context(markdown: &str, at: usize, spans: &[(std::ops::Range<usize>, String)]) -> String {
-    let start = markdown[..at]
-        .rfind("\n\n")
-        .map(|i| i + 2)
-        .unwrap_or(0);
+    let start = markdown[..at].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
     let end = markdown[at..]
         .find("\n\n")
         .map(|i| at + i)
@@ -1629,6 +1801,45 @@ fn escape_attr(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn persistent_metadata_matches_uncached_with_numbering_and_source_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let session = crate::cache::Session::new(root.path(), true);
+        for source in [
+            "## First\n\n[*fixed]\n",
+            "## Changed {#custom}\n\n<div id=\"raw\">X</div>",
+        ] {
+            assert_eq!(
+                super::anchor_ids(source),
+                super::anchor_ids_uncached(source)
+            );
+            assert_eq!(
+                super::anchor_ids(source),
+                super::anchor_ids_uncached(source)
+            );
+            assert_eq!(
+                super::explicit_anchor_ids(source),
+                super::explicit_anchor_ids_uncached(source)
+            );
+            assert_eq!(
+                super::explicit_anchor_ids(source),
+                super::explicit_anchor_ids_uncached(source)
+            );
+            for numbering in [None, Some(""), Some("2")] {
+                assert_eq!(
+                    super::heading_outline(source, numbering),
+                    super::heading_outline_uncached(source, numbering)
+                );
+                assert_eq!(
+                    super::heading_outline(source, numbering),
+                    super::heading_outline_uncached(source, numbering)
+                );
+            }
+        }
+        assert_eq!(session.hits("anchors"), 2);
+        assert_eq!(session.hits("explicit-anchors"), 2);
+        assert_eq!(session.hits("headings"), 6);
+    }
     use super::*;
 
     /// Render with an empty link index — for tests exercising plain markdown.
@@ -1683,7 +1894,8 @@ mod tests {
         assert!(rendered.broken[0].contains("names anchor '#nope'"));
         assert!(rendered.broken[0].contains("/alpha/acorn/wide/a2"));
         // Downgradable, like a missing page.
-        let rendered = super::render("See [a2](~alpha/a2#nope).", &index, allow_dangling()).unwrap();
+        let rendered =
+            super::render("See [a2](~alpha/a2#nope).", &index, allow_dangling()).unwrap();
         assert!(rendered.broken.is_empty());
         assert_eq!(rendered.dangling.len(), 1);
         // A page whose anchors the index cannot know — a product page has
@@ -1945,9 +2157,14 @@ const html = '<a id="script"></a>';
     fn relative_destinations_are_broken_links() {
         let rendered = render(
             "[a](../410--policy.md) [b](sibling.md#part) [c](https://example.com/x.md) \
-             [d](/print) [e](mailto:docs@example.com)\n\n## Part\n",
+             [d](/print) [e](mailto:docs@example.com) <docs@example.com>\n\n## Part\n",
         );
         assert_eq!(rendered.broken.len(), 2, "{:?}", rendered.broken);
+        assert!(
+            rendered
+                .html
+                .contains("<a href=\"mailto:docs@example.com\">docs@example.com</a>")
+        );
         assert!(rendered.broken[0].contains("'../410--policy.md' is a relative path"));
         assert!(rendered.broken[1].contains("'sibling.md#part' is a relative path"));
         let rendered =
@@ -2015,7 +2232,13 @@ const html = '<a id="script"></a>';
         let source = "## Overview\n\n## Overview\n\n### When it's hex\n\n\
                       [*claim] Words.\n\n<a id=\"manual\"></a>\n";
         let ids = super::anchor_ids(source);
-        for expected in ["overview", "overview-2", "when-it-s-hex", "cite-claim", "manual"] {
+        for expected in [
+            "overview",
+            "overview-2",
+            "when-it-s-hex",
+            "cite-claim",
+            "manual",
+        ] {
             assert!(ids.contains(expected), "missing {expected}: {ids:?}");
         }
         let html = render(source).html;
@@ -2049,13 +2272,8 @@ const html = '<a id="script"></a>';
         assert!(rendered.html.contains("https://example.com/spec"));
         assert!(rendered.html.contains("<a href=\"/elsewhere\">"));
         // And the mirrors move with it.
-        let rewritten = super::rewrite_source(
-            "See [a2](~alpha/a2).\n",
-            &index,
-            None,
-            None,
-            "/deadbeef",
-        );
+        let rewritten =
+            super::rewrite_source("See [a2](~alpha/a2).\n", &index, None, None, "/deadbeef");
         assert!(rewritten.contains("(/deadbeef/alpha/acorn/wide/a2.md)"));
     }
 
@@ -2232,6 +2450,28 @@ const html = '<a id="script"></a>';
                 .contains("<pre class=\"mermaid\">graph TD;\n  A--&gt;B;\n</pre>")
         );
         assert!(!rendered.html.contains("language-mermaid"));
+    }
+
+    #[test]
+    fn math_fences_and_dollar_code_spans_render_as_mathml() {
+        let rendered = render("Where $`N`$ costs $5:\n\n```math\n\\frac{1}{2^N}\n```\n");
+        assert!(rendered.broken.is_empty(), "{:?}", rendered.broken);
+        assert!(
+            rendered.html.contains("<p>Where <math display=\"inline\">"),
+            "{}",
+            rendered.html
+        );
+        assert!(rendered.html.contains(" costs $5:</p>"));
+        assert!(
+            rendered
+                .html
+                .contains("<div class=\"math-display\"><math display=\"block\">")
+        );
+        assert!(!rendered.html.contains("code-block"));
+
+        let rendered = render("```math\n\\frac{1}\n```\n");
+        assert_eq!(rendered.broken.len(), 1);
+        assert!(rendered.broken[0].contains("equation '\\frac{1}' is not valid TeX"));
     }
 
     #[test]
@@ -2476,7 +2716,10 @@ const html = '<a id="script"></a>';
 
     #[test]
     fn citation_names_are_lowercase_dotted_segments() {
-        assert_eq!(citation_name("copy-up.preserves-ownership]"), Some("copy-up.preserves-ownership"));
+        assert_eq!(
+            citation_name("copy-up.preserves-ownership]"),
+            Some("copy-up.preserves-ownership")
+        );
         assert_eq!(citation_name("a1]"), Some("a1"));
         // Must start and end alphanumeric, and carry no doubled or
         // adjacent separators.
@@ -2521,7 +2764,10 @@ const html = '<a id="script"></a>';
         let body = "## The provider [*resolution.provider]\n\nProse below.\n";
         let anchors = citation_anchors(body);
         assert_eq!(anchors.len(), 1);
-        assert!(anchors[0].section, "heading anchor should be a section anchor");
+        assert!(
+            anchors[0].section,
+            "heading anchor should be a section anchor"
+        );
         // The `#` markers are not part of the section's name-in-prose.
         assert_eq!(anchors[0].context, "The provider");
 
@@ -2529,7 +2775,11 @@ const html = '<a id="script"></a>';
         // inline HTML by the time the parser sees it, so it never
         // reaches the slug.
         let rendered = render(body);
-        assert!(rendered.html.contains("<h2 id=\"the-provider\""), "{}", rendered.html);
+        assert!(
+            rendered.html.contains("<h2 id=\"the-provider\""),
+            "{}",
+            rendered.html
+        );
         assert_eq!(rendered.toc[0].title, "The provider ");
 
         // An anchor in ordinary prose is not a section anchor.

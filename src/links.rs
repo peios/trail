@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -5,7 +8,7 @@ use crate::site::{Anthology, AnthologyItem, Book, ProductItem, Site, Topic, Topi
 
 /// Why a reference failed to resolve. Dangling kinds (unknown product,
 /// no match) can be downgraded to warnings; ambiguity never is.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResolveError {
     UnknownProduct(String),
     NoMatch(String),
@@ -30,9 +33,10 @@ impl std::error::Error for ResolveError {}
 /// and article pages). Exactly one match resolves; zero or several are
 /// errors — the shortest unambiguous suffix is always enough, and deeper
 /// segments (including the anthology's) exist only for disambiguation.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LinkIndex {
     products: HashMap<String, ProductIndex>,
+    reads: RefCell<Vec<BTreeSet<Read>>>,
     /// Page path → the anchor ids its body defines (heading ids, `[*name]`
     /// citation anchors, raw HTML ids), so a `#fragment` on a reference
     /// can be checked. Only articles have bodies; product and anthology
@@ -40,14 +44,100 @@ pub struct LinkIndex {
     anchors: HashMap<String, HashSet<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Read {
+    Page(String),
+    Anchor(String, String),
+}
+
+type PageResolution = Result<(String, String), String>;
+
+/// Actual resolution results, including missing and ambiguous references.
+/// Rechecking the query detects newly introduced candidates as well as removals.
+#[derive(Default, Serialize, Deserialize)]
+pub struct Dependencies {
+    pages: Vec<(String, PageResolution)>,
+    anchors: Vec<(String, String, Option<bool>)>,
+}
+
+impl Dependencies {
+    pub fn valid(&self, index: &LinkIndex) -> bool {
+        self.pages.iter().all(|(query, answer)| {
+            index
+                .resolve_page_untracked(query)
+                .map_err(|e| e.to_string())
+                == *answer
+        }) && self.anchors.iter().all(|(page, fragment, answer)| {
+            index.anchors.get(page).map(|ids| ids.contains(fragment)) == *answer
+        })
+    }
+
+    pub fn replay(&self, index: &LinkIndex) {
+        for (query, _) in &self.pages {
+            index.record(Read::Page(query.clone()));
+        }
+        for (page, fragment, _) in &self.anchors {
+            index.record(Read::Anchor(page.clone(), fragment.clone()));
+        }
+    }
+}
+
+pub struct Capture<'a> {
+    index: &'a LinkIndex,
+    finished: bool,
+}
+
+impl Capture<'_> {
+    pub fn finish(mut self) -> Dependencies {
+        self.finished = true;
+        let reads = self
+            .index
+            .reads
+            .borrow_mut()
+            .pop()
+            .expect("active link capture");
+        let mut dependencies = Dependencies::default();
+        for read in reads {
+            match read {
+                Read::Page(query) => {
+                    let answer = self
+                        .index
+                        .resolve_page_untracked(&query)
+                        .map_err(|e| e.to_string());
+                    dependencies.pages.push((query, answer));
+                }
+                Read::Anchor(page, fragment) => {
+                    let answer = self
+                        .index
+                        .anchors
+                        .get(&page)
+                        .map(|ids| ids.contains(&fragment));
+                    dependencies.anchors.push((page, fragment, answer));
+                }
+            }
+        }
+        dependencies
+    }
+}
+
+impl Drop for Capture<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.index.reads.borrow_mut().pop();
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ProductIndex {
     path: String,
     title: String,
     candidates: Vec<Candidate>,
+    // Candidate indices retain traversal order, including ambiguous matches.
+    suffixes: HashMap<String, Vec<usize>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 struct Candidate {
     /// URL-path segments below the product, e.g. ["acorn", "wide", "a1"].
     segments: Vec<String>,
@@ -155,6 +245,19 @@ fn push_anthology_candidates(
 }
 
 impl LinkIndex {
+    pub fn capture(&self) -> Capture<'_> {
+        self.reads.borrow_mut().push(BTreeSet::new());
+        Capture {
+            index: self,
+            finished: false,
+        }
+    }
+
+    fn record(&self, read: Read) {
+        for capture in self.reads.borrow_mut().iter_mut() {
+            capture.insert(read.clone());
+        }
+    }
     pub fn new(site: &Site) -> LinkIndex {
         Self::build(site, false)
     }
@@ -182,12 +285,22 @@ impl LinkIndex {
                     }
                 }
             }
+            let mut suffixes: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, candidate) in candidates.iter().enumerate() {
+                for start in 0..candidate.segments.len() {
+                    suffixes
+                        .entry(candidate.segments[start..].join("/"))
+                        .or_default()
+                        .push(i);
+                }
+            }
             products.insert(
                 product.slug.clone(),
                 ProductIndex {
                     path: product.path.clone(),
                     title: product.title.clone(),
                     candidates,
+                    suffixes,
                 },
             );
         }
@@ -201,13 +314,18 @@ impl LinkIndex {
                 )
             })
             .collect();
-        LinkIndex { products, anchors }
+        LinkIndex {
+            products,
+            anchors,
+            reads: Default::default(),
+        }
     }
 
     /// Whether the page at `path` defines the anchor `fragment`. None when
     /// the page's anchors are unknown — a product or anthology page, or an
     /// index built without a site — and the caller should not judge.
     pub fn has_anchor(&self, path: &str, fragment: &str) -> Option<bool> {
+        self.record(Read::Anchor(path.to_owned(), fragment.to_owned()));
         self.anchors.get(path).map(|ids| ids.contains(fragment))
     }
 
@@ -219,6 +337,11 @@ impl LinkIndex {
     /// Resolve like `resolve`, also returning the target page's title —
     /// for surfaces that display the link rather than embed it.
     pub fn resolve_page(&self, reference: &str) -> Result<(String, String), ResolveError> {
+        self.record(Read::Page(reference.to_owned()));
+        self.resolve_page_untracked(reference)
+    }
+
+    fn resolve_page_untracked(&self, reference: &str) -> Result<(String, String), ResolveError> {
         let mut segments = reference.split('/');
         let product_slug = segments.next().unwrap_or("");
         let suffix: Vec<&str> = segments.collect();
@@ -232,16 +355,13 @@ impl LinkIndex {
             return Ok((product.path.clone(), product.title.clone()));
         }
 
+        let key = suffix.join("/");
         let matches: Vec<&Candidate> = product
-            .candidates
-            .iter()
-            .filter(|candidate| {
-                candidate.segments.len() >= suffix.len()
-                    && candidate.segments[candidate.segments.len() - suffix.len()..]
-                        .iter()
-                        .map(String::as_str)
-                        .eq(suffix.iter().copied())
-            })
+            .suffixes
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .map(|i| &product.candidates[*i])
             .collect();
 
         match matches.as_slice() {
@@ -266,6 +386,78 @@ mod tests {
     use super::*;
     use crate::site;
 
+    #[test]
+    fn dependencies_track_queries_and_replay_nested_hits() {
+        let (_dir, mut index) = index();
+        let outer = index.capture();
+        let inner = index.capture();
+        index.resolve("alpha/a2").unwrap();
+        assert!(index.resolve("alpha/missing").is_err());
+        index.has_anchor("/alpha/acorn/wide/a2", "future");
+        let dependencies = inner.finish();
+        let parent = outer.finish();
+        assert!(dependencies.valid(&index) && parent.valid(&index));
+        index
+            .anchors
+            .insert("/unrelated".into(), HashSet::from(["new".into()]));
+        assert!(dependencies.valid(&index));
+        let replay = index.capture();
+        dependencies.replay(&index);
+        let replayed = replay.finish();
+        index
+            .anchors
+            .get_mut("/alpha/acorn/wide/a2")
+            .unwrap()
+            .insert("future".into());
+        assert!(!dependencies.valid(&index) && !replayed.valid(&index));
+        index
+            .anchors
+            .get_mut("/alpha/acorn/wide/a2")
+            .unwrap()
+            .remove("future");
+        index
+            .products
+            .get_mut("alpha")
+            .unwrap()
+            .suffixes
+            .insert("missing".into(), vec![0]);
+        assert!(!dependencies.valid(&index));
+    }
+
+    #[test]
+    fn indexed_suffixes_match_the_scan_including_ambiguity_order() {
+        let (_dir, index) = index();
+        for product in index.products.values() {
+            let mut queries = HashSet::from(["missing".to_owned(), "".to_owned()]);
+            for candidate in &product.candidates {
+                for start in 0..candidate.segments.len() {
+                    let suffix = candidate.segments[start..].join("/");
+                    queries.insert(format!("{suffix}/"));
+                    queries.insert(format!("/{suffix}"));
+                    queries.insert(suffix);
+                }
+            }
+            for query in queries {
+                let suffix: Vec<_> = query.split('/').collect();
+                let expected: Vec<_> = product
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| {
+                        c.segments.len() >= suffix.len()
+                            && c.segments[c.segments.len() - suffix.len()..]
+                                .iter()
+                                .map(String::as_str)
+                                .eq(suffix.iter().copied())
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let actual = product.suffixes.get(&query).cloned().unwrap_or_default();
+                assert_eq!(actual, expected, "suffix {query:?}");
+            }
+        }
+    }
+
     fn index() -> (tempfile::TempDir, LinkIndex) {
         let dir = tempfile::tempdir().unwrap();
         site::write_fixture(dir.path());
@@ -288,7 +480,10 @@ mod tests {
             index.has_anchor("/alpha/acorn/wide/a2", "first-section-of-a2"),
             Some(true)
         );
-        assert_eq!(index.has_anchor("/alpha/acorn/wide/a2", "nope"), Some(false));
+        assert_eq!(
+            index.has_anchor("/alpha/acorn/wide/a2", "nope"),
+            Some(false)
+        );
         // Product and anthology pages have no body to define anchors in.
         assert_eq!(index.has_anchor("/alpha", "anything"), None);
         assert_eq!(index.has_anchor("/alpha/acorn", "anything"), None);

@@ -5,16 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ site.sitename }}{% endblock %}</title>
 <script>
-  // What this build knows about itself, for the scripts below and for
-  // search.js: `base` is the path prefix every link on this page carries
-  // ("" on the site itself, "/<cbpath>" inside the cache-busting copy),
-  // and `cachebust` is the copy's path when one was published.
-  window.trail = {{ build_config }};
-  // Apply the saved theme choice before first paint (no flash).
-  try {
+// What this build knows about itself, for the scripts below and for
+// search.js: `base` is the path prefix every link on this page carries
+// ("" on the site itself, "/<cbpath>" inside the cache-busting copy),
+// and `cachebust` is the copy's path when one was published.
+window.trail = {{ build_config }};
+// Apply the saved theme choice before first paint (no flash).
+try {
     const theme = localStorage.getItem("trail-theme");
-    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
-  } catch {}
+    if (theme === "light" || theme === "dark") {
+        document.documentElement.dataset.theme = theme;
+    }
+} catch {
+    // Storage can be unavailable; keep this page's default or in-memory state.
+}
 </script>
 {%- if is_copy %}
 {#- The copy duplicates every page at a path that changes on each deploy;
@@ -119,14 +123,15 @@
 {%- if has_mermaid %}
 <script src="{{ '/assets/mermaid.min.js' | url }}"></script>
 <script>
-  mermaid.initialize({
+mermaid.initialize({
     startOnLoad: true,
     theme:
-      (document.documentElement.dataset.theme ||
-        (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark"
-        ? "dark"
-        : "default",
-  });
+        (document.documentElement.dataset.theme ||
+            (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) ===
+        "dark"
+            ? "dark"
+            : "default",
+});
 </script>
 {%- endif %}
 
@@ -147,277 +152,342 @@
 <script src="{{ '/assets/search.js' | url }}" defer></script>
 
 <script>
-  // Theme toggle: cycles system → light → dark, persisted per browser.
-  (() => {
+// Theme toggle: cycles system → light → dark, persisted per browser.
+(() => {
     const button = document.querySelector("[data-theme-toggle]");
-    if (!button) return;
+    if (!button) {
+        return;
+    }
     const apply = (state) => {
-      if (state === "system") {
-        delete document.documentElement.dataset.theme;
-        try { localStorage.removeItem("trail-theme"); } catch {}
-      } else {
-        document.documentElement.dataset.theme = state;
-        try { localStorage.setItem("trail-theme", state); } catch {}
-      }
-      button.dataset.themeState = state;
-      button.setAttribute("aria-label", "Theme: " + state);
-      button.title = "Theme: " + state;
+        if (state === "system") {
+            delete document.documentElement.dataset.theme;
+            try {
+                localStorage.removeItem("trail-theme");
+            } catch {
+                // Storage can be unavailable; keep this page's default or in-memory state.
+            }
+        } else {
+            document.documentElement.dataset.theme = state;
+            try {
+                localStorage.setItem("trail-theme", state);
+            } catch {
+                // Storage can be unavailable; keep this page's default or in-memory state.
+            }
+        }
+        button.dataset.themeState = state;
+        button.setAttribute("aria-label", "Theme: " + state);
+        button.title = "Theme: " + state;
     };
     apply(document.documentElement.dataset.theme || "system");
     const order = ["system", "light", "dark"];
-    const cycle = () =>
-      apply(order[(order.indexOf(button.dataset.themeState) + 1) % order.length]);
+    const cycle = () => apply(order[(order.indexOf(button.dataset.themeState) + 1) % order.length]);
     button.addEventListener("click", cycle);
     // The /theme command in the search box drives the same state as the
     // button, so the two can never disagree.
     window.trail.themes = order;
     window.trail.setTheme = (state) => {
-      if (!order.includes(state)) return null;
-      apply(state);
-      return state;
+        if (!order.includes(state)) {
+            return null;
+        }
+        apply(state);
+        return state;
     };
     window.trail.cycleTheme = () => {
-      cycle();
-      return button.dataset.themeState;
+        cycle();
+        return button.dataset.themeState;
     };
-  })();
+})();
 
-  // Book tree: chapters expanded by hand stay expanded while moving
-  // between the book's pages (per tab, via sessionStorage). The server
-  // opens the trail to the current page; this only adds to it.
-  (() => {
+// Book tree: chapters expanded by hand stay expanded while moving
+// between the book's pages (per tab, via sessionStorage). The server
+// opens the trail to the current page; this only adds to it.
+(() => {
     const tree = document.querySelector("[data-book-nav]");
-    if (!tree) return;
+    if (!tree) {
+        return;
+    }
     const key = "trail-open-chapters:" + tree.dataset.bookNav;
     let stored = [];
     try {
-      stored = JSON.parse(sessionStorage.getItem(key)) || [];
-    } catch {}
+        stored = JSON.parse(sessionStorage.getItem(key)) || [];
+    } catch {
+        // Storage can be unavailable; keep this page's default or in-memory state.
+    }
     for (const details of tree.querySelectorAll("details[data-chapter]")) {
-      if (stored.includes(details.dataset.chapter)) details.open = true;
+        if (stored.includes(details.dataset.chapter)) {
+            details.open = true;
+        }
     }
     // "toggle" doesn't bubble; listen in the capture phase.
     tree.addEventListener(
-      "toggle",
-      () => {
-        const open = [...tree.querySelectorAll("details[open]")].map(
-          (details) => details.dataset.chapter
-        );
-        sessionStorage.setItem(key, JSON.stringify(open));
-      },
-      true
+        "toggle",
+        () => {
+            const open = [...tree.querySelectorAll("details[open]")].map(
+                (details) => details.dataset.chapter,
+            );
+            sessionStorage.setItem(key, JSON.stringify(open));
+        },
+        true,
     );
-  })();
+})();
 
-  // Copy buttons on code blocks: the code's own text is the source of
-  // truth, so nothing is duplicated into the markup.
-  (() => {
+// Copy buttons on code blocks: the code's own text is the source of
+// truth, so nothing is duplicated into the markup.
+(() => {
     document.addEventListener("click", async (event) => {
-      const button = event.target.closest("[data-copy-code]");
-      if (!button) return;
-      const code = button.parentElement.querySelector("code");
-      if (!code) return;
-      const label = button.querySelector(".copy-label");
-      try {
-        await navigator.clipboard.writeText(code.textContent);
-        label.textContent = "Copied";
-      } catch {
-        label.textContent = "Press ⌘C";
-      }
-      button.dataset.copied = "";
-      setTimeout(() => {
-        label.textContent = "Copy";
-        delete button.dataset.copied;
-      }, 1500);
+        const button = event.target.closest("[data-copy-code]");
+        if (!button) {
+            return;
+        }
+        const code = button.parentElement.querySelector("code");
+        if (!code) {
+            return;
+        }
+        const label = button.querySelector(".copy-label");
+        try {
+            await navigator.clipboard.writeText(code.textContent);
+            label.textContent = "Copied";
+        } catch {
+            label.textContent = "Press ⌘C";
+        }
+        button.dataset.copied = "";
+        setTimeout(() => {
+            label.textContent = "Copy";
+            delete button.dataset.copied;
+        }, 1500);
     });
-  })();
+})();
 
-  // Tab groups: one panel visible at a time, scoped per group so
-  // several groups on a page stay independent.
-  (() => {
+// Tab groups: one panel visible at a time, scoped per group so
+// several groups on a page stay independent.
+(() => {
     for (const group of document.querySelectorAll("[data-tabs]")) {
-      const buttons = [...group.querySelectorAll(".tab-button")];
-      const panels = [...group.querySelectorAll(".tab-panel")];
-      // Print needs each panel labelled, since the buttons are hidden.
-      panels.forEach((panel, index) => {
-        panel.dataset.tabLabel = buttons[index]?.textContent ?? "";
-      });
-      group.addEventListener("click", (event) => {
-        const button = event.target.closest(".tab-button");
-        if (!button) return;
-        const chosen = Number(button.dataset.tab);
-        buttons.forEach((other, index) =>
-          other.setAttribute("aria-selected", String(index === chosen))
-        );
-        panels.forEach((panel, index) => (panel.hidden = index !== chosen));
-      });
+        const buttons = [...group.querySelectorAll(".tab-button")];
+        const panels = [...group.querySelectorAll(".tab-panel")];
+        // Print needs each panel labelled, since the buttons are hidden.
+        panels.forEach((panel, index) => {
+            panel.dataset.tabLabel = buttons[index]?.textContent ?? "";
+        });
+        group.addEventListener("click", (event) => {
+            const button = event.target.closest(".tab-button");
+            if (!button) {
+                return;
+            }
+            const chosen = Number(button.dataset.tab);
+            buttons.forEach((other, index) =>
+                other.setAttribute("aria-selected", String(index === chosen)),
+            );
+            panels.forEach((panel, index) => (panel.hidden = index !== chosen));
+        });
     }
-  })();
+})();
 
-  // Back to top: appears once there's a page worth returning up.
-  (() => {
+// Back to top: appears once there's a page worth returning up.
+(() => {
     const button = document.querySelector("[data-back-to-top]");
-    if (!button) return;
+    if (!button) {
+        return;
+    }
     const sync = () => {
-      if (scrollY > 600) button.dataset.visible = "";
-      else delete button.dataset.visible;
+        if (scrollY > 600) {
+            button.dataset.visible = "";
+        } else {
+            delete button.dataset.visible;
+        }
     };
     addEventListener("scroll", sync, { passive: true });
-    button.addEventListener("click", () =>
-      scrollTo({ top: 0, behavior: "smooth" })
-    );
+    button.addEventListener("click", () => scrollTo({ top: 0, behavior: "smooth" }));
     sync();
-  })();
+})();
 
-  // Search landing: ?q= marks the terms that brought the reader here
-  // and scrolls the first one into view.
-  (() => {
+// Search landing: ?q= marks the terms that brought the reader here
+// and scrolls the first one into view.
+(() => {
     const query = new URLSearchParams(location.search).get("q");
     const body = document.querySelector(".article-body");
-    if (!query || !body) return;
-    const terms = [...new Set(query.toLowerCase().split(/\s+/).filter((t) => t.length > 1))];
-    if (terms.length === 0) return;
+    if (!query || !body) {
+        return;
+    }
+    const terms = [
+        ...new Set(
+            query
+                .toLowerCase()
+                .split(/\s+/)
+                .filter((t) => t.length > 1),
+        ),
+    ];
+    if (terms.length === 0) {
+        return;
+    }
     const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) =>
-        node.parentElement.closest("code, pre, .crumbs, script, style")
-          ? NodeFilter.FILTER_REJECT
-          : NodeFilter.FILTER_ACCEPT,
+        acceptNode: (node) =>
+            node.parentElement.closest("code, pre, .crumbs, script, style")
+                ? NodeFilter.FILTER_REJECT
+                : NodeFilter.FILTER_ACCEPT,
     });
     const texts = [];
-    while (walker.nextNode()) texts.push(walker.currentNode);
+    while (walker.nextNode()) {
+        texts.push(walker.currentNode);
+    }
     let first = null;
     for (const node of texts) {
-      // Walk the node, marking every occurrence, not just the first.
-      let current = node;
-      while (current) {
-        const lower = current.textContent.toLowerCase();
-        let at = -1;
-        let term = null;
-        for (const candidate of terms) {
-          const index = lower.indexOf(candidate);
-          if (index !== -1 && (at === -1 || index < at)) {
-            at = index;
-            term = candidate;
-          }
+        // Walk the node, marking every occurrence, not just the first.
+        let current = node;
+        while (current) {
+            const lower = current.textContent.toLowerCase();
+            let at = -1;
+            let term = null;
+            for (const candidate of terms) {
+                const index = lower.indexOf(candidate);
+                if (index !== -1 && (at === -1 || index < at)) {
+                    at = index;
+                    term = candidate;
+                }
+            }
+            if (at === -1) {
+                break;
+            }
+            const hit = current.splitText(at);
+            const rest = hit.splitText(term.length);
+            const mark = document.createElement("mark");
+            mark.className = "search-hit";
+            mark.textContent = hit.textContent;
+            hit.replaceWith(mark);
+            first ??= mark;
+            current = rest;
         }
-        if (at === -1) break;
-        const hit = current.splitText(at);
-        const rest = hit.splitText(term.length);
-        const mark = document.createElement("mark");
-        mark.className = "search-hit";
-        mark.textContent = hit.textContent;
-        hit.replaceWith(mark);
-        first ??= mark;
-        current = rest;
-      }
     }
     first?.scrollIntoView({ block: "center" });
-  })();
+})();
 
-  // Reading size: scales the prose only, remembered per browser.
-  (() => {
+// Reading size: scales the prose only, remembered per browser.
+(() => {
     const controls = document.querySelector("[data-reading-size]");
     const scales = { sm: "0.94", md: "1", lg: "1.12" };
     const apply = (size) => {
-      document.documentElement.style.setProperty("--reading-scale", scales[size] ?? "1");
-      controls
-        ?.querySelectorAll("button")
-        .forEach((button) =>
-          button.setAttribute("aria-pressed", String(button.dataset.size === size))
-        );
+        document.documentElement.style.setProperty("--reading-scale", scales[size] ?? "1");
+        controls
+            ?.querySelectorAll("button")
+            .forEach((button) =>
+                button.setAttribute("aria-pressed", String(button.dataset.size === size)),
+            );
     };
     let saved = "md";
     try {
-      saved = localStorage.getItem("trail-reading-size") || "md";
-    } catch {}
+        saved = localStorage.getItem("trail-reading-size") || "md";
+    } catch {
+        // Storage can be unavailable; keep this page's default or in-memory state.
+    }
     apply(saved in scales ? saved : "md");
     controls?.addEventListener("click", (event) => {
-      const button = event.target.closest("button");
-      if (!button) return;
-      apply(button.dataset.size);
-      try {
-        localStorage.setItem("trail-reading-size", button.dataset.size);
-      } catch {}
+        const button = event.target.closest("button");
+        if (!button) {
+            return;
+        }
+        apply(button.dataset.size);
+        try {
+            localStorage.setItem("trail-reading-size", button.dataset.size);
+        } catch {
+            // Storage can be unavailable; keep this page's default or in-memory state.
+        }
     });
-  })();
+})();
 
-  // Mobile drawer: on narrow screens the sidebar slides in over the page.
-  // Pages without a sidebar render no toggle, so this does nothing there.
-  (() => {
+// Mobile drawer: on narrow screens the sidebar slides in over the page.
+// Pages without a sidebar render no toggle, so this does nothing there.
+(() => {
     const toggle = document.querySelector("[data-drawer-toggle]");
-    if (!toggle) return;
+    if (!toggle) {
+        return;
+    }
     const set = (open) => {
-      document.body.classList.toggle("drawer-open", open);
-      toggle.setAttribute("aria-expanded", open);
+        document.body.classList.toggle("drawer-open", open);
+        toggle.setAttribute("aria-expanded", open);
     };
-    toggle.addEventListener("click", () =>
-      set(!document.body.classList.contains("drawer-open"))
-    );
-    document
-      .querySelector("[data-drawer-close]")
-      ?.addEventListener("click", () => set(false));
+    toggle.addEventListener("click", () => set(!document.body.classList.contains("drawer-open")));
+    document.querySelector("[data-drawer-close]")?.addEventListener("click", () => set(false));
     // Following a link (a page, or an anchor on this one) closes the drawer.
     document.querySelector(".sidebar")?.addEventListener("click", (event) => {
-      if (event.target.closest("a")) set(false);
+        if (event.target.closest("a")) {
+            set(false);
+        }
     });
     addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && document.body.classList.contains("drawer-open")) set(false);
+        if (event.key === "Escape" && document.body.classList.contains("drawer-open")) {
+            set(false);
+        }
     });
-  })();
+})();
 </script>
 
 <script>
-  // Citation anchors: clicking one copies the full citation string
-  // ("Kernel TRM *copy-up.preserves-ownership") rather than navigating,
-  // because copying it into a test is the whole reason it is there. The
-  // href still points at the anchor, so middle-click and "copy link"
-  // behave normally and the page is usable without JS.
-  (() => {
+// Citation anchors: clicking one copies the full citation string
+// ("Kernel TRM *copy-up.preserves-ownership") rather than navigating,
+// because copying it into a test is the whole reason it is there. The
+// href still points at the anchor, so middle-click and "copy link"
+// behave normally and the page is usable without JS.
+(() => {
     const KEY = "trail:citations-hidden";
     const body = document.body;
     try {
-      if (localStorage.getItem(KEY) === "1") body.classList.add("citations-hidden");
-    } catch (_) {}
+        if (localStorage.getItem(KEY) === "1") {
+            body.classList.add("citations-hidden");
+        }
+    } catch {
+        // Storage can be unavailable; keep this page's default or in-memory state.
+    }
 
     document.addEventListener("click", (event) => {
-      const anchor = event.target.closest(".citation-anchor");
-      if (!anchor) return;
-      const citation = anchor.dataset.citation;
-      if (!citation) return;
-      event.preventDefault();
-      history.replaceState(null, "", anchor.getAttribute("href"));
-      const done = () => {
-        anchor.classList.add("copied");
-        setTimeout(() => anchor.classList.remove("copied"), 1400);
-      };
-      if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(citation).then(done, done);
-      } else {
-        done();
-      }
+        const anchor = event.target.closest(".citation-anchor");
+        if (!anchor) {
+            return;
+        }
+        const citation = anchor.dataset.citation;
+        if (!citation) {
+            return;
+        }
+        event.preventDefault();
+        history.replaceState(null, "", anchor.getAttribute("href"));
+        const done = () => {
+            anchor.classList.add("copied");
+            setTimeout(() => anchor.classList.remove("copied"), 1400);
+        };
+        const failed = () => {
+            anchor.title = "Copy failed. Copy the citation from the link title: " + citation;
+        };
+        if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(citation).then(done, failed);
+        } else {
+            failed();
+        }
     });
 
     // Exposed for a future settings control; usable from the console
     // meanwhile. Persisted per reader, per origin.
     window.trailToggleCitations = () => {
-      const hidden = body.classList.toggle("citations-hidden");
-      try {
-        localStorage.setItem(KEY, hidden ? "1" : "0");
-      } catch (_) {}
-      return hidden;
+        const hidden = body.classList.toggle("citations-hidden");
+        try {
+            localStorage.setItem(KEY, hidden ? "1" : "0");
+        } catch {
+            // Storage can be unavailable; keep this page's default or in-memory state.
+        }
+        return hidden;
     };
-  })();
+})();
 </script>
 
 {%- if live_reload %}
 <script>
-  (() => {
+(() => {
     let current = null;
     new EventSource("/~trail/reload").onmessage = (event) => {
-      if (current === null) current = event.data;
-      else if (event.data !== current) location.reload();
+        if (current === null) {
+            current = event.data;
+        } else if (event.data !== current) {
+            location.reload();
+        }
     };
-  })();
+})();
 </script>
 {%- endif %}
 </body>

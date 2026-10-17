@@ -48,14 +48,46 @@ pub struct PrintSection {
     pub html: String,
 }
 
-pub struct Renderer {
+/// Product fields consumed by templates. Aggregate reading time and update
+/// dates belong to content listings, not every page's shared navigation.
+#[derive(serde::Serialize)]
+pub struct ProductView<'a> {
+    slug: &'a str,
+    path: &'a str,
+    title: &'a str,
+    monogram: &'a str,
+    color: &'a str,
+    description: &'a str,
+}
+
+impl<'a> From<&'a Product> for ProductView<'a> {
+    fn from(product: &'a Product) -> Self {
+        Self {
+            slug: &product.slug,
+            path: &product.path,
+            title: &product.title,
+            monogram: &product.monogram,
+            color: &product.color,
+            description: &product.description,
+        }
+    }
+}
+
+fn product_views(site: &Site) -> Vec<ProductView<'_>> {
+    site.products.iter().map(ProductView::from).collect()
+}
+
+pub struct Renderer<'a> {
+    site: &'a Site,
+    shared_keys: std::cell::RefCell<std::collections::HashMap<String, String>>,
     env: Environment<'static>,
     /// Inject the dev-server auto-reload script into every page.
     live_reload: bool,
+    cache_key: String,
 }
 
-impl Renderer {
-    pub fn new(options: &BuildOptions) -> Result<Renderer> {
+impl<'a> Renderer<'a> {
+    pub fn new(options: &BuildOptions, site: &'a Site) -> Result<Renderer<'a>> {
         let mut env = Environment::new();
         // Reading times are stored as minutes; pages say them in words.
         env.add_filter("duration", |minutes: u32| {
@@ -107,20 +139,80 @@ impl Renderer {
                 .with_context(|| format!("parsing template {name}"))?;
         }
         Ok(Renderer {
+            site,
+            shared_keys: Default::default(),
             env,
             live_reload: options.live_reload,
+            cache_key: crate::cache::key_json(&(
+                options,
+                &site.config,
+                product_views(site),
+                site.favicon_href(),
+                &site.head_html,
+            )),
         })
     }
 
+    fn render_cached(
+        &self,
+        name: &str,
+        inputs: impl FnOnce() -> String,
+        context: impl FnOnce() -> Value,
+    ) -> Result<String> {
+        if !crate::cache::persistent() || name == "print.html" {
+            return self
+                .env
+                .get_template(name)?
+                .render(context())
+                .map_err(Into::into);
+        }
+        let key = crate::memo::key(&[
+            self.cache_key.as_bytes(),
+            name.as_bytes(),
+            inputs().as_bytes(),
+        ]);
+        if let Some(bytes) = crate::cache::read_bytes("pages", &key)
+            && let Ok(html) = String::from_utf8(bytes)
+        {
+            return Ok(html);
+        }
+        let html = self.env.get_template(name)?.render(context())?;
+        crate::cache::write_bytes("pages", &key, html.as_bytes());
+        Ok(html)
+    }
+
+    // The renderer borrows one immutable site. Container navigation can be
+    // large and shared by thousands of pages; fingerprint it once per build.
+    fn shared_key(&self, kind: &str, path: &str, value: &impl serde::Serialize) -> String {
+        self.shared_keys
+            .borrow_mut()
+            .entry(format!("{kind}:{path}"))
+            .or_insert_with(|| crate::cache::key_json(value))
+            .clone()
+    }
+
+    fn ancestors_key(&self, ancestors: &[&Anthology]) -> Vec<String> {
+        ancestors
+            .iter()
+            .map(|a| self.shared_key("anthology", &a.path, a))
+            .collect()
+    }
+
+    pub fn context_key(&self, site: &Site) -> &str {
+        assert!(
+            std::ptr::eq(site, self.site),
+            "renderer belongs to one immutable site"
+        );
+        &self.cache_key
+    }
+
     pub fn index(&self, site: &Site) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("index.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("index.html", || self.shared_key("featured", "", &site.featured().into_iter().map(ProductView::from).collect::<Vec<_>>()), || context! {
                 site => site.config,
-                products => site.products,
-                featured => site.featured(),
+                products => product_views(site),
+                featured => site.featured().into_iter().map(ProductView::from).collect::<Vec<_>>(),
                 meta => page_meta(
                     site,
                     &site.config.sitename,
@@ -139,30 +231,34 @@ impl Renderer {
     }
 
     pub fn product(&self, site: &Site, product: &Product) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("product.html")
-            .expect("template registered in new()")
-            .render(context! {
-                site => site.config,
-                products => site.products,
-                product => product,
-                sections => product.sections(),
-                meta => page_meta(
-                    site,
-                    &product.title,
-                    Some(&product.description),
-                    &product.path,
-                    "website",
-                ),
-                md_path => format!("{}.md", product.path),
-                favicon => site.favicon_href(),
-                head_html => site.head_html,
-                wordmark_head => head,
-                wordmark_tail => tail,
-                live_reload => self.live_reload,
-            })
-            .with_context(|| format!("rendering product page '{}'", product.slug))
+        self.render_cached(
+            "product.html",
+            || crate::cache::key_json(&(ProductView::from(product), product.sections())),
+            || {
+                context! {
+                    site => site.config,
+                    products => product_views(site),
+                    product => ProductView::from(product),
+                    sections => product.sections(),
+                    meta => page_meta(
+                        site,
+                        &product.title,
+                        Some(&product.description),
+                        &product.path,
+                        "website",
+                    ),
+                    md_path => format!("{}.md", product.path),
+                    favicon => site.favicon_href(),
+                    head_html => site.head_html,
+                    wordmark_head => head,
+                    wordmark_tail => tail,
+                    live_reload => self.live_reload,
+                }
+            },
+        )
+        .with_context(|| format!("rendering product page '{}'", product.slug))
     }
 
     pub fn anthology(
@@ -172,37 +268,48 @@ impl Renderer {
         parents: &[&Anthology],
         anthology: &Anthology,
     ) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("anthology.html")
-            .expect("template registered in new()")
-            .render(context! {
-                site => site.config,
-                products => site.products,
-                product => product,
-                anthology => anthology,
-                anthologies => parents,
-                sections => anthology.sections(),
-                meta => page_meta(
-                    site,
-                    &anthology.title,
-                    Some(&anthology.description),
-                    &anthology.path,
-                    "website",
-                ),
-                md_path => format!("{}.md", anthology.path),
-                favicon => site.favicon_href(),
-                head_html => site.head_html,
-                wordmark_head => head,
-                wordmark_tail => tail,
-                live_reload => self.live_reload,
-            })
-            .with_context(|| {
-                format!(
-                    "rendering anthology page '{}/{}'",
-                    product.slug, anthology.slug
-                )
-            })
+        self.render_cached(
+            "anthology.html",
+            || {
+                crate::cache::key_json(&(
+                    ProductView::from(product),
+                    anthology,
+                    self.ancestors_key(parents),
+                    anthology.sections(),
+                ))
+            },
+            || {
+                context! {
+                    site => site.config,
+                    products => product_views(site),
+                    product => ProductView::from(product),
+                    anthology => anthology,
+                    anthologies => parents,
+                    sections => anthology.sections(),
+                    meta => page_meta(
+                        site,
+                        &anthology.title,
+                        Some(&anthology.description),
+                        &anthology.path,
+                        "website",
+                    ),
+                    md_path => format!("{}.md", anthology.path),
+                    favicon => site.favicon_href(),
+                    head_html => site.head_html,
+                    wordmark_head => head,
+                    wordmark_tail => tail,
+                    live_reload => self.live_reload,
+                }
+            },
+        )
+        .with_context(|| {
+            format!(
+                "rendering anthology page '{}/{}'",
+                product.slug, anthology.slug
+            )
+        })
     }
 
     pub fn book(
@@ -212,31 +319,41 @@ impl Renderer {
         anthologies: &[&Anthology],
         book: &Book,
     ) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("book.html")
-            .expect("template registered in new()")
-            .render(context! {
-                site => site.config,
-                products => site.products,
-                product => product,
-                anthologies => anthologies,
-                book => book,
-                meta => page_meta(
-                    site,
-                    &book.title,
-                    Some(&book.description),
-                    &book.path,
-                    "website",
-                ),
-                md_path => format!("{}.md", book.path),
-                favicon => site.favicon_href(),
-                head_html => site.head_html,
-                wordmark_head => head,
-                wordmark_tail => tail,
-                live_reload => self.live_reload,
-            })
-            .with_context(|| format!("rendering book cover '{}/{}'", product.slug, book.slug))
+        self.render_cached(
+            "book.html",
+            || {
+                crate::cache::key_json(&(
+                    ProductView::from(product),
+                    self.ancestors_key(anthologies),
+                    self.shared_key("book", &book.path, book),
+                ))
+            },
+            || {
+                context! {
+                    site => site.config,
+                    products => product_views(site),
+                    product => ProductView::from(product),
+                    anthologies => anthologies,
+                    book => book,
+                    meta => page_meta(
+                        site,
+                        &book.title,
+                        Some(&book.description),
+                        &book.path,
+                        "website",
+                    ),
+                    md_path => format!("{}.md", book.path),
+                    favicon => site.favicon_href(),
+                    head_html => site.head_html,
+                    wordmark_head => head,
+                    wordmark_tail => tail,
+                    live_reload => self.live_reload,
+                }
+            },
+        )
+        .with_context(|| format!("rendering book cover '{}/{}'", product.slug, book.slug))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -252,6 +369,7 @@ impl Renderer {
         related: &[PageLink],
         pager: Pager,
     ) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
         let meta = page_meta(
             site,
@@ -261,34 +379,55 @@ impl Renderer {
             "article",
         );
         let edit_url = edit_link(site, article);
-        self.env
-            .get_template("book-article.html")
-            .expect("template registered in new()")
-            .render(context! {
-                site => site.config,
-                products => site.products,
-                product => product,
-                anthologies => anthologies,
-                book => book,
-                chapters => chapters,
-                article => article,
-                related => related,
-                meta => meta,
-                edit_url => edit_url,
-                previous => pager.previous,
-                next => pager.next,
-                print_url => pager.print_url,
-                md_path => format!("{}.md", article.path),
-                content => rendered.html,
-                toc => rendered.toc,
-                has_mermaid => rendered.has_mermaid,
-                favicon => site.favicon_href(),
-                head_html => site.head_html,
-                wordmark_head => head,
-                wordmark_tail => tail,
-                live_reload => self.live_reload,
-            })
-            .with_context(|| format!("rendering article page '{}'", article.path))
+        self.render_cached(
+            "book-article.html",
+            || {
+                crate::cache::key_json(&(
+                    ProductView::from(product),
+                    self.ancestors_key(anthologies),
+                    self.shared_key("book", &book.path, book),
+                    chapters
+                        .iter()
+                        .map(|c| self.shared_key("chapter", &c.path, c))
+                        .collect::<Vec<_>>(),
+                    article,
+                    related,
+                    &meta,
+                    &edit_url,
+                    &pager,
+                    crate::memo::key(&[rendered.html.as_bytes()]),
+                    &rendered.toc,
+                    rendered.has_mermaid,
+                ))
+            },
+            || {
+                context! {
+                    site => site.config,
+                    products => product_views(site),
+                    product => ProductView::from(product),
+                    anthologies => anthologies,
+                    book => book,
+                    chapters => chapters,
+                    article => article,
+                    related => related,
+                    meta => meta,
+                    edit_url => edit_url,
+                    previous => pager.previous,
+                    next => pager.next,
+                    print_url => pager.print_url,
+                    md_path => format!("{}.md", article.path),
+                    content => rendered.html,
+                    toc => rendered.toc,
+                    has_mermaid => rendered.has_mermaid,
+                    favicon => site.favicon_href(),
+                    head_html => site.head_html,
+                    wordmark_head => head,
+                    wordmark_tail => tail,
+                    live_reload => self.live_reload,
+                }
+            },
+        )
+        .with_context(|| format!("rendering article page '{}'", article.path))
     }
 
     /// A unit's single-page view: every article in reading order.
@@ -304,14 +443,13 @@ impl Renderer {
         sections: &[PrintSection],
         has_mermaid: bool,
     ) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("print.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("print.html", String::new, || {
+            context! {
                 site => site.config,
-                products => site.products,
-                product => product,
+                products => product_views(site),
+                product => ProductView::from(product),
                 title => title,
                 description => description,
                 meta => page_meta(
@@ -329,8 +467,9 @@ impl Renderer {
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
-            })
-            .with_context(|| format!("rendering print page for '{title}'"))
+            }
+        })
+        .with_context(|| format!("rendering print page for '{title}'"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -346,6 +485,7 @@ impl Renderer {
         related: &[PageLink],
         pager: Pager,
     ) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
         let meta = page_meta(
             site,
@@ -355,62 +495,80 @@ impl Renderer {
             "article",
         );
         let edit_url = edit_link(site, article);
-        self.env
-            .get_template("article.html")
-            .expect("template registered in new()")
-            .render(context! {
-                site => site.config,
-                products => site.products,
-                product => product,
-                anthologies => anthologies,
-                topic => topic,
-                folder => folder,
-                article => article,
-                related => related,
-                meta => meta,
-                edit_url => edit_url,
-                previous => pager.previous,
-                next => pager.next,
-                print_url => pager.print_url,
-                md_path => format!("{}.md", article.path),
-                content => rendered.html,
-                toc => rendered.toc,
-                has_mermaid => rendered.has_mermaid,
-                favicon => site.favicon_href(),
-                head_html => site.head_html,
-                wordmark_head => head,
-                wordmark_tail => tail,
-                live_reload => self.live_reload,
-            })
-            .with_context(|| format!("rendering article page '{}'", article.path))
+        self.render_cached(
+            "article.html",
+            || {
+                crate::cache::key_json(&(
+                    ProductView::from(product),
+                    self.ancestors_key(anthologies),
+                    self.shared_key("topic", &topic.path, topic),
+                    folder.map(|f| self.shared_key("folder", &f.path, f)),
+                    article,
+                    related,
+                    &meta,
+                    &edit_url,
+                    &pager,
+                    crate::memo::key(&[rendered.html.as_bytes()]),
+                    &rendered.toc,
+                    rendered.has_mermaid,
+                ))
+            },
+            || {
+                context! {
+                    site => site.config,
+                    products => product_views(site),
+                    product => ProductView::from(product),
+                    anthologies => anthologies,
+                    topic => topic,
+                    folder => folder,
+                    article => article,
+                    related => related,
+                    meta => meta,
+                    edit_url => edit_url,
+                    previous => pager.previous,
+                    next => pager.next,
+                    print_url => pager.print_url,
+                    md_path => format!("{}.md", article.path),
+                    content => rendered.html,
+                    toc => rendered.toc,
+                    has_mermaid => rendered.has_mermaid,
+                    favicon => site.favicon_href(),
+                    head_html => site.head_html,
+                    wordmark_head => head,
+                    wordmark_tail => tail,
+                    live_reload => self.live_reload,
+                }
+            },
+        )
+        .with_context(|| format!("rendering article page '{}'", article.path))
     }
 }
 
-impl Renderer {
+impl<'a> Renderer<'a> {
     /// The 404 page: written to /404.html for static hosts and served
     /// for misses by the dev server. Carries no page meta — a page that
     /// doesn't exist has nothing to canonicalise or preview.
     pub fn not_found(&self, site: &Site) -> Result<String> {
+        let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.env
-            .get_template("404.html")
-            .expect("template registered in new()")
-            .render(context! {
+        self.render_cached("404.html", String::new, || {
+            context! {
                 site => site.config,
-                products => site.products,
+                products => product_views(site),
                 favicon => site.favicon_href(),
                 head_html => site.head_html,
                 wordmark_head => head,
                 wordmark_tail => tail,
                 live_reload => self.live_reload,
-            })
-            .context("rendering 404.html")
+            }
+        })
+        .context("rendering 404.html")
     }
 }
 
 /// Where an article page can send the reader next: its neighbours in
 /// reading order, and its slot in the enclosing unit's single-page view.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct Pager {
     pub previous: Option<PageLink>,
     pub next: Option<PageLink>,
@@ -419,13 +577,14 @@ pub struct Pager {
     pub print_url: Option<String>,
 }
 
-/// The "Edit this page" URL for an article, from the site's edit_url
+/// The "Edit this page" URL for an article, from its tree's edit_url
 /// template: "{path}" becomes the article's source path relative to
-/// the site root. An alias keeps its original's file, so editing the
+/// that tree's root. An alias keeps its original's file, so editing the
 /// alias edits the real source.
 fn edit_link(site: &Site, article: &Article) -> Option<String> {
-    let template = site.config.edit_url.as_ref()?;
-    let relative = article.source_file.strip_prefix(&site.root).ok()?;
+    let tree = site.tree_of(&article.source_file);
+    let template = tree.edit_url.as_ref()?;
+    let relative = article.source_file.strip_prefix(&tree.root).ok()?;
     Some(template.replace("{path}", &relative.to_string_lossy().replace('\\', "/")))
 }
 
@@ -505,9 +664,49 @@ mod tests {
     }
 
     #[test]
+    fn navigation_cache_ignores_aggregate_counts_but_tracks_visible_metadata() {
+        let (dir, mut site) = fixture_site();
+        let session = crate::cache::Session::new(dir.path(), true);
+        let first = Renderer::new(&plain(), &site)
+            .unwrap()
+            .index(&site)
+            .unwrap();
+        site.products[0].reading_minutes += 100;
+        site.products[0].updated = Some("2026-10-17".into());
+        assert_eq!(
+            first,
+            Renderer::new(&plain(), &site)
+                .unwrap()
+                .index(&site)
+                .unwrap()
+        );
+        assert_eq!(session.hits("pages"), 1);
+        site.products[0].title = "Renamed Product".into();
+        let changed = Renderer::new(&plain(), &site)
+            .unwrap()
+            .index(&site)
+            .unwrap();
+        assert_ne!(first, changed);
+        assert!(changed.contains("Renamed Product"));
+        assert_eq!(session.hits("pages"), 1);
+        site.config.footer = "Changed footer".into();
+        assert!(
+            Renderer::new(&plain(), &site)
+                .unwrap()
+                .index(&site)
+                .unwrap()
+                .contains("Changed footer")
+        );
+        assert_eq!(session.hits("pages"), 1);
+    }
+
+    #[test]
     fn renders_site_and_product_data_on_the_front_page() {
         let (_dir, site) = fixture_site();
-        let html = Renderer::new(&plain()).unwrap().index(&site).unwrap();
+        let html = Renderer::new(&plain(), &site)
+            .unwrap()
+            .index(&site)
+            .unwrap();
 
         assert!(html.contains("<title>Test Learn</title>"));
         assert!(html.contains("Docs for testing"));
@@ -523,7 +722,10 @@ mod tests {
     fn renders_anthology_cards_on_the_product_page() {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
-        let html = Renderer::new(&plain()).unwrap().product(&site, alpha).unwrap();
+        let html = Renderer::new(&plain(), &site)
+            .unwrap()
+            .product(&site, alpha)
+            .unwrap();
 
         assert!(html.contains("<title>Alpha — Test Learn</title>"));
         assert!(html.contains("Acorn Docs"));
@@ -542,7 +744,7 @@ mod tests {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
         let acorn = alpha.anthologies().find(|d| d.slug == "acorn").unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .anthology(&site, alpha, &[], acorn)
             .unwrap();
@@ -567,7 +769,7 @@ mod tests {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
         let manual = alpha.books().find(|b| b.slug == "manual").unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .book(&site, alpha, &[], manual)
             .unwrap();
@@ -616,7 +818,7 @@ mod tests {
             },
         )
         .unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .book_article(
                 &site,
@@ -665,7 +867,7 @@ mod tests {
             },
         )
         .unwrap();
-        let glossary_html = Renderer::new(&plain())
+        let glossary_html = Renderer::new(&plain(), &site)
             .unwrap()
             .book_article(
                 &site,
@@ -714,7 +916,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .article(
                 &site,
@@ -757,7 +959,7 @@ mod tests {
         let (_dir, site) = fixture_site();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
         let manual = alpha.books().find(|b| b.slug == "manual").unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .book(&site, alpha, &[], manual)
             .unwrap();
@@ -782,7 +984,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .article(
                 &site,
@@ -818,7 +1020,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .article(
                 &site,
@@ -850,7 +1052,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .article(
                 &site,
@@ -886,7 +1088,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .article(
                 &site,
@@ -919,7 +1121,7 @@ mod tests {
             crate::markdown::RenderOptions::default(),
         )
         .unwrap();
-        let html = Renderer::new(&plain())
+        let html = Renderer::new(&plain(), &site)
             .unwrap()
             .article(
                 &site,
@@ -941,7 +1143,7 @@ mod tests {
     #[test]
     fn pages_carry_the_search_modal_and_indexing_attributes() {
         let (_dir, site) = fixture_site();
-        let renderer = Renderer::new(&plain()).unwrap();
+        let renderer = Renderer::new(&plain(), &site).unwrap();
         let alpha = site.products.iter().find(|p| p.slug == "alpha").unwrap();
 
         // Every page gets the modal and the lazy search script.
@@ -1046,8 +1248,14 @@ mod tests {
     #[test]
     fn live_reload_script_is_dev_server_only() {
         let (_dir, site) = fixture_site();
-        let with = Renderer::new(&reloading()).unwrap().index(&site).unwrap();
-        let without = Renderer::new(&plain()).unwrap().index(&site).unwrap();
+        let with = Renderer::new(&reloading(), &site)
+            .unwrap()
+            .index(&site)
+            .unwrap();
+        let without = Renderer::new(&plain(), &site)
+            .unwrap()
+            .index(&site)
+            .unwrap();
 
         assert!(with.contains("EventSource(\"/~trail/reload\")"));
         assert!(!without.contains("EventSource"));

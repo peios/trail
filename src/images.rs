@@ -9,7 +9,7 @@ pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "web
 /// An image file discovered during site loading, co-located with the
 /// articles that use it: where it sits on disk, and the site-absolute URL
 /// it publishes at (its container's URL plus its own file name).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageAsset {
     pub source: PathBuf,
     pub url: String,
@@ -19,13 +19,15 @@ pub struct ImageAsset {
 /// article's relative `![](...)` destination resolves. Tracks which
 /// images were actually referenced, so the build copies those — and only
 /// those — into the output and can warn about the rest.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageIndex {
     by_source: HashMap<PathBuf, ImageInfo>,
     used: RefCell<HashSet<PathBuf>>,
+    recorded: RefCell<Vec<HashSet<PathBuf>>>,
+    cache_key: std::sync::OnceLock<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ImageInfo {
     /// Site-absolute URL of the published image.
     pub url: String,
@@ -62,6 +64,8 @@ impl ImageIndex {
         ImageIndex {
             by_source,
             used: RefCell::new(HashSet::new()),
+            recorded: RefCell::new(Vec::new()),
+            cache_key: Default::default(),
         }
     }
 
@@ -71,8 +75,38 @@ impl ImageIndex {
     pub fn resolve(&self, dir: &Path, reference: &str) -> Option<&ImageInfo> {
         let path = normalize(&dir.join(reference));
         let info = self.by_source.get(&path)?;
+        for capture in self.recorded.borrow_mut().iter_mut() {
+            capture.insert(path.clone());
+        }
         self.used.borrow_mut().insert(path);
         Some(info)
+    }
+
+    pub fn cache_key(&self) -> &str {
+        self.cache_key
+            .get_or_init(|| crate::cache::key_json(&self.by_source))
+    }
+
+    pub fn usage_start(&self) -> usize {
+        let mut captures = self.recorded.borrow_mut();
+        let start = captures.len();
+        captures.push(HashSet::new());
+        start
+    }
+
+    pub fn usage_since(&self, start: usize) -> Vec<PathBuf> {
+        let mut recorded = self.recorded.borrow_mut();
+        assert_eq!(recorded.len(), start + 1);
+        let mut paths: Vec<_> = recorded.pop().unwrap().into_iter().collect();
+        paths.sort();
+        paths
+    }
+
+    pub fn replay_usage(&self, paths: &[PathBuf]) {
+        self.used.borrow_mut().extend(paths.iter().cloned());
+        for capture in self.recorded.borrow_mut().iter_mut() {
+            capture.extend(paths.iter().cloned());
+        }
     }
 
     pub fn is_used(&self, asset: &ImageAsset) -> bool {

@@ -1,0 +1,28 @@
+name: Check
+
+on:
+    push:
+        branches-ignore: [main]
+    pull_request:
+    workflow_call:
+
+permissions:
+    contents: read
+
+jobs:
+    check:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.96.0"
+                  components: rustfmt, clippy
+            - uses: Swatinem/rust-cache@v2
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+                  cache: npm
+            - run: npm ci --ignore-scripts
+            - run: sudo apt-get update && sudo apt-get install -y groff shellcheck
+            - run: tools/check

@@ -3,6 +3,65 @@ use pagefind::api::PagefindIndex;
 
 use crate::build::Output;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedSearch {
+    files: Vec<(std::path::PathBuf, String)>,
+    entries: Vec<crate::cache::Entry>,
+}
+
+struct CompressionCache {
+    shared: crate::cache::Shared,
+    enabled: bool,
+}
+
+impl pagefind::api::CompressionCache for CompressionCache {
+    fn get(&self, source: &[u8]) -> Option<Vec<u8>> {
+        if !self.enabled {
+            return None;
+        }
+        self.shared
+            .scope(|| crate::cache::read_bytes("search-compressed", &crate::memo::key(&[source])))
+    }
+    fn put(&self, source: &[u8], encoded: &[u8]) {
+        if self.enabled {
+            self.shared.scope(|| {
+                crate::cache::write_bytes(
+                    "search-compressed",
+                    &crate::memo::key(&[source]),
+                    encoded,
+                )
+            });
+        }
+    }
+}
+
+// Search uses default Pagefind options; executable identity namespaces the
+// parser version, options and serialization schema along with all other caches.
+impl pagefind::api::ParseCache for CompressionCache {
+    fn get(&self, url: &str, html: &str) -> Option<Vec<u8>> {
+        if !self.enabled {
+            return None;
+        }
+        self.shared.scope(|| {
+            crate::cache::read_bytes(
+                "search-parsed",
+                &crate::memo::key(&[url.as_bytes(), html.as_bytes()]),
+            )
+        })
+    }
+    fn put(&self, url: &str, html: &str, parsed: &[u8]) {
+        if self.enabled {
+            self.shared.scope(|| {
+                crate::cache::write_bytes(
+                    "search-parsed",
+                    &crate::memo::key(&[url.as_bytes(), html.as_bytes()]),
+                    parsed,
+                )
+            });
+        }
+    }
+}
+
 /// A rendered page queued for search indexing: its canonical URL (with a
 /// trailing slash, as the server redirects to) and its full HTML. What of
 /// the page actually lands in the index is controlled by data-pagefind-*
@@ -23,26 +82,281 @@ pub struct SearchPage {
 /// `build_site` is never called from inside a tokio runtime (the dev
 /// server enters async only after building), so blocking here is safe.
 pub fn write_search_bundle(pages: Vec<SearchPage>, out: &Output) -> Result<()> {
+    let mut input = blake3::Hasher::new();
+    for page in &pages {
+        for field in [page.url.as_bytes(), page.html.as_bytes()] {
+            input.update(&(field.len() as u64).to_le_bytes());
+            input.update(field);
+        }
+    }
+    let key = input.finalize().to_hex().to_string();
+    let cached = crate::cache::get::<CachedSearch>("search", &key).and_then(|manifest| {
+        crate::cache::retain(&manifest.entries);
+        manifest
+            .files
+            .into_iter()
+            .map(|(path, hash)| {
+                if path.is_absolute()
+                    || path
+                        .components()
+                        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                {
+                    return None;
+                }
+                Some((path, crate::cache::read_bytes("search-files", &hash)?))
+            })
+            .collect::<Option<Vec<_>>>()
+    });
+    if let Some(files) = cached {
+        for (path, bytes) in files {
+            out.write(&out.dir().join("pagefind").join(path), &bytes)?;
+        }
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("starting the search indexing runtime")?;
+    let entries = crate::cache::capture();
+    let compression = CompressionCache {
+        shared: crate::cache::share(),
+        enabled: crate::cache::persistent(),
+    };
     let files = runtime.block_on(async move {
         let mut index = PagefindIndex::new(None).context("configuring the search index")?;
-        for page in pages {
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8);
+        let pages = pages
+            .into_iter()
+            .map(|page| (page.url, page.html))
+            .collect();
+        if compression.enabled {
             index
-                .add_html_file(None, Some(page.url.clone()), page.html)
+                .add_html_files_cached(pages, workers, &compression)
                 .await
-                .with_context(|| format!("indexing page '{}' for search", page.url))?;
+        } else {
+            index.add_html_files(pages, workers).await
         }
+        .context("indexing pages for search")?;
         index
-            .get_files()
+            .get_files_cached(&compression, workers)
             .await
             .context("building the search bundle")
     })?;
+    let entries = entries.finish();
     let bundle_dir = out.dir().join("pagefind");
+    let mut manifest = Vec::new();
     for file in files {
+        let hash = crate::memo::key(&[&file.contents]);
+        crate::cache::write_bytes("search-files", &hash, &file.contents);
+        manifest.push((file.filename.clone(), hash));
         out.write(&bundle_dir.join(&file.filename), &file.contents)?;
     }
+    crate::cache::put(
+        "search",
+        &key,
+        &CachedSearch {
+            files: manifest,
+            entries,
+        },
+    );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn pages() -> Vec<(String, String)> {
+        (0..12).map(|i| (format!("/copy/docs/page-{i}/"), format!(
+            "<html lang=\"en\"><head><title>Page {i}</title></head><body><nav data-pagefind-ignore>Ignored</nav><article data-pagefind-body><h1>Title {i}</h1><p>Common words, unique word{i}, &amp; Unicode café.</p></article></body></html>"
+        ))).collect()
+    }
+
+    #[test]
+    fn parsed_pages_survive_edits_renames_and_corruption() {
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+        #[derive(Default)]
+        struct Parsed {
+            bytes: Mutex<BTreeMap<(String, String), Vec<u8>>>,
+            writes: AtomicUsize,
+        }
+        impl pagefind::api::ParseCache for Parsed {
+            fn get(&self, url: &str, html: &str) -> Option<Vec<u8>> {
+                self.bytes
+                    .lock()
+                    .unwrap()
+                    .get(&(url.into(), html.into()))
+                    .cloned()
+            }
+            fn put(&self, url: &str, html: &str, bytes: &[u8]) {
+                self.writes.fetch_add(1, Ordering::Relaxed);
+                self.bytes
+                    .lock()
+                    .unwrap()
+                    .insert((url.into(), html.into()), bytes.to_vec());
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cache = Parsed::default();
+            let mut input = pages();
+            input.push(("/fr/".into(), "<html lang=\"fr\"><body><h1>Bonjour</h1><p data-pagefind-filter=\"kind\">Autre</p></body></html>".into()));
+            for step in 0..6 {
+                let before = cache.writes.load(Ordering::Relaxed);
+                if step == 2 { input[0].1 = input[0].1.replace("Common words", "Changed words"); }
+                if step == 3 { input.remove(1); input[1].0 = "/renamed/".into(); }
+                if step == 4 { cache.bytes.lock().unwrap().values_mut().for_each(|v| *v = b"corrupt".to_vec()); }
+                if step == 5 { input.reverse(); }
+                let mut cached = PagefindIndex::new(None).unwrap();
+                cached.add_html_files_cached(input.clone(), 4, &cache).await.unwrap();
+                let actual: BTreeMap<_, _> = cached.get_files().await.unwrap().into_iter().map(|f| (f.filename, f.contents)).collect();
+                let mut clean = PagefindIndex::new(None).unwrap();
+                for (url, html) in &input { clean.add_html_file(None, Some(url.clone()), html.clone()).await.unwrap(); }
+                let expected: BTreeMap<_, _> = clean.get_files().await.unwrap().into_iter().map(|f| (f.filename, f.contents)).collect();
+                assert_eq!(actual, expected, "step {step}");
+                let writes = cache.writes.load(Ordering::Relaxed) - before;
+                assert_eq!(writes, match step { 0 | 4 => input.len(), 2 | 3 => 1, _ => 0 });
+            }
+            let mut invalid = PagefindIndex::new(None).unwrap();
+            assert!(invalid.add_html_files_cached(vec![input[0].clone(), input[0].clone()], 1, &cache).await.is_err());
+            assert!(invalid.add_html_files_cached(input.clone(), 0, &cache).await.is_err());
+        });
+    }
+
+    #[test]
+    fn parallel_batches_match_single_page_index_bytes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut serial = PagefindIndex::new(None).unwrap();
+            for (url, html) in pages() {
+                serial.add_html_file(None, Some(url), html).await.unwrap();
+            }
+            let expected: BTreeMap<_, _> = serial
+                .get_files()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|f| (f.filename, f.contents))
+                .collect();
+            for workers in [1, 4] {
+                let mut batch = PagefindIndex::new(None).unwrap();
+                batch.add_html_files(pages(), workers).await.unwrap();
+                let actual: BTreeMap<_, _> = batch
+                    .get_files()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|f| (f.filename, f.contents))
+                    .collect();
+                assert_eq!(actual, expected);
+            }
+        });
+    }
+
+    #[test]
+    fn cached_parallel_compression_matches_original_after_edits() {
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+        #[derive(Default)]
+        struct MemoryCache {
+            values: Mutex<BTreeMap<Vec<u8>, Vec<u8>>>,
+            hits: AtomicUsize,
+        }
+        impl pagefind::api::CompressionCache for MemoryCache {
+            fn get(&self, source: &[u8]) -> Option<Vec<u8>> {
+                let value = self.values.lock().unwrap().get(source).cloned();
+                if value.is_some() {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                }
+                value
+            }
+            fn put(&self, source: &[u8], encoded: &[u8]) {
+                self.values
+                    .lock()
+                    .unwrap()
+                    .insert(source.to_vec(), encoded.to_vec());
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cache = MemoryCache::default();
+            let mut input = pages();
+            input.push((
+                "/fr/".into(),
+                "<html lang=\"fr\"><body><h1>Bonjour</h1><p>Une autre langue.</p></body></html>"
+                    .into(),
+            ));
+            for step in 0..4 {
+                if step == 2 {
+                    input[0].1 = input[0].1.replace("Common words", "Changed words");
+                }
+                if step == 3 {
+                    input.remove(1);
+                    input.push((
+                        "/added/".into(),
+                        "<html lang=\"en\"><body><h1>Added page</h1></body></html>".into(),
+                    ));
+                }
+                let mut index = PagefindIndex::new(None).unwrap();
+                index.add_html_files(input.clone(), 4).await.unwrap();
+                let expected: BTreeMap<_, _> = index
+                    .get_files()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|f| (f.filename, f.contents))
+                    .collect();
+                let hits = cache.hits.load(Ordering::Relaxed);
+                let actual: BTreeMap<_, _> = index
+                    .get_files_cached(&cache, 4)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|f| (f.filename, f.contents))
+                    .collect();
+                assert_eq!(actual, expected, "step {step}");
+                if step > 0 {
+                    assert!(cache.hits.load(Ordering::Relaxed) > hits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn invalid_batches_do_not_populate_the_index() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut index = PagefindIndex::new(None).unwrap();
+            let page = pages().remove(0);
+            assert!(
+                index
+                    .add_html_files(vec![page.clone(), page.clone()], 2)
+                    .await
+                    .is_err()
+            );
+            assert!(index.add_html_files(vec![page.clone()], 0).await.is_err());
+            index.add_html_files(vec![page.clone()], 2).await.unwrap();
+            assert!(index.add_html_files(vec![page], 2).await.is_err());
+        });
+    }
 }

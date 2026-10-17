@@ -1,0 +1,516 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,6 +1,6 @@
+ use std::{cmp::Ordering, path::PathBuf};
+ 
+-use anyhow::{bail, Result};
++use anyhow::{Result, bail};
+ use either::Either;
+ use fossick::{FossickedData, Fossicker};
+ use futures::future::join_all;
+@@ -10,8 +10,8 @@
+ use output::SyntheticFile;
+ use rayon::prelude::*;
+ pub use service::api;
++use wax::Glob;
+ use wax::walk::Entry;
+-use wax::Glob;
+ 
+ use crate::index::build_indexes;
+ 
+@@ -113,6 +113,70 @@
+         Ok(self.fossicked_pages.len() - existing_page_count)
+     }
+ 
++    /// Parse a fresh in-memory batch in input order with a bounded worker pool.
++    pub fn fossick_batch(&mut self, files: Vec<(String, Fossicker)>, threads: usize) -> Result<()> {
++        anyhow::ensure!(
++            self.fossicked_pages.is_empty(),
++            "batch requires an empty index"
++        );
++        anyhow::ensure!(threads > 0, "batch requires at least one worker");
++        let pool = rayon::ThreadPoolBuilder::new()
++            .num_threads(threads)
++            .build()?;
++        let results: Vec<Result<FossickedData>> = pool.install(|| {
++            files
++                .into_par_iter()
++                .map(|(url, file)| {
++                    file.fossick_sync(&self.options)
++                        .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))
++                })
++                .collect()
++        });
++        // Commit only a completely successful batch. Iterating the ordered
++        // results also makes the first reported failure deterministic.
++        self.fossicked_pages = results.into_iter().collect::<Result<Vec<_>>>()?;
++        Ok(())
++    }
++
++    pub fn fossick_cached_batch(
++        &mut self,
++        pages: Vec<(String, String)>,
++        threads: usize,
++        cache: &dyn api::ParseCache,
++    ) -> Result<()> {
++        anyhow::ensure!(
++            self.fossicked_pages.is_empty(),
++            "batch requires an empty index"
++        );
++        anyhow::ensure!(threads > 0, "batch requires at least one worker");
++        let pool = rayon::ThreadPoolBuilder::new()
++            .num_threads(threads)
++            .build()?;
++        let results: Vec<Result<FossickedData>> = pool.install(|| {
++            pages
++                .into_par_iter()
++                .map(|(url, html)| {
++                    if let Some(bytes) = cache.get(&url, &html) {
++                        if let Ok(data) = serde_json::from_slice::<FossickedData>(&bytes) {
++                            if data.url == url && data.fragment.data.url == url {
++                                return Ok(data);
++                            }
++                        }
++                    }
++                    let data = Fossicker::new_synthetic(None, Some(url.clone()), html.clone())
++                        .fossick_sync(&self.options)
++                        .map_err(|error| anyhow::anyhow!("indexing '{url}': {error:#}"))?;
++                    if let Ok(bytes) = serde_json::to_vec(&data) {
++                        cache.put(&url, &html, &bytes);
++                    }
++                    Ok(data)
++                })
++                .collect()
++        });
++        self.fossicked_pages = results.into_iter().collect::<Result<Vec<_>>>()?;
++        Ok(())
++    }
++
+     pub fn fossick_one(&mut self, file: Fossicker) -> Result<FossickedData> {
+         let result = file.fossick_sync(&self.options);
+         if let Some(result) = result.as_ref().ok() {
+@@ -377,6 +441,42 @@
+         files
+     }
+ 
++    pub async fn get_files_cached(
++        &self,
++        cache: &dyn output::CompressionCache,
++        workers: usize,
++    ) -> Result<Vec<SyntheticFile>> {
++        anyhow::ensure!(workers > 0, "compression requires at least one worker");
++        let pool = rayon::ThreadPoolBuilder::new()
++            .num_threads(workers)
++            .build()?;
++        let outdir = &self.options.bundle_output;
++        let entries = self
++            .built_indexes
++            .iter()
++            .map(|index| index.get_lang_meta(&self.options))
++            .collect();
++        let mut files = Vec::new();
++        for index in &self.built_indexes {
++            files.extend(index.cached_files(&self.options, outdir, cache, &pool)?);
++        }
++        files.extend(
++            output::write_common_to_memory(
++                entries,
++                self.options.write_playground,
++                outdir,
++                &self.options,
++            )
++            .await,
++        );
++        for file in &mut files {
++            if let Ok(path) = file.filename.strip_prefix(outdir) {
++                file.filename = path.to_path_buf();
++            }
++        }
++        Ok(files)
++    }
++
+     pub fn log_start(&self) {
+         let log = &self.options.logger;
+ 
+--- a/src/service/api.rs
++++ b/src/service/api.rs
+@@ -33,15 +33,23 @@
+ //! }
+ //! ```
+ 
++pub use crate::output::CompressionCache;
+ pub use crate::output::SyntheticFile;
+-use anyhow::{bail, Result};
++
++/// Opaque parsed-page storage. Implementations must namespace entries by
++/// Pagefind version and indexing options, and check stored byte integrity.
++pub trait ParseCache: Sync {
++    fn get(&self, url: &str, html: &str) -> Option<Vec<u8>>;
++    fn put(&self, url: &str, html: &str, parsed: &[u8]);
++}
++use anyhow::{Result, bail};
+ use rust_patch::Patch;
+ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+ 
+ use crate::{
+-    fossick::{parser::DomParserResult, Fossicker},
++    PagefindInboundConfig, SearchOptions, SearchState,
++    fossick::{Fossicker, parser::DomParserResult},
+     options::PagefindServiceConfig,
+-    PagefindInboundConfig, SearchOptions, SearchState,
+ };
+ 
+ #[derive(Debug)]
+@@ -76,6 +84,51 @@
+         Ok(Self {
+             search_index: Arc::new(tokio::sync::Mutex::new(SearchState::new(options))),
+         })
++    }
++
++    /// Index unique explicit URLs into an empty index using a bounded pool.
++    /// Input order, URL spelling and errors are preserved. Unlike directory
++    /// ingestion this cannot include stale files or silently omit failures.
++    pub async fn add_html_files(
++        &mut self,
++        pages: Vec<(String, String)>,
++        threads: usize,
++    ) -> Result<()> {
++        let mut seen = std::collections::HashSet::new();
++        for (url, _) in &pages {
++            anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
++        }
++        let files = pages
++            .into_iter()
++            .map(|(url, content)| {
++                (
++                    url.clone(),
++                    Fossicker::new_synthetic(None, Some(url), content),
++                )
++            })
++            .collect();
++        let state = Arc::clone(&self.search_index);
++        tokio::task::spawn_blocking(move || state.blocking_lock().fossick_batch(files, threads))
++            .await
++            .map_err(|e| anyhow::anyhow!("Task join error: {e}"))?
++    }
++
++    /// As add_html_files, reusing successful per-page parsing before the
++    /// unchanged global index assembly. Results retain input order.
++    pub async fn add_html_files_cached(
++        &mut self,
++        pages: Vec<(String, String)>,
++        threads: usize,
++        cache: &dyn ParseCache,
++    ) -> Result<()> {
++        let mut seen = std::collections::HashSet::new();
++        for (url, _) in &pages {
++            anyhow::ensure!(seen.insert(url), "duplicate URL in search batch: {url}");
++        }
++        self.search_index
++            .lock()
++            .await
++            .fossick_cached_batch(pages, threads, cache)
+     }
+ 
+     /// Add an HTML file that isn't on disk into this search index.
+@@ -100,11 +153,9 @@
+ 
+         let file = Fossicker::new_synthetic(source_path.map(PathBuf::from), url, content);
+         let state = Arc::clone(&self.search_index);
+-        let data = tokio::task::spawn_blocking(move || {
+-            state.blocking_lock().fossick_one(file)
+-        })
+-        .await
+-        .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
++        let data = tokio::task::spawn_blocking(move || state.blocking_lock().fossick_one(file))
++            .await
++            .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
+ 
+         Ok(IndexedFileResponse {
+             page_word_count: data.fragment.data.word_count as u32,
+@@ -156,11 +207,9 @@
+         };
+         let file = Fossicker::new_with_data(url, data);
+         let state = Arc::clone(&self.search_index);
+-        let data = tokio::task::spawn_blocking(move || {
+-            state.blocking_lock().fossick_one(file)
+-        })
+-        .await
+-        .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
++        let data = tokio::task::spawn_blocking(move || state.blocking_lock().fossick_one(file))
++            .await
++            .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
+ 
+         Ok(IndexedFileResponse {
+             page_word_count: data.fragment.data.word_count as u32,
+@@ -184,7 +233,9 @@
+ 
+         let state = Arc::clone(&self.search_index);
+         let page_count = tokio::task::spawn_blocking(move || {
+-            state.blocking_lock().fossick_many(PathBuf::from(path), glob)
++            state
++                .blocking_lock()
++                .fossick_many(PathBuf::from(path), glob)
+         })
+         .await
+         .map_err(|e| anyhow::anyhow!("Task join error: {e}"))??;
+@@ -221,6 +272,17 @@
+         let mut state = self.search_index.lock().await;
+         state.build_indexes().await?;
+         Ok(state.get_files().await)
++    }
++
++    /// Reuse encoded fragments/chunks without changing the global index layout.
++    pub async fn get_files_cached(
++        &mut self,
++        cache: &dyn CompressionCache,
++        workers: usize,
++    ) -> Result<Vec<SyntheticFile>> {
++        let mut state = self.search_index.lock().await;
++        state.build_indexes().await?;
++        state.get_files_cached(cache, workers).await
+     }
+ }
+ 
+@@ -256,14 +318,20 @@
+         assert!(filenames.contains(&PathBuf::from("pagefind-ui.css")));
+         assert!(filenames.contains(&PathBuf::from("wasm.en.pagefind")));
+         assert!(filenames.contains(&PathBuf::from("pagefind-entry.json")));
+-        assert!(filenames
+-            .iter()
+-            .any(|f| f.to_string_lossy().ends_with(".pf_meta")));
+-        assert!(filenames
+-            .iter()
+-            .any(|f| f.to_string_lossy().ends_with(".pf_fragment")));
+-        assert!(filenames
+-            .iter()
+-            .any(|f| f.to_string_lossy().ends_with(".pf_index")));
+-    }
+-}
++        assert!(
++            filenames
++                .iter()
++                .any(|f| f.to_string_lossy().ends_with(".pf_meta"))
++        );
++        assert!(
++            filenames
++                .iter()
++                .any(|f| f.to_string_lossy().ends_with(".pf_fragment"))
++        );
++        assert!(
++            filenames
++                .iter()
++                .any(|f| f.to_string_lossy().ends_with(".pf_index"))
++        );
++    }
++}
+--- a/src/output/mod.rs
++++ b/src/output/mod.rs
+@@ -3,18 +3,25 @@
+ use std::time::Duration;
+ 
+ use crate::index::PagefindIndexes;
+-use crate::{SearchOptions, PAGEFIND_VERSION};
++use crate::{PAGEFIND_VERSION, SearchOptions};
++use flate2::Compression; //   // require that crate for the input compression anyway.
+ use flate2::write::GzEncoder; // TODO: Replace flate2 with async-compression since we
+-use flate2::Compression; //   // require that crate for the input compression anyway.
+ use futures::future::join_all;
+ use hashbrown::HashMap;
+-use include_dir::{include_dir, Dir};
++use include_dir::{Dir, include_dir};
+ use minifier::js::minify;
+-use tokio::fs::{create_dir_all, File};
++use tokio::fs::{File, create_dir_all};
+ use tokio::io::AsyncWriteExt;
+ use tokio::time::sleep;
+ 
+ mod entry;
++
++/// Caller-owned, versioned cache of the exact GZip encoding of a byte slice.
++/// Reads must verify integrity; failed reads/writes are ordinary cache misses.
++pub trait CompressionCache: Send + Sync {
++    fn get(&self, source: &[u8]) -> Option<Vec<u8>>;
++    fn put(&self, source: &[u8], encoded: &[u8]);
++}
+ 
+ const GENERIC_WEB_WASM: &[u8] = include_bytes!(concat!(
+     env!("CARGO_MANIFEST_DIR"),
+@@ -257,6 +264,77 @@
+ }
+ 
+ impl PagefindIndexes {
++    /// Preserve the normal encoder's bytes while reusing immutable fragments
++    /// and compressing misses on a caller-bounded pool.
++    pub fn cached_files(
++        &self,
++        options: &SearchOptions,
++        outdir: &PathBuf,
++        cache: &dyn CompressionCache,
++        pool: &rayon::ThreadPool,
++    ) -> anyhow::Result<Vec<SyntheticFile>> {
++        use rayon::prelude::*;
++        let mut inputs = vec![(
++            outdir.join(format!("pagefind.{}.pf_meta", self.meta_index.0)),
++            self.meta_index.1.as_slice(),
++        )];
++        inputs.extend(self.fragments.iter().map(|(hash, data)| {
++            (
++                outdir.join(format!("fragment/{hash}.pf_fragment")),
++                data.as_bytes(),
++            )
++        }));
++        inputs.extend(self.word_indexes.iter().map(|(hash, data)| {
++            (
++                outdir.join(format!("index/{hash}.pf_index")),
++                data.as_slice(),
++            )
++        }));
++        inputs.extend(self.filter_indexes.iter().map(|(hash, data)| {
++            (
++                outdir.join(format!("filter/{hash}.pf_filter")),
++                data.as_slice(),
++            )
++        }));
++        let mut files = pool.install(|| {
++            inputs
++                .into_par_iter()
++                .map(|(filename, source)| {
++                    let contents = if let Some(bytes) = cache.get(source) {
++                        bytes
++                    } else {
++                        let mut gz = GzEncoder::new(Vec::new(), Compression::best());
++                        gz.write_all(b"pagefind_dcd")?;
++                        gz.write_all(source)?;
++                        let bytes = gz.finish()?;
++                        cache.put(source, &bytes);
++                        bytes
++                    };
++                    Ok(SyntheticFile { filename, contents })
++                })
++                .collect::<std::io::Result<Vec<_>>>()
++        })?;
++        if self.language != "unknown" {
++            if let Some(wasm_path) = self.lang_wasm_path() {
++                files.push(SyntheticFile {
++                    filename: outdir.join(format!("wasm.{}.pagefind", self.language)),
++                    contents: WEB_WASM_FILES
++                        .get_file(wasm_path)
++                        .expect("WASM should exist")
++                        .contents()
++                        .to_vec(),
++                });
++            } else {
++                options.logger.v_warn(format!(
++                    "Note: Pagefind doesn't support stemming for the language {}. \n\
++                    Search will still work, but will not match across root words.",
++                    self.language
++                ));
++            }
++        }
++        Ok(files)
++    }
++
+     fn lang_wasm_path(&self) -> Option<String> {
+         let base_language = self.language.split('-').next().unwrap();
+         let wasm_path = format!(
+@@ -330,10 +408,12 @@
+             if let Some(wasm_path) = self.lang_wasm_path() {
+                 files.push(write(
+                     outdir.join(format!("wasm.{}.pagefind", self.language)),
+-                    vec![WEB_WASM_FILES
+-                        .get_file(wasm_path)
+-                        .expect("WASM should exist")
+-                        .contents()],
++                    vec![
++                        WEB_WASM_FILES
++                            .get_file(wasm_path)
++                            .expect("WASM should exist")
++                            .contents(),
++                    ],
+                     Compress::None,
+                     if synthetic {
+                         WriteBehavior::Synthetic
+--- a/src/fossick/mod.rs
++++ b/src/fossick/mod.rs
+@@ -1,4 +1,4 @@
+-use anyhow::{bail, Result};
++use anyhow::{Result, bail};
+ #[cfg(feature = "extended")]
+ use charabia::Segment;
+ use either::Either;
+@@ -15,9 +15,9 @@
+ use std::ops::Mul;
+ use std::path::{Path, PathBuf};
+ 
++use crate::SearchOptions;
+ use crate::fossick::splitting::get_indexable_words;
+ use crate::fragments::{PageAnchorData, PageFragment, PageFragmentData};
+-use crate::SearchOptions;
+ use parser::DomParser;
+ 
+ use self::parser::DomParserResult;
+@@ -32,7 +32,7 @@
+ pub mod parser;
+ mod splitting;
+ 
+-#[derive(Debug, Clone, PartialEq)]
++#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+ pub struct FossickedWord {
+     pub position: u32,
+     pub weight: u8,
+@@ -40,7 +40,7 @@
+     pub original_word: Option<String>,
+ }
+ 
+-#[derive(Debug, Clone, PartialEq)]
++#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+ pub struct MetaFossickedWord {
+     pub field_id: u16,
+     pub position: u32,
+@@ -48,7 +48,7 @@
+     pub original_word: Option<String>,
+ }
+ 
+-#[derive(Debug, Clone)]
++#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub struct FossickedData {
+     pub url: String,
+     pub fragment: PageFragment,
+@@ -592,7 +592,6 @@
+ 
+         map
+     }
+-
+ }
+ 
+ fn strip_index_html(url: &str) -> &str {
+--- a/src/fragments/mod.rs
++++ b/src/fragments/mod.rs
+@@ -2,7 +2,7 @@
+ 
+ use serde::Serialize;
+ 
+-#[derive(Serialize, Debug, Clone)]
++#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+ pub struct PageAnchorData {
+     pub element: String,
+     pub id: String,
+@@ -10,7 +10,7 @@
+     pub location: u32,
+ }
+ 
+-#[derive(Serialize, Debug, Clone)]
++#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+ pub struct PageFragmentData {
+     pub url: String,
+     pub content: String,
+@@ -20,7 +20,7 @@
+     pub anchors: Vec<PageAnchorData>,
+ }
+ 
+-#[derive(Debug, Clone)]
++#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub struct PageFragment {
+     pub page_number: usize,
+     pub data: PageFragmentData,

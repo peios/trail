@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -61,10 +62,11 @@ const MERMAID_FILES: &[(&str, &[u8])] = &[
 struct PageSink {
     search: Vec<SearchPage>,
     broken: Vec<String>,
+    rendered: std::collections::HashMap<String, Result<markdown::Rendered>>,
 }
 
 /// How a build behaves, beyond the site itself.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct BuildOptions {
     /// Inject the dev-server auto-reload script into every page;
     /// plain `trail build` output never carries it.
@@ -105,12 +107,14 @@ pub fn build_all(site: &Site, out: &Path, options: &BuildOptions) -> Result<usiz
     if let Some(cbpath) = &options.cachebust {
         validate_cbpath(cbpath, site)?;
     }
-    let pages = build_site(site, out, options)?;
+    let prepared = Prepared::new(site)?;
+    let pages = build_prepared(site, out, options, &prepared)?;
     if let Some(cbpath) = &options.cachebust {
-        build_site(
+        build_prepared(
             site,
             &out.join(cbpath),
             &options.cachebust_copy(cbpath),
+            &prepared,
         )?;
     }
     Ok(pages)
@@ -152,12 +156,16 @@ fn validate_cbpath(cbpath: &str, site: &Site) -> Result<()> {
         taken.push(format!("{}.md", product.slug));
     }
     taken.extend(
-        [&site.config.custom_css, &site.config.favicon, &site.config.head_html]
-            .into_iter()
-            .flatten()
-            .chain(&site.config.passthrough)
-            .filter_map(|path| Path::new(path).components().next())
-            .map(|component| component.as_os_str().to_string_lossy().into_owned()),
+        [
+            &site.config.custom_css,
+            &site.config.favicon,
+            &site.config.head_html,
+        ]
+        .into_iter()
+        .flatten()
+        .chain(site.trees.iter().flat_map(|tree| &tree.passthrough))
+        .filter_map(|path| Path::new(path).components().next())
+        .map(|component| component.as_os_str().to_string_lossy().into_owned()),
     );
     ensure!(
         !taken.iter().any(|name| name == cbpath),
@@ -168,6 +176,7 @@ fn validate_cbpath(cbpath: &str, site: &Site) -> Result<()> {
 }
 
 pub fn run(args: &BuildArgs) -> Result<()> {
+    let cache = crate::cache::Session::new(&args.root, !args.no_cache);
     let out = args.out_dir();
     let site = Site::load(&args.root, &out)?;
     let options = BuildOptions {
@@ -179,6 +188,7 @@ pub fn run(args: &BuildArgs) -> Result<()> {
         cachebust: args.cbpath.clone(),
     };
     let pages = build_all(&site, &out, &options)?;
+    cache.finish();
     let products = site.products.len();
     println!(
         "built {} page{} ({} product{}) → {}",
@@ -195,12 +205,138 @@ pub fn run(args: &BuildArgs) -> Result<()> {
 }
 
 /// Build the whole site into `out`, returning the number of pages written.
+#[cfg(test)]
 pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usize> {
+    build_prepared(site, out, options, &Prepared::new(site)?)
+}
+
+struct Prepared {
+    links: LinkIndex,
+    images: ImageIndex,
+    refs: InlineRefIndex,
+}
+
+impl Prepared {
+    fn new(site: &Site) -> Result<Self> {
+        Ok(Self {
+            links: LinkIndex::new(site),
+            images: ImageIndex::new(&site.images),
+            refs: InlineRefIndex::new(site)?,
+        })
+    }
+}
+
+/// Render independent article bodies on at most four workers. Each worker
+/// owns dependency captures and parser/highlighter memory; the publishing pass
+/// consumes results in tree order, including errors and advisory diagnostics.
+fn render_articles_parallel(
+    site: &Site,
+    prepared: &Prepared,
+    options: &BuildOptions,
+) -> std::collections::HashMap<String, Result<markdown::Rendered>> {
+    let articles = site.articles();
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(4);
+    if articles.len() < 64 || workers == 1 {
+        return Default::default();
+    }
+    fn anthology_books<'a>(anthology: &'a Anthology, books: &mut Vec<&'a Book>) {
+        for item in anthology.items() {
+            match item {
+                AnthologyItem::Book { book } => books.push(book),
+                AnthologyItem::Anthology { anthology } => anthology_books(anthology, books),
+                _ => {}
+            }
+        }
+    }
+    let mut all_books = Vec::new();
+    for product in &site.products {
+        for item in product.items() {
+            match item {
+                ProductItem::Book { book } => all_books.push(book),
+                ProductItem::Anthology { anthology } => anthology_books(anthology, &mut all_books),
+                _ => {}
+            }
+        }
+    }
+    let books: std::collections::HashMap<_, _> = all_books
+        .into_iter()
+        .flat_map(|book| {
+            book.articles()
+                .into_iter()
+                .map(move |(_, a)| (a.path.as_str(), book))
+        })
+        .collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let shared = crate::cache::share();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..workers {
+            let links = prepared.links.clone();
+            let refs = prepared.refs.clone();
+            let images = prepared.images.clone();
+            let (articles, books, next, shared) = (&articles, &books, &next, &shared);
+            handles.push(scope.spawn(move || {
+                shared.scope(|| {
+                    let start = images.usage_start();
+                    let mut rendered = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(article) = articles.get(at) else {
+                            break;
+                        };
+                        let book = books.get(article.path.as_str());
+                        let result = markdown::render(
+                            &article.body,
+                            &links,
+                            markdown::RenderOptions {
+                                allow_dangling: options.allow_dangling_links,
+                                strict: options.strict,
+                                numbering: article.number.as_deref(),
+                                images: Some(ImageScope {
+                                    index: &images,
+                                    dir: &article.source_dir,
+                                }),
+                                refs: Some(markdown::RefScope {
+                                    index: &refs,
+                                    page: &article.path,
+                                    book: book.map(|b| b.path.as_str()),
+                                    book_short: book.and_then(|b| b.short.as_deref()),
+                                }),
+                                base: &options.base,
+                                ..Default::default()
+                            },
+                        );
+                        rendered.push((article.path.clone(), result));
+                    }
+                    (rendered, images.usage_since(start))
+                })
+            }));
+        }
+        let mut results = std::collections::HashMap::new();
+        for handle in handles {
+            let (rendered, images) = handle.join().expect("article renderer panicked");
+            prepared.images.replay_usage(&images);
+            results.extend(rendered);
+        }
+        results
+    })
+}
+
+fn build_prepared(
+    site: &Site,
+    out: &Path,
+    options: &BuildOptions,
+    prepared: &Prepared,
+) -> Result<usize> {
     let out = &Output::new(out);
-    let renderer = Renderer::new(options)?;
-    let links = LinkIndex::new(site);
-    let images = ImageIndex::new(&site.images);
-    let refs = InlineRefIndex::new(site)?;
+    let renderer = Renderer::new(options, site)?;
+    let Prepared {
+        links,
+        images,
+        refs,
+    } = prepared;
     out.write(
         &out.dir().join("index.html"),
         renderer.index(site)?.as_bytes(),
@@ -230,7 +366,10 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
     let mut uses_mermaid = false;
     // Every page except the front page is fed to the search indexer; the
     // data-pagefind-* attributes in the templates decide what text counts.
-    let mut sink = PageSink::default();
+    let mut sink = PageSink {
+        rendered: render_articles_parallel(site, prepared, options),
+        ..PageSink::default()
+    };
     for product in &site.products {
         let html = renderer.product(site, product)?;
         write_page(&mut sink, out, options, &product.path, html)?;
@@ -240,9 +379,9 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
                 ProductItem::Anthology { anthology } => {
                     let (count, mermaid) = write_anthology(
                         &renderer,
-                        &links,
-                        &images,
-                        &refs,
+                        links,
+                        images,
+                        refs,
                         options,
                         site,
                         product,
@@ -257,9 +396,9 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
                 ProductItem::Topic { topic } => {
                     let (count, mermaid) = write_articles(
                         &renderer,
-                        &links,
-                        &images,
-                        &refs,
+                        links,
+                        images,
+                        refs,
                         options,
                         site,
                         product,
@@ -274,9 +413,9 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
                 ProductItem::Book { book } => {
                     let (count, mermaid) = write_book(
                         &renderer,
-                        &links,
-                        &images,
-                        &refs,
+                        links,
+                        images,
+                        refs,
                         options,
                         site,
                         product,
@@ -301,7 +440,7 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
     }
     // The AI-facing surface: markdown mirrors, /print bundles, llms.txt,
     // site.json, sitemap, robots. Print pages are pages; the rest are not.
-    pages += export::write_ai_surface(site, &links, &images, &refs, &renderer, out, options)?;
+    pages += export::write_ai_surface(site, links, images, refs, &renderer, out, options)?;
     // Referenced images ship at their published URLs; an image nothing
     // references stays out of the output — a warning, not an error, so a
     // file added ahead of its article doesn't block the build.
@@ -314,10 +453,10 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
                 &contents,
             )?;
         } else {
-            eprintln!(
-                "warning: image '{}' is not referenced by any article and was not published",
+            crate::diagnostic::warning(format!(
+                "{}: unused image was not published",
                 asset.source.display()
-            );
+            ));
         }
     }
     search::write_search_bundle(sink.search, out)?;
@@ -346,12 +485,23 @@ pub fn build_site(site: &Site, out: &Path, options: &BuildOptions) -> Result<usi
         }
     }
     // Last, so a passthrough named after something trail generates
-    // replaces it rather than being quietly overwritten by it.
-    for entry in &site.config.passthrough {
-        copy_passthrough(&site.root.join(entry), &out.dir().join(entry), out)
-            .with_context(|| format!("copying passthrough '{entry}'"))?;
+    // replaces it rather than being quietly overwritten by it. Merged
+    // trees go in reverse and the site root last, so where two trees pass
+    // the same path through, the root's copy wins, then the first listed.
+    for tree in site.trees.iter().rev() {
+        for entry in &tree.passthrough {
+            copy_passthrough(&tree.root.join(entry), &out.dir().join(entry), out)
+                .with_context(|| format!("copying passthrough '{entry}'"))?;
+        }
     }
-    out.prune()?;
+    // The copy has its own tracked writer and pruning pass. Preserve it
+    // until then so unchanged copy files keep their bytes and mtimes.
+    let copy = options
+        .cachebust
+        .as_ref()
+        .filter(|_| options.base.is_empty())
+        .map(|path| out.dir().join(path));
+    out.prune(copy.as_deref())?;
     Ok(pages)
 }
 
@@ -381,27 +531,32 @@ fn write_articles(
                      article: &crate::site::Article,
                      sink: &mut PageSink|
      -> Result<bool> {
-        let rendered = markdown::render(
-            &article.body,
-            links,
-            markdown::RenderOptions {
-                allow_dangling: options.allow_dangling_links,
-                strict: options.strict,
-                images: Some(ImageScope {
-                    index: images,
-                    dir: &article.source_dir,
-                }),
-                refs: Some(markdown::RefScope {
-                    index: refs,
-                    page: &article.path,
-                    book: None,
-                    book_short: None,
-                }),
-                base: &options.base,
-                ..markdown::RenderOptions::default()
-            },
-        )
-        .with_context(|| format!("in article '{}'", article.path))?;
+        let rendered = sink
+            .rendered
+            .remove(&article.path)
+            .unwrap_or_else(|| {
+                markdown::render(
+                    &article.body,
+                    links,
+                    markdown::RenderOptions {
+                        allow_dangling: options.allow_dangling_links,
+                        strict: options.strict,
+                        images: Some(ImageScope {
+                            index: images,
+                            dir: &article.source_dir,
+                        }),
+                        refs: Some(markdown::RefScope {
+                            index: refs,
+                            page: &article.path,
+                            book: None,
+                            book_short: None,
+                        }),
+                        base: &options.base,
+                        ..markdown::RenderOptions::default()
+                    },
+                )
+            })
+            .with_context(|| format!("in article '{}'", article.path))?;
         report_links(sink, article, &rendered);
         let related = resolve_related(article, links, options, sink);
         let html = renderer.article(
@@ -506,28 +661,33 @@ fn write_book(
         .map(|(_, article)| (article.path.as_str(), article.title.as_str()))
         .collect();
     for (chapters, article) in &entries {
-        let rendered = markdown::render(
-            &article.body,
-            links,
-            markdown::RenderOptions {
-                allow_dangling: options.allow_dangling_links,
-                strict: options.strict,
-                numbering: article.number.as_deref(),
-                images: Some(ImageScope {
-                    index: images,
-                    dir: &article.source_dir,
-                }),
-                refs: Some(markdown::RefScope {
-                    index: refs,
-                    page: &article.path,
-                    book: Some(&book.path),
-                    book_short: book.short.as_deref(),
-                }),
-                base: &options.base,
-                ..markdown::RenderOptions::default()
-            },
-        )
-        .with_context(|| format!("in article '{}'", article.path))?;
+        let rendered = sink
+            .rendered
+            .remove(&article.path)
+            .unwrap_or_else(|| {
+                markdown::render(
+                    &article.body,
+                    links,
+                    markdown::RenderOptions {
+                        allow_dangling: options.allow_dangling_links,
+                        strict: options.strict,
+                        numbering: article.number.as_deref(),
+                        images: Some(ImageScope {
+                            index: images,
+                            dir: &article.source_dir,
+                        }),
+                        refs: Some(markdown::RefScope {
+                            index: refs,
+                            page: &article.path,
+                            book: Some(&book.path),
+                            book_short: book.short.as_deref(),
+                        }),
+                        base: &options.base,
+                        ..markdown::RenderOptions::default()
+                    },
+                )
+            })
+            .with_context(|| format!("in article '{}'", article.path))?;
         report_links(sink, article, &rendered);
         uses_mermaid |= rendered.has_mermaid;
         let related = resolve_related(article, links, options, sink);
@@ -594,10 +754,9 @@ fn resolve_related(
                 "in article '{}' (related): {}",
                 article.path, error
             )),
-            Err(error) if options.allow_dangling_links => eprintln!(
-                "warning: in article '{}' (related): {}",
-                article.path, error
-            ),
+            Err(error) if options.allow_dangling_links => {
+                crate::diagnostic::warning(format!("{}: related link: {}", article.path, error))
+            }
             Err(error) => sink.broken.push(format!(
                 "in article '{}' (related): {}",
                 article.path, error
@@ -612,16 +771,15 @@ fn resolve_related(
 /// passed-through files survive the prune like any other output.
 fn copy_passthrough(source: &Path, destination: &Path, out: &Output) -> Result<()> {
     if source.is_dir() {
-        for entry in fs::read_dir(source)
-            .with_context(|| format!("reading {}", source.display()))?
+        for entry in
+            fs::read_dir(source).with_context(|| format!("reading {}", source.display()))?
         {
             let entry = entry?;
             copy_passthrough(&entry.path(), &destination.join(entry.file_name()), out)?;
         }
         return Ok(());
     }
-    let contents =
-        fs::read(source).with_context(|| format!("reading {}", source.display()))?;
+    let contents = fs::read(source).with_context(|| format!("reading {}", source.display()))?;
     out.write(destination, &contents)
 }
 
@@ -635,7 +793,7 @@ fn report_links(
     rendered: &markdown::Rendered,
 ) {
     for warning in rendered.warnings.iter().chain(&rendered.dangling) {
-        eprintln!("warning: in article '{}': {}", article.path, warning);
+        crate::diagnostic::warning(format!("{}: {}", article.path, warning));
     }
     for problem in &rendered.broken {
         sink.broken
@@ -675,6 +833,7 @@ fn page_path(out: &Path, url_path: &str) -> PathBuf {
 pub(crate) struct Output {
     dir: PathBuf,
     written: RefCell<HashSet<PathBuf>>,
+    compare_buffer: RefCell<Vec<u8>>,
 }
 
 impl Output {
@@ -682,6 +841,7 @@ impl Output {
         Output {
             dir: dir.to_path_buf(),
             written: RefCell::new(HashSet::new()),
+            compare_buffer: RefCell::new(vec![0; 64 * 1024]),
         }
     }
 
@@ -691,14 +851,9 @@ impl Output {
 
     pub(crate) fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
         self.written.borrow_mut().insert(path.to_path_buf());
-        // Unchanged files are left untouched: a cheap rebuild cache that
-        // spares disk writes and keeps mtimes stable for rsync-style
-        // deploys. (Skipping the *render* of unchanged pages would need
-        // real dependency tracking — links reach across the whole site —
-        // and builds are nowhere near slow enough to justify it yet.)
-        if let Ok(existing) = fs::read(path)
-            && existing == contents
-        {
+        // Cached and freshly generated bytes both pass through this writer,
+        // sparing disk writes and keeping mtimes stable for rsync-style deploys.
+        if self.matches(path, contents) {
             return Ok(());
         }
         if let Some(parent) = path.parent() {
@@ -708,16 +863,41 @@ impl Output {
         fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
     }
 
+    fn matches(&self, path: &Path, contents: &[u8]) -> bool {
+        let Ok(mut file) = fs::File::open(path) else {
+            return false;
+        };
+        if !file
+            .metadata()
+            .is_ok_and(|m| m.len() == contents.len() as u64)
+        {
+            return false;
+        }
+        let mut buffer = self.compare_buffer.borrow_mut();
+        for chunk in contents.chunks(buffer.len()) {
+            let bytes = &mut buffer[..chunk.len()];
+            if file.read_exact(bytes).is_err() || bytes != chunk {
+                return false;
+            }
+        }
+        // Also reject a file that grew while it was being compared.
+        matches!(file.read(&mut buffer[..1]), Ok(0))
+    }
+
     /// Delete every file this build didn't write, then any directories
     /// left empty. Called only after a successful build, so a failed one
     /// still leaves the previous output intact for the dev server.
-    fn prune(&self) -> Result<()> {
-        fn walk(dir: &Path, written: &HashSet<PathBuf>) -> Result<bool> {
+    fn prune(&self, preserved: Option<&Path>) -> Result<()> {
+        fn walk(dir: &Path, written: &HashSet<PathBuf>, preserved: Option<&Path>) -> Result<bool> {
             let mut empty = true;
             for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
                 let path = entry?.path();
+                if preserved == Some(path.as_path()) {
+                    empty = false;
+                    continue;
+                }
                 if path.is_dir() {
-                    if walk(&path, written)? {
+                    if walk(&path, written, preserved)? {
                         fs::remove_dir(&path)
                             .with_context(|| format!("removing {}", path.display()))?;
                     } else {
@@ -733,7 +913,7 @@ impl Output {
             Ok(empty)
         }
         if self.dir.exists() {
-            walk(&self.dir, &self.written.borrow())?;
+            walk(&self.dir, &self.written.borrow(), preserved)?;
         }
         Ok(())
     }
@@ -743,6 +923,333 @@ impl Output {
 mod tests {
     use super::*;
     use crate::site;
+
+    fn output_hashes(root: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+        fn walk(root: &Path, dir: &Path, result: &mut std::collections::BTreeMap<PathBuf, String>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, result);
+                } else {
+                    result.insert(
+                        path.strip_prefix(root).unwrap().to_owned(),
+                        blake3::hash(&fs::read(path).unwrap()).to_hex().to_string(),
+                    );
+                }
+            }
+        }
+        let mut result = std::collections::BTreeMap::new();
+        walk(root, root, &mut result);
+        result
+    }
+
+    #[test]
+    fn output_comparison_repairs_same_size_edits_and_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = Output::new(dir.path());
+        let path = dir.path().join("large.html");
+        let bytes = vec![b'a'; 200_000];
+        output.write(&path, &bytes).unwrap();
+        let time = fs::metadata(&path).unwrap().modified().unwrap();
+        output.write(&path, &bytes).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), time);
+        let mut changed = bytes.clone();
+        changed[90_000] = b'b';
+        fs::write(&path, changed).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+        output.write(&path, &bytes).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, &bytes[..100]).unwrap();
+        output.write(&path, &bytes).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(&path).unwrap();
+        output.write(&path, &[]).unwrap();
+        assert!(fs::read(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parallel_article_results_match_serial_with_ordered_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        site::write_fixture(root);
+        let topic = root.join("alpha.product/5--loose.topic");
+        for n in 100..180 {
+            fs::write(topic.join(format!("{n}--parallel-{n}.md")), format!("---\ntitle: Page {n}\ntype: concept\n---\n\n## Heading\n\n[Missing](~alpha/missing) and [Absolute](/absolute).\n\n```rust\nfn main() {{}}\n```\n")).unwrap();
+        }
+        let _session = crate::cache::Session::new(root, false);
+        let site = Site::load(root, &root.join("dist")).unwrap();
+        let prepared = Prepared::new(&site).unwrap();
+        let options = BuildOptions {
+            strict: true,
+            allow_dangling_links: true,
+            ..Default::default()
+        };
+        let mut results = render_articles_parallel(&site, &prepared, &options);
+        if std::thread::available_parallelism().map_or(1, |n| n.get()) == 1 {
+            return;
+        }
+        for article in site
+            .articles()
+            .into_iter()
+            .filter(|a| a.slug.starts_with("parallel-"))
+        {
+            let serial = markdown::render(
+                &article.body,
+                &prepared.links,
+                markdown::RenderOptions {
+                    allow_dangling: true,
+                    strict: true,
+                    images: Some(ImageScope {
+                        index: &prepared.images,
+                        dir: &article.source_dir,
+                    }),
+                    refs: Some(markdown::RefScope {
+                        index: &prepared.refs,
+                        page: &article.path,
+                        book: None,
+                        book_short: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let parallel = results.remove(&article.path).unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_value(parallel).unwrap(),
+                serde_json::to_value(serial).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_builds_match_uncached_after_content_and_structure_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        let out = dir.path().join("incremental");
+        let clean = dir.path().join("clean");
+        site::write_fixture(&root);
+        let run = |enabled: bool, options: &BuildOptions, destination: &Path| {
+            let cache = crate::cache::Session::new(&root, enabled);
+            let site = Site::load(&root, destination).unwrap();
+            let pages = build_all(&site, destination, options).unwrap();
+            let hits = (
+                cache.hits("render"),
+                cache.hits("search"),
+                cache.hits("pages"),
+                cache.hits("bundles-html"),
+            );
+            cache.finish();
+            (pages, hits)
+        };
+        let check = |options: &BuildOptions| {
+            let (pages, hits) = run(true, options, &out);
+            assert_eq!(pages, run(false, options, &clean).0);
+            assert_eq!(output_hashes(&out), output_hashes(&clean));
+            hits
+        };
+        let options = BuildOptions::default();
+        check(&options);
+        let hits = check(&options);
+        assert!(
+            hits.0 > 0 && hits.1 > 0,
+            "unchanged build must reuse rendering and search"
+        );
+        assert!(
+            hits.2 > 0 && hits.3 > 0,
+            "unchanged build must reuse pages and complete bundles"
+        );
+        let article = root.join("alpha.product/5--loose.topic/1--x1.md");
+        let append = |path: &Path, text: &str| {
+            let mut source = fs::read_to_string(path).unwrap();
+            source.push_str(text);
+            fs::write(path, source).unwrap();
+        };
+        append(&article, "\nChanged body with **emphasis** and `$x$`.\n");
+        assert!(
+            check(&options).0 > 0,
+            "body edits must preserve other render hits"
+        );
+        append(
+            &article,
+            &"Longer prose changes aggregate reading times. ".repeat(200),
+        );
+        let edited = check(&options);
+        assert!(
+            edited.2 > 0 && edited.3 > 0,
+            "unrelated pages and bundles survive changed totals"
+        );
+        append(&article, "\n## A New Anchor\n");
+        check(&options);
+        let config = root.join("alpha.product/7--manual.book/trail.toml");
+        fs::write(
+            &config,
+            fs::read_to_string(&config)
+                .unwrap()
+                .replace("Alpha Manual", "Renamed Manual")
+                .replace("AM", "RM"),
+        )
+        .unwrap();
+        check(&options);
+        let alias = root.join("alpha.product/5--loose.topic/8--copy.link");
+        fs::write(&alias, "target = \"~alpha/x2\"\ntitle = \"Alias title\"\n").unwrap();
+        check(&options);
+        fs::remove_file(&alias).unwrap();
+        let added = article.with_file_name("98--added.md");
+        fs::write(
+            &added,
+            "---\ntitle: Added\ntype: concept\n---\n\nNew content.\n",
+        )
+        .unwrap();
+        check(&options);
+        fs::rename(&added, added.with_file_name("98--renamed.md")).unwrap();
+        check(&options);
+        fs::remove_file(added.with_file_name("98--renamed.md")).unwrap();
+        check(&options);
+        // Changed dimensions/content and removing all image references must
+        // update published assets, including when other pages are cached.
+        let image = root.join("alpha.product/7--manual.book/layout.png");
+        fs::write(&image, b"changed image content").unwrap();
+        check(&options);
+        for name in ["1--intro.md", "2--setup/1--install.md"] {
+            let path = root.join("alpha.product/7--manual.book").join(name);
+            let text = fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with("!["))
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(path, text).unwrap();
+        }
+        check(&options);
+        assert!(!out.join("alpha/manual/layout.png").exists());
+        let copy = BuildOptions {
+            cachebust: Some("revision-2".into()),
+            render_llms_full: true,
+            ..Default::default()
+        };
+        check(&copy);
+        let copy_file = out.join("revision-2/index.html");
+        let modified = fs::metadata(&copy_file).unwrap().modified().unwrap();
+        check(&copy);
+        assert_eq!(
+            modified,
+            fs::metadata(&copy_file).unwrap().modified().unwrap()
+        );
+        // Removing the copy and llms-full must prune their cached outputs.
+        check(&options);
+        assert!(!out.join("revision-2").exists());
+        let live = BuildOptions {
+            live_reload: true,
+            ..Default::default()
+        };
+        check(&live);
+        let extra = dir.path().join("extra");
+        let topic = extra.join("gamma.product/1--guide.topic");
+        fs::create_dir_all(&topic).unwrap();
+        fs::write(
+            extra.join("gamma.product/trail.toml"),
+            "title = \"Gamma\"\nmonogram = \"G\"\ncolor = \"#3b82f6\"\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        let merged = topic.join("1--start.md");
+        fs::write(
+            &merged,
+            "---\ntitle: Start\ntype: concept\n---\n\nMerged content.\n",
+        )
+        .unwrap();
+        append(
+            &root.join("trail.toml"),
+            "\n[[merge]]\npath = \"../extra\"\n",
+        );
+        check(&options);
+        append(&merged, "\nChanged merged body.\n");
+        check(&options);
+        // A corrupt search blob must rebuild the entire bundle, including
+        // fragments which were otherwise present in the output directory.
+        let namespace = fs::read_dir(root.join(".trail-cache"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let blob = fs::read_dir(namespace.join("search-files"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::write(&blob, b"corrupt").unwrap();
+        check(&options);
+        assert_ne!(fs::read(blob).unwrap(), b"corrupt");
+    }
+
+    #[test]
+    fn cached_links_do_not_hide_new_ambiguity_or_strict_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        let out = dir.path().join("out");
+        site::write_fixture(&root);
+        let page = root.join("alpha.product/5--loose.topic/1--x1.md");
+        fs::write(
+            &page,
+            "---\ntitle: Link\ntype: concept\n---\n\n[Target](~alpha/b1)\n",
+        )
+        .unwrap();
+        let run = |cache, options: &BuildOptions| {
+            let _session = crate::cache::Session::new(&root, cache);
+            let site = Site::load(&root, &out).unwrap();
+            build_all(&site, &out, options).map_err(|error| format!("{error:#}"))
+        };
+        run(true, &BuildOptions::default()).unwrap();
+        let target = root.join("alpha.product/2--acorn.antho/200--narrow.topic/1--b1.md");
+        let original = fs::read_to_string(&target).unwrap();
+        fs::write(&target, format!("{original}\n## Target Anchor\n")).unwrap();
+        fs::write(
+            &page,
+            "---\ntitle: Link\ntype: concept\n---\n\n[Target](~alpha/b1#target-anchor)\n",
+        )
+        .unwrap();
+        run(true, &BuildOptions::default()).unwrap();
+        fs::write(&target, &original).unwrap();
+        let missing = run(true, &BuildOptions::default()).unwrap_err();
+        assert_eq!(missing, run(false, &BuildOptions::default()).unwrap_err());
+        let allow = BuildOptions {
+            allow_dangling_links: true,
+            ..Default::default()
+        };
+        run(true, &allow).unwrap();
+        assert_eq!(run(true, &BuildOptions::default()).unwrap_err(), missing);
+        fs::write(
+            &page,
+            "---\ntitle: Link\ntype: concept\n---\n\n[Target](~alpha/b1)\n",
+        )
+        .unwrap();
+        let strict = BuildOptions {
+            strict: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            run(true, &strict).unwrap_err(),
+            run(false, &strict).unwrap_err()
+        );
+        fs::write(
+            root.join("alpha.product/5--loose.topic/99--b1.md"),
+            "---\ntitle: Another\ntype: concept\n---\n\nText\n",
+        )
+        .unwrap();
+        let options = BuildOptions {
+            allow_dangling_links: true,
+            ..Default::default()
+        };
+        let error = run(true, &options).unwrap_err();
+        assert!(error.contains("ambiguous"));
+        assert_eq!(error, run(false, &options).unwrap_err());
+    }
 
     #[test]
     fn build_writes_the_front_page_and_its_assets() {
@@ -1101,7 +1608,10 @@ mod tests {
         // The copy is a whole site, not a landing page: pages, mirrors,
         // bundles, assets and its own search index.
         assert!(out.join("deadbeef/index.html").is_file());
-        assert!(out.join("deadbeef/alpha/acorn/wide/a1/index.html").is_file());
+        assert!(
+            out.join("deadbeef/alpha/acorn/wide/a1/index.html")
+                .is_file()
+        );
         assert!(out.join("deadbeef/alpha/acorn/wide/a1.md").is_file());
         assert!(out.join("deadbeef/alpha/print/index.html").is_file());
         assert!(out.join("deadbeef/assets/style.css").is_file());
@@ -1195,7 +1705,11 @@ mod tests {
         }
         escaped.sort();
         escaped.dedup();
-        assert!(escaped.is_empty(), "links escaping the copy:\n{}", escaped.join("\n"));
+        assert!(
+            escaped.is_empty(),
+            "links escaping the copy:\n{}",
+            escaped.join("\n")
+        );
     }
 
     /// Every file under a directory, recursively.
@@ -1221,11 +1735,7 @@ mod tests {
         site::write_fixture(dir.path());
         let out = dir.path().join("dist");
         let site = Site::load(dir.path(), &out).unwrap();
-        let refused = |cbpath: &str| {
-            validate_cbpath(cbpath, &site)
-                .unwrap_err()
-                .to_string()
-        };
+        let refused = |cbpath: &str| validate_cbpath(cbpath, &site).unwrap_err().to_string();
         // A product, its mirror, and the generated directories are all
         // real paths the copy would sit on top of.
         assert!(refused("alpha").contains("already a path in the site"));
@@ -1255,7 +1765,11 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.path().join("CNAME"), "learn.example.org\n").unwrap();
-        fs::write(dir.path().join("robots.txt"), "User-agent: *\nDisallow: /x\n").unwrap();
+        fs::write(
+            dir.path().join("robots.txt"),
+            "User-agent: *\nDisallow: /x\n",
+        )
+        .unwrap();
         fs::create_dir_all(dir.path().join(".well-known")).unwrap();
         fs::write(
             dir.path().join(".well-known/security.txt"),
@@ -1629,6 +2143,116 @@ mod tests {
         .unwrap();
         let err = Site::load(dir.path(), &out).unwrap_err().to_string();
         assert!(err.contains("resolving nav link 'Gone'"));
+    }
+
+    #[test]
+    fn merged_trees_join_the_site_and_keep_their_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        site::write_fixture(&root);
+        fs::write(root.join("CNAME"), "site").unwrap();
+        let config = fs::read_to_string(root.join("trail.toml")).unwrap();
+        fs::write(
+            root.join("trail.toml"),
+            format!(
+                "edit_url = \"https://forge.example/site/{{path}}\"\npassthrough = [\"CNAME\"]\n\
+                 {config}\n[[merge]]\npath = \"../extra/\"\n"
+            ),
+        )
+        .unwrap();
+
+        // The merged tree: one product linking into the site's, its own
+        // edit links and passthrough, and site settings that are ignored
+        // (its nav link would not resolve).
+        let extra = dir.path().join("extra");
+        let topic = extra.join("gamma.product/1--guide.topic");
+        fs::create_dir_all(&topic).unwrap();
+        fs::create_dir_all(extra.join("dist/gamma")).unwrap();
+        fs::write(extra.join("CNAME"), "extra").unwrap();
+        fs::write(extra.join("extra.txt"), "only here").unwrap();
+        let extra_config = "sitename = \"Other\"\ntitle = \"Other\"\ndescription = \"d\"\n\
+             footer = \"other footer\"\n\
+             edit_url = \"https://forge.example/extra/{path}\"\n\
+             passthrough = [\"CNAME\", \"extra.txt\"]\n\n\
+             [[nav]]\nlabel = \"Gone\"\nurl = \"~nowhere/page\"\n";
+        fs::write(extra.join("trail.toml"), extra_config).unwrap();
+        fs::write(
+            extra.join("gamma.product/trail.toml"),
+            "title = \"Gamma\"\nmonogram = \"G\"\ncolor = \"#3b82f6\"\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        fs::write(topic.join("trail.toml"), "title = \"Guide\"\n").unwrap();
+        fs::write(
+            topic.join("1--start.md"),
+            "---\ntitle: Start\ntype: concept\n---\n\nSee [A2](~alpha/a2).\n\n![Figure](fig.png)\n",
+        )
+        .unwrap();
+        fs::write(topic.join("fig.png"), site::TEST_PNG).unwrap();
+
+        let out = root.join("dist");
+        let options = &BuildOptions::default();
+        let site = Site::load(&root, &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+
+        let start = fs::read_to_string(out.join("gamma/guide/start/index.html")).unwrap();
+        assert!(start.contains("href=\"/alpha/acorn/wide/a2\""));
+        assert!(start.contains("footer text"));
+        assert!(
+            start.contains("https://forge.example/extra/gamma.product/1--guide.topic/1--start.md")
+        );
+        // Images resolve beside their page, through the `..` in the path.
+        assert_eq!(
+            fs::read(out.join("gamma/guide/fig.png")).unwrap(),
+            site::TEST_PNG
+        );
+        let x1 = fs::read_to_string(out.join("alpha/loose/x1/index.html")).unwrap();
+        assert!(x1.contains("https://forge.example/site/alpha.product/5--loose.topic/1--x1.md"));
+        // Where both trees pass a path through, the site root's copy wins.
+        assert_eq!(fs::read_to_string(out.join("CNAME")).unwrap(), "site");
+        assert_eq!(
+            fs::read_to_string(out.join("extra.txt")).unwrap(),
+            "only here"
+        );
+
+        // Without a trail.toml the tree still merges, with no edit links.
+        fs::remove_file(extra.join("trail.toml")).unwrap();
+        fs::remove_file(extra.join("CNAME")).unwrap();
+        fs::remove_file(extra.join("extra.txt")).unwrap();
+        let site = Site::load(&root, &out).unwrap();
+        build_site(&site, &out, options).unwrap();
+        let start = fs::read_to_string(out.join("gamma/guide/start/index.html")).unwrap();
+        assert!(!start.contains("forge.example"));
+
+        // Two trees cannot share a product slug.
+        fs::create_dir_all(extra.join("alpha.product")).unwrap();
+        fs::copy(
+            extra.join("gamma.product/trail.toml"),
+            extra.join("alpha.product/trail.toml"),
+        )
+        .unwrap();
+        let err = format!("{:#}", Site::load(&root, &out).unwrap_err());
+        assert!(err.contains("product 'alpha' is in two trees"), "{err}");
+        fs::remove_dir_all(extra.join("alpha.product")).unwrap();
+
+        // The merged tree's root is checked like the site root's.
+        fs::write(extra.join("stray.txt"), "").unwrap();
+        let err = format!("{:#}", Site::load(&root, &out).unwrap_err());
+        assert!(err.contains("merging the tree at '../extra/'"), "{err}");
+        assert!(err.contains("unexpected file 'stray.txt'"), "{err}");
+        fs::remove_file(extra.join("stray.txt")).unwrap();
+
+        // A path that is not a directory fails at load.
+        fs::remove_file(root.join("CNAME")).unwrap();
+        fs::write(
+            root.join("trail.toml"),
+            format!("{config}\n[[merge]]\npath = \"../nope\"\n"),
+        )
+        .unwrap();
+        let err = format!("{:#}", Site::load(&root, &out).unwrap_err());
+        assert!(
+            err.contains("merge path '../nope' is not a directory"),
+            "{err}"
+        );
     }
 
     #[test]

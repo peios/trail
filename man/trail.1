@@ -1,0 +1,164 @@
+.TH TRAIL 1 2026-10-17 "Peios trail 0.1.0"
+.SH NAME
+trail \- build and check Peios documentation
+.SH SYNOPSIS
+.B trail build
+.RI [ options ] " [root]"
+.br
+.B trail serve
+.RI [ options ] " [root]"
+.br
+.B trail lint
+.RI [ options ] " [root]"
+.br
+.B trail help
+.RI [ command ]
+.SH DESCRIPTION
+.B trail
+builds a static documentation site from a source tree containing
+.BR trail.toml .
+The root defaults to the working directory.
+The binary contains its templates, styles, fonts, syntax definitions,
+diagram renderer, and search engine.
+.PP
+Builds validate structure and links before publication. A successful build
+removes output files it did not produce. Keep additional published files in
+the source tree and name them in the passthrough configuration.
+A failed build does not prune output, but it can have written some files;
+publication is not an atomic directory replacement.
+Unchanged output files retain their modification times.
+.PP
+Errors and warnings use stderr. Build and server progress use stdout.
+Plugin diagnostics are replayed as supplied by the plugin, in dependency
+order and then name order, including on cache hits.
+.SH COMMANDS
+.TP
+.B build
+Build the site into the output directory.
+Output defaults to root/dist. The page count counts HTML pages only.
+.TP
+.B serve
+Build the site and serve it over local HTTP.
+Watch source trees and declared plugin dependencies, including merged trees.
+Debounce change bursts for 200 milliseconds, with a one-second limit.
+Reconcile source contents every 30 seconds to detect missed events.
+Ignore output paths and hidden path components.
+A successful rebuild reloads connected browsers.
+A failed initial build or rebuild prints a warning and keeps the server
+running; output can contain partial writes from the failed build.
+Missing pages return the built 404 page with HTTP status 404.
+The server runs until interrupted or an operational server error occurs.
+.TP
+.B lint
+Check the root's configured writing rules without building the site.
+A missing lint table, invalid rule, or unreadable source is a failure.
+Report findings on stderr, sorted by relative source path and position.
+Line and column numbers start at one. End each finding with its rule name
+in square brackets. Print error and warning totals after the findings.
+Warnings alone do not fail the check.
+.TP
+.B help
+Print help for Trail or for the named command.
+.SH OPTIONS
+Build options also apply to serve. Lint accepts the root and help/version
+flags.
+.TP
+.BI "\-\-addr " address
+Serve only. Set the listening IP address and port
+(default: 127.0.0.1:8724). Port zero requests an available port.
+.TP
+.B \-\-allow\-dangling\-links
+Warn instead of failing on missing page, fragment, image, related-content,
+and section-citation targets. Ambiguous references remain errors.
+Disabled by default.
+.TP
+.BI "\-\-cbpath " path
+Also publish a second copy under a single path segment, with links rewritten
+to stay in the copy. The segment cannot be empty, dot-leading, contain a
+slash, or collide with a site path; it accepts ASCII letters, digits,
+hyphens, underscores, and non-leading periods. The copy is excluded from the
+sitemap and marked
+noindex. No copy is written by default.
+.TP
+.B \-\-no\-cache
+Bypass build-cache reads and writes, including retained source reuse during
+every serve rebuild. Leave existing cache files in place.
+Disabled by default.
+.TP
+.BI "\-\-out " directory
+Set output directory (default: root/dist).
+Relative paths are relative to the process working directory.
+Exclude the output directory from the source scan.
+.TP
+.B \-\-render\-llms\-full
+Also write each print.md bundle as llms-full.txt.
+Disabled by default.
+.TP
+.B \-\-strict
+Require nonempty article descriptions, except on link aliases, and warn
+about authored site-absolute links. Link validation also runs without this
+flag. Disabled by default.
+.TP
+.B \-h, \-\-help
+Print identical help text to stdout and exit successfully.
+.TP
+.B \-V, \-\-version
+Print the program name and package version to stdout and exit successfully.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, including help, version, and lint checks with warnings only.
+.TP
+.B 1
+Operational failure, build failure, or lint findings classified as errors.
+.TP
+.B 2
+Usage error. No arguments prints help on stderr; other usage errors print
+one diagnostic and a help pointer on stderr.
+.SH ENVIRONMENT
+.TP
+.B PATH
+Resolve configured plugin commands that do not contain a slash.
+.PP
+Plugins inherit the process environment. Environment changes invalidate
+their cached output. Inputs such as network state and time require
+\-\-no\-cache when they change because they cannot be fingerprinted.
+.SH FILES
+.TP
+.B trail.toml
+Site and grouping configuration. See trail.toml(5).
+.TP
+.B root/.trail-cache/
+Disposable cache, scoped to the Trail executable. Missing, damaged, or
+unwritable entries cause recomputation. Successful builds remove unused
+entries in that executable's cache. This directory is not published.
+.TP
+.B root/dist/
+Default output. Contains HTML, Markdown mirrors, print bundles, search files,
+static assets, discovery files, and explicitly passed-through files.
+.SH EXAMPLES
+Build the site in the working directory with description checks:
+.PP
+.nf
+trail build \-\-strict
+.fi
+.PP
+Serve another source tree without using cached build results:
+.PP
+.nf
+trail serve docs/learn \-\-no\-cache
+.fi
+.PP
+Check a site's writing rules:
+.PP
+.nf
+trail lint docs/learn
+.fi
+.SH SEE ALSO
+.BR trail.toml (5),
+.BR trail-source (5),
+.BR trail-frontmatter (5),
+.BR trail-lint (5),
+.BR trail-plugin (5)
+.PP
+Trail Learn: https://learn.peios.org/trail/
