@@ -1,7 +1,7 @@
 ---
-title: Anatomy of a site
+title: Anatomy of a Site
 type: concept
-description: The whole tree, level by level — how directory and file names become URLs, ordering and titles, which trail.toml lives where, and what may legally sit at each level.
+description: The whole tree, level by level — how directory and file names become URLs, ordering and titles, which trail.toml lives where, and what can legally sit at each level.
 related:
   - trail/getting-started/what-is-trail
   - trail/structuring-a-site/products
@@ -9,7 +9,14 @@ related:
   - trail/reference/trail-toml
 ---
 
-A trail site is a directory tree in which every name means something. This page walks that tree from the root down, and explains the naming grammar all of it shares. [Directory and file names](~trail/reference/directory-names) is the same material as an exhaustive table; [Structuring a site](~trail/structuring-a-site/products) covers each kind of container in depth.
+<span id="what-may-sit-where"></span>
+
+A trail site is a directory tree in which every name means something. This
+page walks that tree from the root down, and explains the naming grammar all
+of it shares. [Directory and file names](~trail/reference/directory-names) is
+the same material as an exhaustive table;
+[Structuring a site](~trail/structuring-a-site/products) covers each kind of
+container in depth.
 
 ## The whole shape
 
@@ -43,14 +50,16 @@ learn/                                  the site root
 └── pekit.product/                       another product  →  /pekit
 ```
 
-Everything below the root is optional. A site with one product, one topic and one article is a complete site; this site's `trail.product` is exactly that shape, four levels shallower than `peios.product`.
+Everything below the root is optional. A site with one product, one topic, and
+one article is a complete site; this site's `trail.product` is exactly that
+shape, four levels shallower than `peios.product`.
 
 ## The naming grammar
 
 Three name shapes appear throughout the tree.
 
 | Shape | Example | Where |
-|---|---|---|
+| ------------------------ | ------------------------- | -------------------------------------------------------------------- |
 | `<slug>.product` | `pekit.product` | Only at the site root. |
 | `<order>--<slug>.<kind>` | `2--writing.topic` | Anthologies, topics, books, shelves. |
 | `<order>--<slug>` | `300--tokens`, `2--model` | Topic subfolders and book chapters — no suffix. |
@@ -59,15 +68,25 @@ Three name shapes appear throughout the tree.
 
 The parts:
 
-- **`<order>`** is a non-negative integer used only for sorting among siblings. It never appears in a URL or a title. Gaps are fine and normal — numbering articles `100`, `200`, `300` leaves room to insert. Two siblings sharing an order is an error, because the resulting page order would depend on nothing you can see.
-- **`<slug>`** is lowercase kebab-case: ASCII lowercase letters, digits and hyphens, not starting or ending with a hyphen. It becomes the URL segment, and it is what you write in a `~link`.
-- **`<kind>`** is `antho`, `topic`, `book` or `shelf`.
+- **`<order>`** is a non-negative integer used only for sorting among
+  siblings. It never appears in a URL or a title. Gaps are fine and normal —
+  numbering articles `100`, `200`, `300` leaves room to insert. Two siblings
+  sharing an order is an error, because the resulting page order would depend
+  on nothing you can see.
+- **`<slug>`** is lowercase kebab-case: ASCII lowercase letters, digits and
+  hyphens, not starting or ending with a hyphen. It becomes the URL segment,
+  and it is what you write in a `~link`.
+- **`<kind>`** is `antho`, `topic`, `book`, or `shelf`.
 
-Inside books, an order may also be written `a<N>--` (`a1--glossary.md`). Those are **appendices**: lettered `A`, `B`, `C` instead of numbered, and sorted after every numbered sibling at their level. See [Books](~trail/structuring-a-site/books).
+Inside books, an order can also be written `a<N>--` (`a1--glossary.md`). Those
+are **appendices**: lettered `A`, `B`, `C` instead of numbered, and sorted
+after every numbered sibling at their level. See
+[Books](~trail/structuring-a-site/books).
 
 ## URLs
 
-A page's URL is its product slug followed by the slug of every container between the product and the page — with two exceptions.
+A page's URL is its product slug followed by the slug of every container
+between the product and the page — with two exceptions.
 
 ```text
 peios.product/1--security-fundamentals.antho/1--identity.topic/100--sids.md
@@ -76,41 +95,55 @@ peios.product/1--security-fundamentals.antho/1--identity.topic/100--sids.md
 
 The exceptions:
 
-- **A shelf contributes no segment.** It is a heading on its parent's page, nothing more. A topic inside `2--tooling.shelf/` lives at `/peios/<topic>`, exactly as if the shelf were not there.
-- **Order prefixes contribute nothing.** `1--identity.topic` gives the segment `identity`.
+- **A shelf contributes no segment.** It is a heading on its parent's page,
+  nothing more. A topic inside `2--tooling.shelf/` lives at `/peios/<topic>`,
+  exactly as if the shelf were not there.
+- **Order prefixes contribute nothing.** `1--identity.topic` gives the segment
+  `identity`.
 
-Which containers have a page of their own is worth knowing, because it decides what you can link to:
+Which containers have a page of their own is worth knowing, because it decides
+what you can link to:
 
-| | Has a page | Links to it land on |
-|---|---|---|
+| Item | Has a page | Links to it land on |
+| --------------- | ------------------------------ | -------------------------------------------- |
 | Site | `/` | — |
 | Product | `/pekit` | its own landing page |
 | Anthology | `/peios/security-fundamentals` | its own landing page |
 | Book | `/peios/…/pgss` (the cover) | the cover |
 | Article | its own URL | itself |
-| Topic | no page | *(topics are not link targets)* |
-| Topic subfolder | no page | *(not a link target, except from a `.link`)* |
-| Book chapter | no page | *(not a link target)* |
-| Shelf | no page | *(not a link target)* |
+| Topic | no page | _(topics are not link targets)_ |
+| Topic subfolder | no page | _(not a link target, except from a `.link`)_ |
+| Book chapter | no page | _(not a link target)_ |
+| Shelf | no page | _(not a link target)_ |
 
-Topics, subfolders and chapters are real structure — they appear in sidebars, cards and contents lists, and links from those surfaces open their first article — but they have no page you can address, so a `~link` cannot point at one. Point at the article you actually mean.
+Topics, subfolders, and chapters are real structure — they appear in sidebars,
+cards and contents lists, and links from those surfaces open their first
+article — but they have no page you can address, so a `~link` cannot point at
+one. Point at the article you actually mean.
 
 ## Titles
 
 Titles come from three places, in order of precedence:
 
 1. **An article's `title:` frontmatter**, which is required.
-2. **A container's `trail.toml`**, where the `title` key is required for products, anthologies and books, and optional for topics, subfolders, chapters and shelves.
-3. **The slug**, hyphens to spaces and in title case: `the-two-gates` becomes "The Two Gates", and `developing-for-peios` becomes "Developing for Peios".
+2. **A container's `trail.toml`**, where the `title` key is required for
+   products, anthologies and books, and optional for topics, subfolders,
+   chapters and shelves.
+3. **The slug** becomes title case after hyphens become spaces:
+   `the-two-gates` becomes
+   "The Two Gates", and `developing-for-peios` becomes "Developing for Peios".
 
-The derived form is good enough surprisingly often; write a `trail.toml` when it is not — acronyms and casing it cannot guess ("Peiso", "The Console"), or when the container needs `inline_ref` phrases.
+The derived form is good enough surprisingly often; write a `trail.toml` when
+it is not — acronyms and casing it cannot guess ("Peiso", "The Console"), or
+when the container needs `inline_ref` phrases.
 
-## What may sit where
+## What can sit where
 
-Trail rejects anything it does not recognise, so it is worth knowing what each level tolerates.
+Trail rejects anything it does not recognize, so it is worth knowing what each
+level tolerates.
 
 | Directory | May contain |
-|---|---|
+| ----------------- | ---------------------------------------------------------------------------------- |
 | The site root | `trail.toml`, `*.product/`, the output directory, files named by the config |
 | A product | `trail.toml`, `.antho/`, `.topic/`, `.book/`, `.shelf/` |
 | An anthology | `trail.toml`, `.antho/`, `.topic/`, `.book/`, `.shelf/` |
@@ -120,21 +153,35 @@ Trail rejects anything it does not recognise, so it is worth knowing what each l
 | A book | `trail.toml`, `.md` articles, `<order>--<slug>/` chapters, `.link` files, images |
 | A book chapter | `trail.toml`, `.md` articles, `<order>--<slug>/` chapters, `.link` files, images |
 
-Only the article-holding levels take files: `.md` articles, `.link` aliases and images may sit in a topic, a subfolder, a book or a chapter, and nowhere else. A product, anthology or shelf directory holds `trail.toml` and subdirectories, full stop.
+Only the article-holding levels take files: `.md` articles, `.link` aliases
+and images can sit in a topic, a subfolder, a book or a chapter, and nowhere
+else. A product, anthology or shelf directory holds `trail.toml` and
+subdirectories, full stop.
 
-Images sit beside the articles that use them and are published at the URL of the directory they were found in; see [Images](~trail/writing/images).
+Images sit beside the articles that use them and are published at the URL of
+the directory they were found in; see [Images](~trail/writing/images).
 
-Two slugs are reserved: `print` (every container publishes a `/print` page) may not be an article slug, and `assets` and `pagefind` may not be product slugs.
+Two slugs are reserved: `print` (every container publishes a `/print` page)
+can not be an article slug, and `assets` and `pagefind` can not be product
+slugs.
 
 ## Ordering
 
-Siblings sort by their `<order>` prefix, ascending. Within a book, appendix entries (`a<N>--`) sort after every numbered entry at the same level, and they are lettered rather than numbered.
+Siblings sort by their `<order>` prefix, ascending. Within a book, appendix
+entries (`a<N>--`) sort after every numbered entry at the same level, and they
+are lettered rather than numbered.
 
-Products are the exception: they have no order prefix. They sort by the root config's `featured` list first, in that list's order, then everything else by title.
+Products are the exception: they have no order prefix. They sort by the root
+config's `featured` list first, in that list's order, then everything else by
+title.
 
 ## Where to go next
 
-- [Products](~trail/structuring-a-site/products) — the product level in depth, and when to add another one.
-- [Anthologies and shelves](~trail/structuring-a-site/anthologies-and-shelves) — grouping a large product.
-- [Topics and folders](~trail/structuring-a-site/topics-and-folders) — the everyday container.
-- [Books](~trail/structuring-a-site/books) — numbered, ordered documents with chapters and appendices.
+- [Products](~trail/structuring-a-site/products) — the product level in depth,
+  and when to add another one.
+- [Anthologies and shelves](~trail/structuring-a-site/anthologies-and-shelves)
+  — grouping a large product.
+- [Topics and folders](~trail/structuring-a-site/topics-and-folders) — the
+  everyday container.
+- [Books](~trail/structuring-a-site/books) — numbered, ordered documents with
+  chapters and appendices.

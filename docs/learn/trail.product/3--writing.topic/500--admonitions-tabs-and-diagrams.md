@@ -1,5 +1,5 @@
 ---
-title: Admonitions, tabs and diagrams
+title: Adding Admonitions, Tabs, and Diagrams
 type: how-to
 description: Three block-level extensions on top of markdown — GitHub-style callouts, tabbed alternatives for per-platform instructions, and mermaid diagrams rendered from text.
 related:
@@ -9,11 +9,27 @@ related:
   - trail/building/the-reading-experience
 ---
 
-Three constructs on top of ordinary markdown handle the things prose alone does badly: setting something apart, showing the same instruction several ways, and drawing.
+Three constructs on top of ordinary markdown handle the things prose alone
+does badly: setting something apart, showing the same instruction several
+ways, and drawing.
+
+## Complete the task
+
+1. Choose the element that fits the content: an aside, alternative views, or a
+   diagram.
+
+2. Add the corresponding syntax from the sections below to an article.
+
+3. Keep an admonition marker on its own blockquote line and close tab groups
+   and fenced diagrams.
+
+4. Run `trail build --strict` from the site root and check the result in a
+   browser.
 
 ## Admonitions
 
-Admonitions use GitHub's alert syntax — a blockquote whose first line is a marker:
+Admonitions use GitHub's alert syntax — a blockquote whose first line is a
+marker:
 
 ```markdown
 > [!IMPORTANT]
@@ -24,7 +40,7 @@ Admonitions use GitHub's alert syntax — a blockquote whose first line is a mar
 Five kinds exist, and no others:
 
 | Marker | Renders as | For |
-|---|---|---|
+| ---------------- | ---------- | --------------------------------------------------- |
 | `> [!NOTE]` | Note | An aside worth knowing, not worth interrupting for. |
 | `> [!TIP]` | Tip | A shortcut or a better way. |
 | `> [!IMPORTANT]` | Important | Something a reader who skims will regret missing. |
@@ -33,19 +49,23 @@ Five kinds exist, and no others:
 
 The body is full markdown — lists, code blocks, links, all of it.
 
-A blockquote whose first line looks like a marker but is not one of the five is a **build error**, not silently-rendered text:
+A blockquote whose first line looks like a marker but is not one of the five
+is a **build error**, not silently-rendered text:
 
 ```text
 unknown admonition type '[!WARN]' (expected NOTE, TIP, IMPORTANT, WARNING or CAUTION)
 ```
 
-That is deliberate. A typo'd marker renders as a quotation with `[!WARN]` sitting at the top of it, which nobody proofreading their own page ever notices.
+That is deliberate. A typo'd marker renders as a quotation with `[!WARN]`
+sitting at the top of it, which nobody proofreading their own page ever
+notices.
 
 An ordinary blockquote — no marker — is still an ordinary blockquote.
 
 ## Tab groups
 
-Tab groups show the same instruction several ways, so a page does not have to repeat itself per platform, per shell, or per package manager.
+Tab groups show the same instruction several ways, so a page does not have to
+repeat itself per platform, per shell, or per package manager.
 
 ````markdown
 :::tabs
@@ -67,26 +87,34 @@ brew install trail
 
 The grammar is three markers, each alone on its own line:
 
-| Marker | |
-|---|---|
+| Marker | Meaning |
+| ---------------- | ------------------------------------------------------- |
 | `:::tabs` | Opens a group. |
 | `:::tab <label>` | Starts a tab. The label is everything after the marker. |
 | `:::` | Closes the group. |
 
-The first tab is shown; the rest are hidden until selected. Each panel's body is full markdown, so a tab can hold code blocks, lists, admonitions and images.
+The first tab is shown; the rest are hidden until selected. Each panel's body
+is full markdown, so a tab can hold code blocks, lists, admonitions and
+images.
 
 Rules, all of them enforced at build time:
 
 - A group must be closed — an unclosed `:::tabs` is an error.
 - A group must contain at least one `:::tab`, and each `:::tab` needs a label.
-- Nothing but blank lines may appear between `:::tabs` and its first `:::tab`.
+- Nothing but blank lines can appear between `:::tabs` and its first `:::tab`.
 - Groups cannot nest.
 - `:::tab` outside a group, or `:::` with no group open, is an error.
 
-Markers inside fenced code blocks are left alone, which is how this page can show the syntax without triggering it.
+Markers inside fenced code blocks are left alone, which is how this page can
+show the syntax without triggering it.
 
 > [!NOTE]
-> Tab panels are hidden with the `hidden` attribute, so a reader searching the page with their browser's find-in-page will not see text in the tabs they have not opened. The site's own [search](~trail/building/the-reading-experience) indexes all of it. When printed, every panel is expanded and the buttons are dropped, so nothing is lost on paper.
+> Tab panels are hidden with the `hidden` attribute, so a reader
+> searching the page with their browser's find-in-page will not see text in
+> the tabs they have not opened. The site's own
+> [search](~trail/building/the-reading-experience) indexes all of it. When
+> printed, every panel is expanded and the buttons are dropped, so nothing is
+> lost on paper.
 
 ## Diagrams
 
@@ -102,14 +130,23 @@ sequenceDiagram
 ```
 ````
 
-Any [mermaid](https://mermaid.js.org) diagram type works — flowcharts, sequence diagrams, state diagrams, ER diagrams, Gantt charts, and the rest.
+Any [mermaid](https://mermaid.js.org) diagram type works — flowcharts,
+sequence diagrams, state diagrams, ER diagrams, Gantt charts, and the rest.
 
-The mermaid library is a large script, so **it is only shipped to pages that actually contain a diagram**. A site with no diagrams anywhere never emits it at all.
+The mermaid library is a large script, so **it is only shipped to pages that
+actually contain a diagram**. A site with no diagrams anywhere never emits it
+at all.
 
-The diagram is drawn in the reader's current theme, light or dark, chosen when the page loads. Switching theme afterwards re-styles the rest of the page but leaves already-drawn diagrams as they were until the page is reloaded.
+The diagram is drawn in the reader's current theme, light or dark, chosen when
+the page loads. Switching theme afterward re-styles the rest of the page but
+leaves already-drawn diagrams as they were until the page is reloaded.
 
-### Diagram or image?
+### Diagram or image
 
-Prefer mermaid when the diagram is boxes, arrows and labels. It is plain text in your source: diffable, reviewable, editable by whoever is next in the file, and it follows the reader's theme.
+Prefer mermaid when the diagram is boxes, arrows and labels. It is plain text
+in your source: diffable, reviewable, editable by whoever is next in the file,
+and it follows the reader's theme.
 
-Reach for an [image](~trail/writing/images) when the thing is genuinely pictorial — a screenshot, a photograph, an illustration, or a diagram whose layout matters more than mermaid will let you control.
+Reach for an [image](~trail/writing/images) when the thing is genuinely
+pictorial — a screenshot, a photograph, an illustration, or a diagram whose
+layout matters more than mermaid will let you control.
