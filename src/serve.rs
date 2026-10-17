@@ -171,7 +171,9 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     let mut builds = RebuildState::default();
     match builds.rebuild(&root, &out, &options, no_cache, true) {
         Ok(_) => {}
-        Err(error) => eprintln!("initial build failed (serving previous output): {error:#}"),
+        Err(error) => crate::diagnostic::warning(format!(
+            "initial build failed (serving previous output): {error:#}"
+        )),
     }
 
     let (announce, _) = broadcast::channel(16);
@@ -180,6 +182,9 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         announce,
     });
 
+    // The CLI owns this watcher for the process lifetime. The server runs
+    // until an error or process termination; main exits on either. notify and
+    // its callback are owned by this thread, and the OS reclaims them at exit.
     {
         let state = state.clone();
         let root = root.clone();
@@ -265,16 +270,20 @@ fn watch_and_rebuild(
     let mut watcher =
         match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
             // Errors/overflow require reconciliation too; do not drop them.
+            // A closed receiver means the owner is shutting down.
             let _ = event_tx.send(result);
         }) {
             Ok(watcher) => watcher,
             Err(error) => {
-                eprintln!("cannot watch for changes: {error}");
+                crate::diagnostic::warning(format!("file watcher: {error}"));
                 return;
             }
         };
     if let Err(error) = watcher.watch(&canonical_root, notify::RecursiveMode::Recursive) {
-        eprintln!("cannot watch {}: {error}", canonical_root.display());
+        crate::diagnostic::warning(format!(
+            "{}: cannot watch: {error}",
+            canonical_root.display()
+        ));
         return;
     }
     let mut watched_dirs = HashSet::new();
@@ -331,12 +340,13 @@ fn watch_and_rebuild(
         match builds.rebuild(root, out, options, no_cache, full) {
             Ok(pages) => {
                 let version = state.version.fetch_add(1, Ordering::SeqCst) + 1;
+                // No connected browser is a normal broadcast send failure.
                 let _ = state.announce.send(version);
                 println!("rebuilt {pages} pages");
             }
-            Err(error) => {
-                eprintln!("rebuild failed (still serving the last good build): {error:#}")
-            }
+            Err(error) => crate::diagnostic::warning(format!(
+                "rebuild failed (still serving the last good build): {error:#}"
+            )),
         }
         // A rebuild can change what plugins read, failed or not.
         external = watch_dependencies(&mut watcher, &canonical_root, &mut watched_dirs);
@@ -374,7 +384,7 @@ fn watch_dependencies(
         if watched.insert((tree.clone(), true))
             && let Err(error) = watcher.watch(&tree, notify::RecursiveMode::Recursive)
         {
-            eprintln!("cannot watch {}: {error}", tree.display());
+            crate::diagnostic::warning(format!("{}: cannot watch: {error}", tree.display()));
         }
         external.trees.push(tree);
     }
@@ -400,7 +410,7 @@ fn watch_dependencies(
         if watched.insert((dir.clone(), recursive))
             && let Err(error) = watcher.watch(&dir, mode)
         {
-            eprintln!("cannot watch {}: {error}", dir.display());
+            crate::diagnostic::warning(format!("{}: cannot watch: {error}", dir.display()));
         }
     }
     external

@@ -453,10 +453,10 @@ fn build_prepared(
                 &contents,
             )?;
         } else {
-            eprintln!(
-                "warning: image '{}' is not referenced by any article and was not published",
+            crate::diagnostic::warning(format!(
+                "{}: unused image was not published",
                 asset.source.display()
-            );
+            ));
         }
     }
     search::write_search_bundle(sink.search, out)?;
@@ -754,10 +754,9 @@ fn resolve_related(
                 "in article '{}' (related): {}",
                 article.path, error
             )),
-            Err(error) if options.allow_dangling_links => eprintln!(
-                "warning: in article '{}' (related): {}",
-                article.path, error
-            ),
+            Err(error) if options.allow_dangling_links => {
+                crate::diagnostic::warning(format!("{}: related link: {}", article.path, error))
+            }
             Err(error) => sink.broken.push(format!(
                 "in article '{}' (related): {}",
                 article.path, error
@@ -794,7 +793,7 @@ fn report_links(
     rendered: &markdown::Rendered,
 ) {
     for warning in rendered.warnings.iter().chain(&rendered.dangling) {
-        eprintln!("warning: in article '{}': {}", article.path, warning);
+        crate::diagnostic::warning(format!("{}: {}", article.path, warning));
     }
     for problem in &rendered.broken {
         sink.broken

@@ -233,19 +233,24 @@ pub fn run(root: &Path) -> Result<bool> {
     for (path, finding) in &reports {
         let severity = if config.is_warning(&finding.rule) {
             warnings += 1;
-            "warning"
+            "warning: "
         } else {
             errors += 1;
-            "error"
+            ""
         };
-        println!(
-            "{path}:{}:{}: {severity}: {} [{}]",
-            finding.line, finding.column, finding.message, finding.rule
+        eprintln!(
+            "{}: {severity}{path}:{}:{}: {} [{}]",
+            crate::diagnostic::program(),
+            finding.line,
+            finding.column,
+            crate::diagnostic::single_line(&finding.message),
+            finding.rule
         );
     }
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     eprintln!(
-        "{}, {}",
+        "{}: {}, {}",
+        crate::diagnostic::program(),
         plural(errors, "error"),
         plural(warnings, "warning")
     );

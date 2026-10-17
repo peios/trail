@@ -9,7 +9,7 @@ aho-corasick = "1"
 anyhow = "1"
 blake3 = "1.8"
 axum = "0.8"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
 html-escape = "0.2"
 imagesize = "0.15.0"
 lol_html = "2.9"
