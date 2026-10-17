@@ -74,7 +74,7 @@ t.enter();
 check(
     "an unknown theme explains itself",
     t.status(),
-    "Unknown theme “mauve” — try system, light, dark",
+    "Unknown theme 'mauve' — try system, light, dark",
 );
 check("and leaves the theme alone", t.theme(), "system");
 await t.type("/cb");
@@ -86,7 +86,7 @@ await t.type("/nope");
 check(
     "an unknown command says so",
     t.status(),
-    "No command matches “/nope” — type / to see them all",
+    "No command matches '/nope' — type / to see them all",
 );
 
 // --- Inside the copy ------------------------------------------------------

@@ -41,7 +41,7 @@ export function makeDom() {
                 (el.handlers[k] ||= []).push(fn);
             },
             fire(k, ev = {}) {
-                (el.handlers[k] || []).forEach((fn) => fn(ev));
+                return Promise.all((el.handlers[k] || []).map((fn) => fn(ev)));
             },
             querySelector(sel) {
                 return el._q(sel);

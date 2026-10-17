@@ -4,7 +4,7 @@
     "scripts": {
         "format": "node tools/format.mjs --write",
         "format:check": "node tools/format.mjs",
-        "test": "node theme/tests/commands.mjs"
+        "test": "node theme/tests/commands.mjs && node theme/tests/search.mjs && node theme/tests/citations.mjs"
     },
     "devDependencies": {
         "prettier": "3.9.6"

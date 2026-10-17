@@ -16,7 +16,9 @@ try {
     if (theme === "light" || theme === "dark") {
         document.documentElement.dataset.theme = theme;
     }
-} catch {}
+} catch {
+    // Storage can be unavailable; keep this page's default or in-memory state.
+}
 </script>
 {%- if is_copy %}
 {#- The copy duplicates every page at a path that changes on each deploy;
@@ -161,12 +163,16 @@ mermaid.initialize({
             delete document.documentElement.dataset.theme;
             try {
                 localStorage.removeItem("trail-theme");
-            } catch {}
+            } catch {
+                // Storage can be unavailable; keep this page's default or in-memory state.
+            }
         } else {
             document.documentElement.dataset.theme = state;
             try {
                 localStorage.setItem("trail-theme", state);
-            } catch {}
+            } catch {
+                // Storage can be unavailable; keep this page's default or in-memory state.
+            }
         }
         button.dataset.themeState = state;
         button.setAttribute("aria-label", "Theme: " + state);
@@ -204,7 +210,9 @@ mermaid.initialize({
     let stored = [];
     try {
         stored = JSON.parse(sessionStorage.getItem(key)) || [];
-    } catch {}
+    } catch {
+        // Storage can be unavailable; keep this page's default or in-memory state.
+    }
     for (const details of tree.querySelectorAll("details[data-chapter]")) {
         if (stored.includes(details.dataset.chapter)) {
             details.open = true;
@@ -367,7 +375,9 @@ mermaid.initialize({
     let saved = "md";
     try {
         saved = localStorage.getItem("trail-reading-size") || "md";
-    } catch {}
+    } catch {
+        // Storage can be unavailable; keep this page's default or in-memory state.
+    }
     apply(saved in scales ? saved : "md");
     controls?.addEventListener("click", (event) => {
         const button = event.target.closest("button");
@@ -377,7 +387,9 @@ mermaid.initialize({
         apply(button.dataset.size);
         try {
             localStorage.setItem("trail-reading-size", button.dataset.size);
-        } catch {}
+        } catch {
+            // Storage can be unavailable; keep this page's default or in-memory state.
+        }
     });
 })();
 
@@ -421,7 +433,9 @@ mermaid.initialize({
         if (localStorage.getItem(KEY) === "1") {
             body.classList.add("citations-hidden");
         }
-    } catch (_) {}
+    } catch {
+        // Storage can be unavailable; keep this page's default or in-memory state.
+    }
 
     document.addEventListener("click", (event) => {
         const anchor = event.target.closest(".citation-anchor");
@@ -438,10 +452,13 @@ mermaid.initialize({
             anchor.classList.add("copied");
             setTimeout(() => anchor.classList.remove("copied"), 1400);
         };
+        const failed = () => {
+            anchor.title = "Copy failed. Copy the citation from the link title: " + citation;
+        };
         if (navigator.clipboard?.writeText) {
-            navigator.clipboard.writeText(citation).then(done, done);
+            navigator.clipboard.writeText(citation).then(done, failed);
         } else {
-            done();
+            failed();
         }
     });
 
@@ -451,7 +468,9 @@ mermaid.initialize({
         const hidden = body.classList.toggle("citations-hidden");
         try {
             localStorage.setItem(KEY, hidden ? "1" : "0");
-        } catch (_) {}
+        } catch {
+            // Storage can be unavailable; keep this page's default or in-memory state.
+        }
         return hidden;
     };
 })();

@@ -42,14 +42,14 @@
             names: ["/theme"],
             argument: "[system|light|dark]",
             hint: () =>
-                `Switch the colour theme — now ${document.documentElement.dataset.theme || "system"}`,
+                `Switch the color theme: ${document.documentElement.dataset.theme || "system"}`,
             run: (argument) => {
                 if (!argument) {
                     window.trail?.cycleTheme?.();
                     return;
                 }
                 if (!window.trail?.setTheme?.(argument)) {
-                    return `Unknown theme “${argument}” — try ${themeNames().join(", ")}`;
+                    return `Unknown theme '${argument}' — try ${themeNames().join(", ")}`;
                 }
             },
         },
@@ -88,20 +88,34 @@
         return { name, argument, matches, exact: Boolean(exact) };
     };
 
-    let pagefind = null;
-    const engine = async () => {
-        if (!pagefind) {
-            pagefind = await import(site().base + "/pagefind/pagefind.js");
-            await pagefind.init();
-        }
-        return pagefind;
+    const SEARCH_DELAY_MS = 120;
+    const MAX_RESULTS = 8;
+    const SEARCH_UNAVAILABLE = "Search is unavailable. Try again.";
+    // One initialization per modal, shared by overlapping requests. A failed
+    // initialization clears the promise so the next interaction can retry.
+    let enginePromise = null;
+    let queryVersion = 0;
+    const engine = () => {
+        enginePromise ??= import(site().base + "/pagefind/pagefind.js")
+            .then(async (pagefind) => {
+                await pagefind.init();
+                return pagefind;
+            })
+            .catch((error) => {
+                enginePromise = null;
+                throw error;
+            });
+        return enginePromise;
     };
 
     const open = () => {
         modal.showModal();
         input.select();
+        const version = queryVersion;
         engine().catch(() => {
-            status.textContent = "Search is unavailable (the index failed to load).";
+            if (version === queryVersion) {
+                status.textContent = SEARCH_UNAVAILABLE;
+            }
         });
     };
 
@@ -203,10 +217,11 @@
         render();
         status.textContent = entries.length
             ? ""
-            : `No command matches “${parsed.name}” — type / to see them all`;
+            : `No command matches '${parsed.name}' — type / to see them all`;
     };
 
     input.addEventListener("input", async () => {
+        const version = ++queryVersion;
         const query = input.value.trim();
         if (!query) {
             entries = [];
@@ -219,28 +234,40 @@
             showCommands(parsed);
             return;
         }
-        const search = await (await engine()).debouncedSearch(query, {}, 120);
-        if (search === null) {
-            return;
-        } // superseded by a newer keystroke
-        const results = await Promise.all(
-            search.results.slice(0, 8).map((result) => result.data()),
-        );
-        entries = results.map((result) => ({
-            title: result.meta.title || result.url,
-            subtitle: result.meta.crumbs,
-            excerpt: result.excerpt,
-            // Carry the query to the page so it can mark the matches.
-            href: result.url + "?q=" + encodeURIComponent(query),
-        }));
-        selected = 0;
-        render();
-        if (search.results.length === 0) {
-            status.textContent = `No results for “${query}”`;
-        } else if (search.results.length > entries.length) {
-            status.textContent = `Showing ${entries.length} of ${search.results.length} results`;
-        } else {
-            status.textContent = "";
+        try {
+            const search = await (await engine()).debouncedSearch(query, {}, SEARCH_DELAY_MS);
+            if (search === null || version !== queryVersion) {
+                return;
+            } // superseded by a newer keystroke
+            const results = await Promise.all(
+                search.results.slice(0, MAX_RESULTS).map((result) => result.data()),
+            );
+            if (version !== queryVersion) {
+                return;
+            }
+            entries = results.map((result) => ({
+                title: result.meta.title || result.url,
+                subtitle: result.meta.crumbs,
+                excerpt: result.excerpt,
+                // Carry the query to the page so it can mark the matches.
+                href: result.url + "?q=" + encodeURIComponent(query),
+            }));
+            selected = 0;
+            render();
+            if (search.results.length === 0) {
+                status.textContent = `No results for '${query}'`;
+            } else if (search.results.length > entries.length) {
+                status.textContent = `Showing ${entries.length} of ${search.results.length} results`;
+            } else {
+                status.textContent = "";
+            }
+        } catch {
+            if (version !== queryVersion) {
+                return;
+            }
+            entries = [];
+            render();
+            status.textContent = SEARCH_UNAVAILABLE;
         }
     });
 
