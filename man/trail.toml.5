@@ -1,4 +1,4 @@
-.TH TRAIL.TOML 5 2026-10-17 "Peios trail 0.1.0"
+.TH TRAIL.TOML 5 2026-10-18 "Peios trail 0.1.0"
 .SH NAME
 trail.toml \- trail configuration files
 .SH SYNOPSIS
@@ -81,7 +81,7 @@ footer.
 Type: tables; Default: none; Commands that expand plugin blocks. See below.
 .TP
 \fBmerge\fR
-Type: array of tables; Default: \fB[]\fR; Other trees whose products join the
+Type: array of tables; Default: \fB[]\fR; Other trees whose root collections join the
 site. See below.
 .TP
 \fBlint\fR
@@ -122,12 +122,13 @@ the
   merged tree, relative to that
   tree's root, using that tree's \fBedit_url\fR).
 .IP \(bu 2
-Every slug in \fBfeatured\fR must name an existing product.
+Every slug in \fBfeatured\fR must name an existing root collection.
 .PP
 .SS "[[attachments]]"
 Declare a downloadable file or a generated source archive. Each table requires
 \fBid\fR, \fBtitle\fR, \fBdescription\fR, \fBsource\fR and \fBfilename\fR.
-The source is relative to the declaring tree's root, outside product directories.
+The source is relative to the declaring tree's root, outside product and
+root anthology directories.
 Merged trees retain their declarations; IDs must be unique across the site.
 .PP
 \fBformat\fR defaults to \fBfile\fR, which copies a regular file unchanged.
@@ -285,7 +286,7 @@ Type: string; \fBrequired.\fR The tree's directory, relative to the site root.
 path = "../kernel/docs"
 .fi
 .PP
-Every \fB*.product\fR in the tree joins the site. A merged tree's
+Every \fB*.product\fR and \fB*.antho\fR at the tree root joins the site. A merged tree's
 \fBtrail.toml\fR is
 optional; when present it must be valid, and only its \fBedit_url\fR,
 \fBpassthrough\fR, \fBattachments\fR and \fBplugins\fR apply. Everything else, including its own
@@ -298,7 +299,9 @@ an empty \fBpath\fR, or one that is not a directory;
 .IP \(bu 2
 a \fBpath\fR that is the site root itself;
 .IP \(bu 2
-a product slug that two trees share;
+conflicting container types, metadata, or sibling orders;
+.IP \(bu 2
+duplicate article slugs, alias slugs, or image destinations;
 .IP \(bu 2
 anything in the tree's root that would be an error in a site root, except a
   \fBdist/\fR directory.
@@ -306,6 +309,20 @@ anything in the tree's root that would be an error in a site root, except a
 A \fBpath\fR inside the site root is tolerated there, the same way
 \fBfavicon\fR and
 friends are.
+.PP
+Matching containers combine recursively at every supported level: products,
+anthologies, shelves, topics, topic folders, books, and nested chapters.
+Containers match by slug within the same parent, including shelf boundaries.
+Their types, orders, and resolved metadata must agree, including titles,
+descriptions, reference claims, product branding, and book short names.
+Omitted optional metadata uses its usual default before comparison.
+Leaf articles and aliases never replace existing entries, even if identical.
+Different siblings must have distinct orders and slugs. Shelves still share
+their parent's URL space.
+.PP
+Article and image source paths stay in their original trees. Edit links,
+relative image references, and plugin requests use those source locations.
+Merge order does not change authored navigation order.
 .PP
 .SS "What url unlocks"
 .PP
@@ -347,7 +364,13 @@ inline_ref = ["pekit"]
 .PP
 .SS "An anthology"
 .PP
-Required in every \fB.antho\fR directory.
+Required in every \fB.antho\fR directory, including a root
+\fB<slug>.antho\fR collection. Root anthologies need no order prefix or
+product branding fields. They publish at \fB/<slug>\fR and participate in
+\fBfeatured\fR alongside products. Navigation uses a monogram derived from
+the title and the default Trail accent. The \fBproducts\fR array in
+\fBsite.json\fR includes both root types; its \fBkind\fR field is
+\fBproduct\fR or \fBanthology\fR.
 .PP
 .TP
 \fBtitle\fR

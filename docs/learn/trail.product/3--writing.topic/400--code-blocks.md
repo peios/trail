@@ -130,7 +130,7 @@ language:
 
 ````markdown
 ```
-built 1227 pages (8 products) → ./dist
+built 1227 pages (8 collections) → ./dist
 ```
 ````
 

@@ -147,3 +147,14 @@ topics, two specifications, and a description worth reading — is an anthology.
 The cost of an anthology is a URL segment on every page beneath it and one
 more select for the reader. The cost of a shelf is nothing at all, which is
 why it is usually the right first move.
+
+## Use an anthology at the site root
+
+A `<slug>.antho` directory can also sit at the site root. It needs the same
+`title` and `description` as a nested anthology, but has no order prefix.
+Its URL starts at `/<slug>`, without a product directory above it.
+
+Use a root anthology when related documentation belongs in one collection
+without separate product branding. Component repositories can contribute
+pages to the same collection through
+[merged trees](~trail/structuring-a-site/merged-trees).

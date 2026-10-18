@@ -22,7 +22,7 @@ trail build --cbpath 8f3a91c
 ```
 
 ```text
-built 1227 pages (8 products) → ./dist
+built 1227 pages (8 collections) → ./dist
 cache-busting copy → ./dist/8f3a91c/
 ```
 

@@ -125,3 +125,144 @@ json.dump({'blocks': [{'id': 0, 'markdown': body}], 'depends_on': ['../dep.txt',
         fs::read(dir.path().join("out/demo/guide/page/index.html")).unwrap()
     );
 }
+
+#[test]
+fn recursive_merges_keep_provenance_and_invalidate_cached_navigation() {
+    let dir = tempfile::tempdir().unwrap();
+    let primary = dir.path().join("site");
+    let extra = dir.path().join("component");
+    let topic = "peios.antho/100--accounts.shelf/100--accounts.topic";
+    let write = |root: &Path, relative: &str, text: &str| {
+        let file = root.join(relative);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    };
+    for root in [&primary, &extra] {
+        write(
+            root,
+            "peios.antho/trail.toml",
+            "title = 'Peios'\ndescription = 'Peios documentation.'\n",
+        );
+    }
+    write(
+        &primary,
+        "trail.toml",
+        "sitename = 'Learn'\ntitle = 'Learn'\ndescription = 'Learn'\nfooter = 'Learn'\nedit_url = 'https://example.com/primary/{path}'\n[[merge]]\npath = '../component'\n",
+    );
+    write(
+        &extra,
+        "trail.toml",
+        "sitename = 'Component'\ntitle = 'Component'\ndescription = 'Component'\nfooter = 'Component'\nedit_url = 'https://example.com/component/{path}'\n[plugins.local]\ncommand = ['python3', '.tools/plugin.py']\n",
+    );
+    write(
+        &extra,
+        ".tools/plugin.py",
+        r#"import json, pathlib, sys
+request = json.load(sys.stdin)
+assert pathlib.Path(request['root']).resolve() == pathlib.Path.cwd()
+assert request['blocks'][0]['file'].startswith('peios.antho/')
+with open('.runs', 'a') as runs: runs.write('run\n')
+body = pathlib.Path('.input').read_text()
+json.dump({'blocks': [{'id': 0, 'markdown': body}], 'depends_on': ['.input']}, sys.stdout)
+"#,
+    );
+    write(&extra, ".input", "Component generated content.");
+    write(
+        &primary,
+        &format!("{topic}/100--overview.md"),
+        "---\ntitle: Overview\ntype: concept\ndescription: Account overview.\nrelated: [peios/accounts/manage]\n---\n\nRead [management](~peios/accounts/manage).\n",
+    );
+    write(
+        &primary,
+        &format!("{topic}/300--alias.link"),
+        "target = '~peios/accounts/manage'\n",
+    );
+    let manage = format!("{topic}/200--manage.md");
+    let source = "---\ntitle: Managing Accounts\ntype: how-to\ndescription: Manage an account.\n---\n\nSee the [overview](~peios/accounts/overview).\n\n![Account diagram](diagram.svg)\n\n```{local}\n```\n";
+    write(&extra, &manage, source);
+    write(
+        &extra,
+        &format!("{topic}/diagram.svg"),
+        "<svg xmlns='http://www.w3.org/2000/svg'><title>Accounts</title></svg>",
+    );
+    let good = |args: &[&str]| {
+        let output = build(&primary, args, "recursive");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    let out = dir.path().join("out");
+    good(&[]);
+    good(&[]);
+    assert_eq!(
+        fs::read_to_string(extra.join(".runs"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let page = fs::read_to_string(out.join("peios/accounts/manage/index.html")).unwrap();
+    assert!(page.contains("Component generated content."));
+    assert!(page.contains("https://example.com/component/peios.antho/100--accounts.shelf/100--accounts.topic/200--manage.md"));
+    let alias = fs::read_to_string(out.join("peios/accounts/alias/index.html")).unwrap();
+    assert!(alias.contains("https://example.com/component/"));
+    assert!(out.join("peios/accounts/diagram.svg").is_file());
+    assert!(!out.join("peios/peios").exists());
+    let index = fs::read_to_string(out.join("site.json")).unwrap();
+    assert!(index.contains("\"kind\": \"anthology\""));
+    write(&extra, ".input", "Updated generated content.");
+    good(&[]);
+    assert!(
+        fs::read_to_string(out.join("peios/accounts/manage/index.html"))
+            .unwrap()
+            .contains("Updated generated content.")
+    );
+    let additional = format!("{topic}/250--extra.md");
+    write(
+        &extra,
+        &additional,
+        "---\ntitle: Extra\ntype: concept\ndescription: Extra content.\n---\n\nAdditional account guidance.\n",
+    );
+    good(&[]);
+    let cached = fs::read(out.join("peios/accounts/manage/index.html")).unwrap();
+    assert!(String::from_utf8_lossy(&cached).contains("/peios/accounts/extra"));
+    good(&["--no-cache"]);
+    assert_eq!(
+        cached,
+        fs::read(out.join("peios/accounts/manage/index.html")).unwrap()
+    );
+    fs::remove_file(extra.join(&additional)).unwrap();
+    good(&[]);
+    assert!(!out.join("peios/accounts/extra").exists());
+    assert!(
+        !fs::read_to_string(out.join("peios/accounts/manage/index.html"))
+            .unwrap()
+            .contains("/peios/accounts/extra")
+    );
+
+    // Moving the owning source tree changes edit URLs and image resolution,
+    // even when the page body and its published URL remain unchanged.
+    fs::rename(extra.join(&manage), primary.join(&manage)).unwrap();
+    fs::rename(
+        extra.join(format!("{topic}/diagram.svg")),
+        primary.join(format!("{topic}/diagram.svg")),
+    )
+    .unwrap();
+    good(&[]);
+    for name in ["manage", "alias"] {
+        let page =
+            fs::read_to_string(out.join(format!("peios/accounts/{name}/index.html"))).unwrap();
+        assert!(page.contains("https://example.com/primary/peios.antho/"));
+        assert!(!page.contains("https://example.com/component/peios.antho/"));
+    }
+    write(
+        &primary,
+        &manage,
+        &source.replace("~peios/accounts/overview", "~peios/accounts/missing"),
+    );
+    let failure = build(&primary, &[], "recursive");
+    assert!(!failure.status.success());
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("missing"));
+}

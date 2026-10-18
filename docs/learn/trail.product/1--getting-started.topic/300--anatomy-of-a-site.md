@@ -50,17 +50,21 @@ learn/                                  the site root
 └── pekit.product/                       another product  →  /pekit
 ```
 
+A root anthology can replace a product when separate product branding is
+not needed. It uses `<slug>.antho` and requires a title and description.
+
 Everything below the root is optional. A site with one product, one topic, and
 one article is a complete site; this site's `trail.product` is exactly that
 shape, four levels shallower than `peios.product`.
 
 ## The naming grammar
 
-Three name shapes appear throughout the tree.
+These name shapes appear throughout the tree.
 
 | Shape | Example | Where |
 | ------------------------ | ------------------------- | -------------------------------------------------------------------- |
 | `<slug>.product` | `pekit.product` | Only at the site root. |
+| `<slug>.antho` | `peios.antho` | An anthology at the site root. |
 | `<order>--<slug>.<kind>` | `2--writing.topic` | Anthologies, topics, books, shelves. |
 | `<order>--<slug>` | `300--tokens`, `2--model` | Topic subfolders and book chapters — no suffix. |
 | `<order>--<slug>.md` | `100--sids.md` | Articles. |
@@ -85,8 +89,8 @@ after every numbered sibling at their level. See
 
 ## URLs
 
-A page's URL is its product slug followed by the slug of every container
-between the product and the page — with two exceptions.
+A page's URL starts with its root collection slug, followed by each
+container between that collection and the page — with two exceptions.
 
 ```text
 peios.product/1--security-fundamentals.antho/1--identity.topic/100--sids.md
@@ -144,7 +148,7 @@ level tolerates.
 
 | Directory | May contain |
 | ----------------- | ---------------------------------------------------------------------------------- |
-| The site root | `trail.toml`, `*.product/`, the output directory, files named by the config |
+| The site root | `trail.toml`, `*.product/`, `*.antho/`, the output directory, files named by the config |
 | A product | `trail.toml`, `.antho/`, `.topic/`, `.book/`, `.shelf/` |
 | An anthology | `trail.toml`, `.antho/`, `.topic/`, `.book/`, `.shelf/` |
 | A shelf | `trail.toml`, the same as its parent minus shelves — a shelf never holds a shelf |
@@ -171,7 +175,7 @@ Siblings sort by their `<order>` prefix, ascending. Within a book, appendix
 entries (`a<N>--`) sort after every numbered entry at the same level, and they
 are lettered rather than numbered.
 
-Products are the exception: they have no order prefix. They sort by the root
+Root collections have no order prefix. They sort by the root
 config's `featured` list first, in that list's order, then everything else by
 title.
 
