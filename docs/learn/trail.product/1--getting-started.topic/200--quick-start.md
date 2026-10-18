@@ -57,7 +57,7 @@ else — the accent color, the base URL, header links, a favicon — is optional
 and covered in [Configuring the site](~trail/building/configuring-the-site).
 
 > [!NOTE]
-> The site root can contain **only** `trail.toml`, `*.product`
+> The site root can contain **only** `trail.toml`, `*.product`, `*.antho`,
 > directories, the build output directory, and any files named by the config
 > (a favicon, a custom stylesheet). Anything else is a build error. This is
 > deliberate: a stray file in the root is far more likely to be a mistake than
@@ -125,7 +125,7 @@ trail build
 ```
 
 ```text
-built 6 pages (1 products) → ./dist
+built 6 pages (1 collection) → ./dist
 ```
 
 Six pages from one article, because trail writes more than the pages you

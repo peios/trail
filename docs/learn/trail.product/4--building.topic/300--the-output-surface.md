@@ -153,9 +153,12 @@ output and adds nothing new.
 
 ## site.json
 
-The whole site model as JSON: the site's own metadata, then products, and
+The whole site model as JSON: the site's own metadata, root collections, and
 inside them the full tree of anthologies, topics, folders, books, chapters and
 articles.
+
+The `products` array includes products and root anthologies. Its `kind` field
+is `product` or `anthology`. Both use the same item and URL structure.
 
 ```json
 {
@@ -164,6 +167,7 @@ articles.
   "llms": "/llms.txt",
   "products": [
     {
+      "kind": "product",
       "slug": "pekit",
       "path": "/pekit",
       "md": "/pekit.md",

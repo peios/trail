@@ -192,13 +192,13 @@ pub fn run(args: &BuildArgs) -> Result<()> {
     };
     let pages = build_all(&site, &out, &options)?;
     cache.finish();
-    let products = site.products.len();
+    let collections = site.products.len();
     println!(
-        "built {} page{} ({} product{}) → {}",
+        "built {} page{} ({} collection{}) → {}",
         pages,
         if pages == 1 { "" } else { "s" },
-        products,
-        if products == 1 { "" } else { "s" },
+        collections,
+        if collections == 1 { "" } else { "s" },
         out.display()
     );
     if let Some(cbpath) = &args.cbpath {
@@ -2230,7 +2230,7 @@ mod tests {
         let start = fs::read_to_string(out.join("gamma/guide/start/index.html")).unwrap();
         assert!(!start.contains("forge.example"));
 
-        // Two trees cannot share a product slug.
+        // Matching root collections must agree on their metadata.
         fs::create_dir_all(extra.join("alpha.product")).unwrap();
         fs::copy(
             extra.join("gamma.product/trail.toml"),
@@ -2238,7 +2238,10 @@ mod tests {
         )
         .unwrap();
         let err = format!("{:#}", Site::load(&root, &out).unwrap_err());
-        assert!(err.contains("product 'alpha' is in two trees"), "{err}");
+        assert!(
+            err.contains("merge conflict at 'alpha': title differs"),
+            "{err}"
+        );
         fs::remove_dir_all(extra.join("alpha.product")).unwrap();
 
         // The merged tree's root is checked like the site root's.

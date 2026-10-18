@@ -1,124 +1,131 @@
 ---
 title: Merging Source Trees
 type: how-to
-description: Build one site from several directories of products, such as documentation kept in two repositories. How to list a tree with [[merge]], which settings come from which trail.toml, and how links, plugins, edit links, and serve behave across trees.
+description: Combine documentation from several repositories while keeping
+  shared navigation and each page's source, assets, and edit link.
 related:
-  - trail/reference/trail-toml
-  - trail/building/configuring-the-site
+  - trail/structuring-a-site/anthologies-and-shelves
+  - trail/structuring-a-site/link-aliases
   - trail/writing/plugin-blocks
   - trail/building/build-and-serve
 ---
 
-<span id="what-a-merged-tree-s-root-may-hold"></span>
+A merged site combines documentation kept in separate repositories. Each
+repository owns its pages, while matching containers provide one navigation
+structure. Use this when a component's documentation belongs beside other
+components' pages in the published site.
 
-A site doesn't have to live in one directory. When documentation is kept in
-more than one repository, for example a kernel's reference beside its source
-and the rest of the project's guides elsewhere, one site can **merge** the
-other trees' products into its own.
+## Before you start
 
-The site you build is the **primary**. Its root `trail.toml` lists each tree
-to merge:
+- Give each tree a valid Trail layout.
+- Agree on shared container slugs, orders, and metadata.
+- Give every article and alias one source owner.
 
-```toml
-sitename = "Peios Learn"
-title = "Documentation for everything Peios"
-description = "Concepts, guides, and reference for Peios."
-footer = "Peios Learn: documentation for Peios software."
+## Combine the trees
 
-[[merge]]
-path = "../kernel/docs"
-```
+1. Choose the site whose configuration controls the published result. This
+   is the **primary** tree.
 
-`path` is relative to the primary's root. A merged tree is laid out exactly
-like a site root: `*.product` directories and, optionally, a `trail.toml` of
-its own. Each tree can still be built as a site by itself.
+2. Add a `[[merge]]` table to its root `trail.toml`. Place tables after the
+   file's plain keys. For example, this table includes a component's docs:
 
-Like every table, `[[merge]]` must come after the file's plain keys.
+   ```toml
+   [[merge]]
+   path = "../../authd/docs/learn"
+   ```
 
-## Complete the task
+   The path is relative to the primary root, not the working directory.
 
-1. Choose the source trees to combine and ensure their product slugs do not
-   conflict.
+3. Repeat the ancestor directories in each contributing tree. For example,
+   two repositories can each contain this structure:
 
-2. Add a `[[merge]]` entry to the destination site configuration for each
-   tree.
+   ```text
+   peios.antho/
+     trail.toml
+     100--accounts-and-sign-in.shelf/
+       100--local-accounts.topic/
+   ```
 
-3. Run `trail build --strict` from the destination root and resolve
-   configuration or reference errors.
+   Put each repository's articles inside its topic directory. Trail merges
+   the anthology, shelf, and topic into one collection at `/peios`. The
+   shelf adds a heading without adding a URL segment.
 
-4. Check that all expected products appear in navigation and that links
-   between trees resolve.
+4. Give repeated containers identical metadata. A root anthology needs
+   `title` and `description` in its `trail.toml`. For example:
 
-## What joins the site
+   ```toml
+   title = "Peios"
+   description = "Using and developing the Peios operating system."
+   ```
 
-Every product in a merged tree joins the site as if it were in the primary's
-root. It appears on the front page and in the products menu, sorts by
-`featured` like any other product, and is in the search index.
+   Matching containers must also use the same type and order. Trail does
+   not choose one repository's title, description, or reference claims over
+   another's. See `trail-source(5)` and `trail.toml(5)` for the full rules.
 
-Because `~` references name a product by its slug, a page in one tree can link
-to a page in another: `~kernel/process/submitting-patches` works from any
-tree. Two trees can't both have a product with the same slug; that's a build
-error naming both trees.
+5. Build the primary tree with strict validation:
 
-## Which trail.toml decides what
+   ```sh
+   trail build --strict
+   ```
 
-The primary's `trail.toml` decides everything about the site: its name, title,
-description, footer, URL, navigation, featured products, accent colors,
-favicon, custom CSS, `head_html`, and theming. The same keys in a merged
-tree's `trail.toml` are ignored, and so is its own `[[merge]]` list.
+## Check the result
 
-A merged tree's `trail.toml` still matters for the settings that belong to its
-files:
+Open the generated site. Confirm that shared containers appear once, pages
+from every tree appear in reading order, and cross-tree links resolve.
+Follow an edit link to check that it opens the page's owning repository.
 
-| Key | In a merged tree |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `edit_url` | Edit links on the tree's pages use the tree's own template, with `{path}` relative to the tree's root. A tree without `edit_url` gets no edit links; it doesn't borrow the primary's, which would point at the wrong repository. |
-| `passthrough` | Entries are copied from the tree's root. Where two trees pass the same path through, the primary's copy wins, then the first tree listed. |
-| `attachments` | Sources resolve from the tree's root. IDs must be unique across all trees. |
-| `plugins` | The tree's plugins are available to every page, and each runs in the tree that configures it. See [Plugins](#plugins). |
+A duplicate article, alias, or image destination is an error, even when both
+files have identical contents. Remove the duplicate source or choose a
+separate slug. Use a [link alias](~trail/structuring-a-site/link-aliases) when
+one article belongs in two navigation locations.
 
-A merged tree doesn't need a `trail.toml` at all. If it has one, the file must
-be valid, with the same required keys as any site root, so that the tree still
-builds by itself.
+Different items at the same level need different order numbers. Shelves
+share their parent's URL space, so moving a topic into another shelf does
+not make a duplicate topic slug distinct.
 
-## What a merged tree's root can hold
+## Choose a root collection
 
-A merged tree's root is checked like a site root: `trail.toml`, `*.product`
-directories, dot-entries, and whatever its own `trail.toml` names. A `dist/`
-directory is tolerated too, so a tree that has been built by itself still
-merges.
+Use `<slug>.product` for documentation that needs product branding. Use
+`<slug>.antho` for a collection that needs a title and description without
+product branding fields. Both appear in navigation and support `featured`.
+A root anthology has no order prefix; its children use the usual prefixes.
 
-A merged tree can sit inside the primary's root. Naming it in `[[merge]]` is
-what makes its directory legal there, the same way `favicon` and `passthrough`
-entries are.
+Both root types can combine contributions. Matching nested anthologies,
+shelves, topics, topic folders, books, and chapters combine recursively.
+An anthology and a product with the same root slug conflict. A merge does
+not convert one container type into another.
 
-## Plugins
+## Keep source ownership
 
-[Plugins](~trail/writing/plugin-blocks) from every tree are combined. A plugin
-runs in the tree whose `trail.toml` configures it:
+Articles and images retain their original filesystem locations. Relative
+image paths resolve beside the article, including in aliases. An edit link
+uses the source tree's `edit_url` and a path relative to that tree. A tree
+without `edit_url` does not inherit the primary's template.
 
-- Its program path is relative to that tree's root;
-- Its working directory is that tree's root, and so is the `root` its request
-  carries;
-- Each block's `file` is relative to the root of the tree the page is in, so a
-  plugin sees the same paths it would if that tree were built by itself.
+Each tree keeps its declared attachments and passthrough files. Attachment
+IDs are unique across the site. For overlapping passthrough paths, the
+primary wins, followed by the first tree listed.
 
-A plugin configured in a merged tree as
-`command = ["tools/kernel-doc", "--srctree", ".."]` therefore works unchanged
-when the tree is merged.
+[Plugins](~trail/writing/plugin-blocks) run from the tree that configures
+them. Each block's file path remains relative to the tree that owns the
+article. For duplicate plugin names, the primary wins, followed by the first
+tree listed.
 
-Where two trees configure a plugin with the same name, the primary's wins,
-then the first tree listed.
+The primary controls site presentation, navigation, and featured
+collections. A merged tree's own `[[merge]]` entries are not followed. List
+every required tree in the primary configuration.
 
-## Building a tree by itself
+## Build a component's docs separately
 
-A merged tree's pages can link into the other trees' products. Built by
-itself, such a tree has broken links, and `trail build --strict` fails. That's
-expected: build it without `--strict`, or with `--allow-dangling-links` to get
-past the broken links entirely.
+Add a valid root `trail.toml` to build a component's tree on its own. A tree
+without that file can contribute content but cannot build independently.
 
-## Serving
+Links to pages supplied by another tree require the combined build. For a
+partial preview, build without `--strict`, or pass `--allow-dangling-links`.
+Use the combined strict build to validate those references before publishing.
 
-[`trail serve`](~trail/building/build-and-serve) watches every merged tree as
-well as the primary, with everything beneath it except dot-entries and the
-tree's own `dist/`. Editing a page in any tree rebuilds the site.
+## Serve the combined site
+
+Run `trail serve` from the primary root. It watches all merged trees and
+rebuilds when their content changes. Dot-entries and each tree's `dist/`
+directory are excluded from the content scan.

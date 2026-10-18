@@ -12,9 +12,10 @@ related:
 <span id="what-the-colour-does"></span>
 
 A **product** is the outermost division of a trail site: one documented thing,
-with its own landing page, its own color, and its own URL prefix. Products are
-the only children the site root will accept, so every page in the site belongs
-to exactly one.
+with its own landing page, its own color, and its own URL prefix. A site root
+accepts products and
+[root anthologies](~trail/structuring-a-site/anthologies-and-shelves).
+Every page belongs to one of those root collections.
 
 On this site, `pekit`, `provium` and `trail` are products. So is `peios`
 itself — products are not necessarily software packages, they are the largest
@@ -142,11 +143,9 @@ list — in that list's order — and then everything not listed, by title.
 featured = ["peios", "pekit", "provium", "universal-directory", "trail"]
 ```
 
-That list does more than sort. **The front page shows only featured
-products.** An unfeatured product is still built, still searchable, still
-linkable, and still in the header's products menu — it does not get a card on
-the front page. Naming a product that does not exist in `featured` is a build
-error.
+The front page shows only featured products. An unfeatured product is still
+built, searchable, linkable, and listed in the documentation menu. Naming a
+product that does not exist in `featured` is a build error.
 
 ## Roll-ups
 

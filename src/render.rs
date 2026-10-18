@@ -52,6 +52,7 @@ pub struct PrintSection {
 /// dates belong to content listings, not every page's shared navigation.
 #[derive(serde::Serialize)]
 pub struct ProductView<'a> {
+    kind: crate::site::CollectionKind,
     slug: &'a str,
     path: &'a str,
     title: &'a str,
@@ -63,6 +64,7 @@ pub struct ProductView<'a> {
 impl<'a> From<&'a Product> for ProductView<'a> {
     fn from(product: &'a Product) -> Self {
         Self {
+            kind: product.kind,
             slug: &product.slug,
             path: &product.path,
             title: &product.title,

@@ -958,6 +958,7 @@ fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
         "url": site.config.url,
         "llms": "/llms.txt",
         "products": site.products.iter().map(|product| json!({
+            "kind": product.kind,
             "slug": product.slug,
             "path": product.path,
             "md": format!("{}.md", product.path),

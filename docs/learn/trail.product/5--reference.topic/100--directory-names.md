@@ -29,7 +29,8 @@ is the authoritative naming and containment reference.
 
 In `200--getting-started.topic`, `200` controls sibling order,
 `getting-started` supplies the URL slug, and `.topic` selects the grouping
-kind. Product directories use a slug and `.product`, without an order.
+kind. Root collections use a slug and `.product` or `.antho`, without an
+order.
 
 Choose topics for independently readable pages and books for an ordered
 document with section numbers. Shelves group navigation without adding a

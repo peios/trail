@@ -79,7 +79,7 @@ try {
   <a class="wordmark" href="{{ '/' | url }}">{{ wordmark_head }}{% if wordmark_tail %}&nbsp;<span>{{ wordmark_tail }}</span>{% endif %}</a>
   <nav class="site-nav" aria-label="Site navigation">
     <details class="nav-dropdown">
-      <summary>Products</summary>
+      <summary>Documentation</summary>
       <div class="menu">
         {%- for product in products %}
         <a class="menu-item" href="{{ product.path | url }}" style="--pc: {{ product.color }}"><span class="tile tile-menu">{{ product.monogram }}</span>{{ product.title }}</a>

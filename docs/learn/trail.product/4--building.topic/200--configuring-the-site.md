@@ -99,7 +99,7 @@ front page.
   follows, by title.
 - **Only listed products get a card on the front page.** An unlisted product
   is still built, still searchable, still linkable, and still in the header's
-  products menu.
+  documentation menu.
 - Naming a product that does not exist is a build error.
 
 ## Header navigation
@@ -114,7 +114,7 @@ label = "Source"
 url = "https://github.com/peios/peios"
 ```
 
-Each `[[nav]]` block adds a link to the header, beside the products menu. On
+Each `[[nav]]` block adds a link beside the documentation menu. On
 narrow screens they move inside that menu.
 
 Keep the `[[nav]]` blocks at the **end of the file**: in TOML every key after
@@ -138,7 +138,7 @@ its own name and linked from every page. The file must exist, or the build
 fails.
 
 Naming a file here is also what makes it _legal_ to keep in the site root,
-which otherwise accepts only `trail.toml` and `*.product` directories.
+which otherwise accepts `trail.toml`, `*.product`, and `*.antho` directories.
 
 ## Edit links
 
@@ -190,7 +190,7 @@ search-engine verification file. `passthrough` names them, and each one is
 copied into the output exactly as it is — directories whole.
 
 This matters most when the site root **is** a repository root. Trail accepts
-only `trail.toml` and `*.product` directories there, so a `CNAME` sitting
+root collections and `trail.toml` there, so a `CNAME` sitting
 beside them would otherwise fail the build. Naming it here makes it legal
 _and_ publishes it.
 
@@ -230,7 +230,7 @@ an error. [Theming](~trail/building/theming) covers what these actually reach.
 
 ## What can live in the site root
 
-The site root accepts `trail.toml`, `*.product` directories, the build output
+The site root accepts `trail.toml`, root collections, the build output
 directory, dot-entries (`.git` and friends), and **whatever `favicon`,
 `custom_css`, `head_html`, `passthrough` and
 [`[[merge]]`](~trail/structuring-a-site/merged-trees) name**. A setting naming

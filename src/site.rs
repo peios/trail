@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::images::{IMAGE_EXTENSIONS, ImageAsset};
 use crate::plugins::PluginConfig;
 
+#[path = "merge.rs"]
+mod merge;
+
 /// The site model: everything the renderer needs, loaded and validated.
 #[derive(Debug, Clone)]
 pub struct Site {
@@ -191,8 +194,18 @@ fn default_true() -> bool {
     true
 }
 
+/// The root collection's authored type. Both kinds share navigation and
+/// rendering, but an anthology does not require product branding metadata.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CollectionKind {
+    Product,
+    Anthology,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Product {
+    pub kind: CollectionKind,
     pub slug: String,
     /// Site-absolute URL path, e.g. "/peios". Built from validated slugs.
     pub path: String,
@@ -931,7 +944,7 @@ impl Site {
     /// Load a site from `root`. `out` is the build output directory, which is
     /// tolerated inside the root without counting as content.
     ///
-    /// The root may contain only `trail.toml` and `*.product` directories;
+    /// The root accepts `trail.toml`, `*.product` and `*.antho` directories;
     /// anything else (dot-entries aside) is an error, so typos surface at
     /// build time instead of silently vanishing from the site.
     pub fn load(root: &Path, out: &Path) -> Result<Site> {
@@ -1005,31 +1018,20 @@ impl Site {
         )?;
 
         let mut trees = vec![Tree::new(root.to_path_buf(), &config)];
-        // Each product's tree, so a slug two trees share names both.
-        let mut owners: HashMap<String, usize> =
-            products.iter().map(|p| (p.slug.clone(), 0)).collect();
         for merge in &config.merge {
-            let first = products.len();
-            let tree = load_merged_tree(root, out, merge, &mut products, &mut images)
+            let mut additions = Vec::new();
+            let tree = load_merged_tree(root, out, merge, &mut additions, &mut images)
                 .with_context(|| format!("merging the tree at '{}'", merge.path))?;
-            for product in &products[first..] {
-                if let Some(other) = owners.insert(product.slug.clone(), trees.len()) {
-                    bail!(
-                        "product '{}' is in two trees, {} and {}: merged trees \
-                         cannot share a product slug",
-                        product.slug,
-                        trees[other].root.display(),
-                        tree.root.display()
-                    );
-                }
-            }
+            merge::collections(&mut products, additions)
+                .with_context(|| format!("merging the tree at '{}'", tree.root.display()))?;
             trees.push(tree);
         }
+        merge::images(&images)?;
 
         for slug in &config.featured {
             ensure!(
                 products.iter().any(|p| p.slug == *slug),
-                "featured product '{slug}' does not exist (no {slug}.product directory)"
+                "featured product '{slug}' does not exist (no {slug}.product or {slug}.antho directory)"
             );
         }
 
@@ -1038,7 +1040,11 @@ impl Site {
             (Some(x), Some(y)) => x.cmp(&y),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+            (None, None) => a
+                .title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then_with(|| a.slug.cmp(&b.slug)),
         });
 
         crate::attachments::validate_site(&trees, &products, favicon.as_deref())?;
@@ -1286,6 +1292,7 @@ fn load_product(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<
     )?;
 
     let product = Product {
+        kind: CollectionKind::Product,
         slug: slug.to_string(),
         path,
         title: config.title,
@@ -1299,6 +1306,57 @@ fn load_product(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<
     };
     check_flat_slugs("grouping", product.items().map(ProductItem::slug))?;
     Ok(product)
+}
+
+/// Root anthologies have the same URL namespace and presentation as products,
+/// without pretending to be a nested anthology beneath an invented product.
+fn load_root_anthology(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<Product> {
+    let anthology = load_anthology(
+        dir,
+        GroupingName {
+            order: 0,
+            slug: slug.to_string(),
+            kind: "antho".to_string(),
+        },
+        "",
+        images,
+    )?;
+    let item = |item| match item {
+        AnthologyItem::Topic { topic } => ProductItem::Topic { topic },
+        AnthologyItem::Book { book } => ProductItem::Book { book },
+        AnthologyItem::Anthology { anthology } => ProductItem::Anthology { anthology },
+    };
+    let children = anthology
+        .children
+        .into_iter()
+        .map(|child| match child {
+            AnthologyChild::Item(value) => ProductChild::Item(item(value)),
+            AnthologyChild::Shelf(shelf) => ProductChild::Shelf(Shelf {
+                slug: shelf.slug,
+                order: shelf.order,
+                title: shelf.title,
+                items: shelf.items.into_iter().map(item).collect(),
+            }),
+        })
+        .collect();
+    Ok(Product {
+        kind: CollectionKind::Anthology,
+        slug: anthology.slug,
+        path: anthology.path,
+        monogram: anthology
+            .title
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .take(2)
+            .collect(),
+        color: "#635bff".to_string(),
+        title: anthology.title,
+        description: anthology.description,
+        reading_minutes: 0,
+        updated: None,
+        inline_refs: anthology.inline_refs,
+        children,
+    })
 }
 
 fn load_product_shelf(
@@ -2651,9 +2709,9 @@ fn keep_entries<'a>(
         .collect()
 }
 
-/// Load the `*.product` directories of the tree at `root`.
+/// Load the product and anthology root collections of the tree at `root`.
 ///
-/// The root may contain only `trail.toml`, `*.product` directories and
+/// The root accepts `trail.toml`, product and anthology directories and
 /// the entries in `keep`; anything else (dot-entries aside) is an error,
 /// so typos surface at build time instead of silently vanishing from the
 /// site.
@@ -2671,10 +2729,14 @@ fn load_products(
         }
         let path = entry.path();
         if path.is_dir() {
-            let Some(slug) = name.strip_suffix(".product") else {
+            let (slug, kind) = if let Some(slug) = name.strip_suffix(".product") {
+                (slug, CollectionKind::Product)
+            } else if let Some(slug) = name.strip_suffix(".antho") {
+                (slug, CollectionKind::Anthology)
+            } else {
                 bail!(
                     "unexpected directory '{name}' in site root: \
-                     only *.product directories are allowed"
+                     only *.product and *.antho directories are allowed"
                 );
             };
             validate_slug(slug).with_context(|| format!("in directory '{name}'"))?;
@@ -2683,10 +2745,17 @@ fn load_products(
                 "'{slug}' is a reserved product slug (it collides with the \
                  '/{slug}' output directory)"
             );
-            products.push(
-                load_product(&path, slug, images)
-                    .with_context(|| format!("loading product '{slug}'"))?,
+            ensure!(
+                !products.iter().any(|collection| collection.slug == slug),
+                "duplicate root collection slug '{slug}'"
             );
+            let collection = match kind {
+                CollectionKind::Product => load_product(&path, slug, images)
+                    .with_context(|| format!("loading product '{slug}'"))?,
+                CollectionKind::Anthology => load_root_anthology(&path, slug, images)
+                    .with_context(|| format!("loading root anthology '{slug}'"))?,
+            };
+            products.push(collection);
         } else if name != "trail.toml" {
             bail!("unexpected file '{name}' in site root: only trail.toml is allowed");
         }

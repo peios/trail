@@ -112,8 +112,8 @@ impl AttachmentConfig {
             .as_os_str()
             .to_string_lossy();
         ensure!(
-            !first.ends_with(".product") && first != "trail.toml",
-            "attachment sources must be outside product directories and trail.toml"
+            !first.ends_with(".product") && !first.ends_with(".antho") && first != "trail.toml",
+            "attachment sources must be outside collection directories and trail.toml"
         );
         let mut source = root.to_path_buf();
         for part in relative.components() {
@@ -656,6 +656,7 @@ filename = "example.txt"
             "/etc",
             "bundles/missing",
             "alpha.product",
+            "peios.antho",
             "trail.toml",
         ] {
             let mut config = original.clone();

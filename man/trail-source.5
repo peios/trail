@@ -1,4 +1,4 @@
-.TH TRAIL-SOURCE 5 2026-10-17 "Peios trail 0.1.0"
+.TH TRAIL-SOURCE 5 2026-10-18 "Peios trail 0.1.0"
 .SH NAME
 trail-source \- Trail source tree names and layout
 .SH SYNOPSIS
@@ -17,6 +17,10 @@ same material as a walkthrough.
 \fB<slug>.product\fR
 Example: \fBpekit.product\fR; What: A product. Site root only; no order
 prefix.
+.TP
+\fB<slug>.antho\fR
+Example: \fBpeios.antho\fR; What: A root anthology. No order prefix.
+.PP
 .TP
 \fB<order>--<slug>.antho\fR
 Example: \fB1--security.antho\fR; What: An anthology.
@@ -119,7 +123,7 @@ to trail.
 .PP
 .TP
 \fBSite root\fR
-Subdirectories: \fB*.product\fR, the output dir; Files: \fBtrail.toml\fR;
+Subdirectories: \fB*.product\fR, \fB*.antho\fR, the output dir; Files: \fBtrail.toml\fR;
 whatever \fBfavicon\fR, \fBcustom_css\fR, \fBhead_html\fR, \fBpassthrough\fR,
 and \fB[[merge]]\fR name
 .TP
@@ -201,10 +205,10 @@ rule.
 Where: article slugs; Why: every container publishes a \fB/print\fR page
 .TP
 \fBassets\fR
-Where: product slugs; Why: collides with \fB/assets\fR in the output
+Where: root collection slugs; Why: collides with \fB/assets\fR in the output
 .TP
 \fBpagefind\fR
-Where: product slugs; Why: collides with \fB/pagefind\fR in the output
+Where: root collection slugs; Why: collides with \fB/pagefind\fR in the output
 .PP
 .SS "Images"
 .PP
@@ -225,7 +229,7 @@ error.
 Siblings sort by order, ascending. Inside a book, appendix entries sort after
 every numbered entry at the same level, whatever their numbers.
 .PP
-Products are the exception: no order prefix, so they sort by the root config's
+Root collections have no order prefix, so they sort by the root config's
 \fBfeatured\fR list first (in that list's order), then the rest by title.
 .PP
 .SS "Duplicates"
@@ -247,9 +251,18 @@ Shelf contents are checked \fBflattened into their parent\fR, because a shelf
 adds no URL segment  -  two shelves in one product cannot both hold a
 \fBgetting-started\fR topic, since both would want the same URL.
 .PP
+.SS "Merging containers"
+.PP
+The root \fB[[merge]]\fR list combines source trees. Matching container
+slugs combine within the same parent at every level. Types, order prefixes,
+and resolved metadata must agree. Articles, aliases, and images have one
+source owner; duplicate destinations are errors even when contents match.
+Moving an item across a shelf boundary does not change its URL or resolve
+a duplicate destination. See \fBtrail.toml\fR(5).
+.PP
 .SS "URLs"
 .PP
-A page's URL is the product slug, then the slug of every container between it
+A page's URL is the root collection slug, then the slug of every container between it
 and the page, with two exceptions: shelves contribute nothing, and order
 prefixes contribute nothing.
 .PP
