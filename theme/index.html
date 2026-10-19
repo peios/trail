@@ -12,14 +12,20 @@
 
 <section class="products" id="products">
   <h2>Documentation</h2>
+  {%- for section in featured %}
+  {%- if section.title %}
+  <h3 class="shelf-title">{{ section.title }}</h3>
+  {%- endif %}
+  {%- set card_heading_level = 4 if section.title else 3 %}
   <ul class="card-grid">
-    {%- for product in featured %}
+    {%- for product in section.products %}
     <li><a class="card" href="{{ product.path | url }}" style="--pc: {{ product.color }}">
       <span class="tile">{{ product.monogram }}</span>
-      <h3>{{ product.title }}</h3>
+      <h{{ card_heading_level }}>{{ product.title }}</h{{ card_heading_level }}>
       <p>{{ product.description }}</p>
     </a></li>
     {%- endfor %}
   </ul>
+  {%- endfor %}
 </section>
 {% endblock %}

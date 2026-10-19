@@ -15,9 +15,9 @@ between them is exactly one thing: **whether the grouping gets a page of its
 own**.
 
 | Item | URL segment | Page | Sidebar | Nests |
-| ------------------------ | ----------- | ----------------------------------- | ------- | --------------------------------------------- |
-| **Anthology** (`.antho`) | yes | its own landing page | — | in products and anthologies |
-| **Shelf** (`.shelf`) | no | no — a heading on its parent's page | — | in products and anthologies, never in a shelf |
+| ------------------------ | ----------- | ----------------------------------- | ------- | -------------------------------------------------------------- |
+| **Anthology** (`.antho`) | yes | its own landing page | — | at the site root, in products and anthologies |
+| **Shelf** (`.shelf`) | no | no — a heading on its parent's page | — | at the site root, in products and anthologies, never in a shelf |
 
 Reach for a shelf when the topics belong together but readers should still see
 them all at once. Reach for an anthology when the group is big enough to
@@ -128,8 +128,10 @@ rejects that at build time.
 
 ### The rules
 
-- A shelf can sit in a product or an anthology.
-- A shelf can contain anthologies, topics, and books.
+- A shelf can sit in a product or an anthology, where it contains
+  anthologies, topics, and books.
+- A shelf can sit at the site root, where it contains products and root
+  anthologies; see [below](#use-a-shelf-at-the-site-root).
 - **A shelf can never contain another shelf.** Nested headings on a card grid
   are not a structure worth having; if you need the second level, use an
   anthology.
@@ -158,3 +160,39 @@ Use a root anthology when related documentation belongs in one collection
 without separate product branding. Component repositories can contribute
 pages to the same collection through
 [merged trees](~trail/structuring-a-site/merged-trees).
+
+## Use a shelf at the site root
+
+A shelf at the site root groups products and root anthologies under a
+heading. It takes the same `<order>--<slug>.shelf` name and optional
+`trail.toml` as any other shelf, and it adds no URL segment:
+
+```text
+learn/
+├── trail.toml
+├── peios.product/                 →  /peios
+└── 1--tools.shelf/                (no URL of its own)
+    ├── pekit.product/             →  /pekit
+    └── provium.product/           →  /provium
+```
+
+A root shelf holds only `*.product` and `*.antho` directories, plus its
+`trail.toml`. Collections inside it keep their slugs, their URLs, and their
+place in the root `featured` list.
+
+The heading appears in two places:
+
+- **The Documentation menu** in the site header lists every collection.
+  Collections outside any shelf come first. Each shelf follows in order
+  under its title.
+- **The front page** still shows only featured collections. A featured
+  collection on a shelf appears under that shelf's title. A shelf with no
+  featured collections does not appear on the front page.
+
+Within each group, collections keep the usual order: the `featured` list
+first, then everything else by title.
+
+A [merged tree](~trail/structuring-a-site/merged-trees) can use root shelves
+too. Shelves with the same slug combine and need the same order and title.
+A collection that appears in several trees must be on the same shelf in each
+of them, or outside every shelf in each of them.

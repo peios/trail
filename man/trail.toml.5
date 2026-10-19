@@ -1,4 +1,4 @@
-.TH TRAIL.TOML 5 2026-10-18 "Peios trail 0.1.0"
+.TH TRAIL.TOML 5 2026-10-19 "Peios trail 0.1.0"
 .SH NAME
 trail.toml \- trail configuration files
 .SH SYNOPSIS
@@ -38,7 +38,8 @@ Type: string; Default: none; The site's public base URL, for example
 .TP
 \fBfeatured\fR
 Type: array of strings; Default: \fB[]\fR; Product slugs, in order. Sorts
-products, and selects which appear on the front page.
+products, and selects which appear on the front page. A product on a root
+shelf is named by its slug alone and appears under its shelf's title.
 .TP
 \fBaccent\fR
 Type: \fB#rrggbb\fR; Default: theme default; The site accent color.
@@ -286,7 +287,7 @@ Type: string; \fBrequired.\fR The tree's directory, relative to the site root.
 path = "../kernel/docs"
 .fi
 .PP
-Every \fB*.product\fR and \fB*.antho\fR at the tree root joins the site. A merged tree's
+Every \fB*.product\fR and \fB*.antho\fR at the tree root or on a root shelf joins the site. A merged tree's
 \fBtrail.toml\fR is
 optional; when present it must be valid, and only its \fBedit_url\fR,
 \fBpassthrough\fR, \fBattachments\fR and \fBplugins\fR apply. Everything else, including its own
@@ -318,7 +319,9 @@ descriptions, reference claims, product branding, and book short names.
 Omitted optional metadata uses its usual default before comparison.
 Leaf articles and aliases never replace existing entries, even if identical.
 Different siblings must have distinct orders and slugs. Shelves still share
-their parent's URL space.
+their parent's URL space. Root shelves with the same slug combine and must
+agree on order and title; a collection must sit on the same root shelf, or
+on none, in every tree that contributes to it.
 .PP
 Article and image source paths stay in their original trees. Edit links,
 relative image references, and plugin requests use those source locations.
@@ -438,7 +441,7 @@ Type: string; Overrides the slug-derived title.
 \fB\fBinline_ref\fR on a shelf is an error.\fR A shelf has no page and no
 articles
 of its own, so the phrase would have nowhere to land  -  declare it on the
-shelf's items instead.
+shelf's items instead. The same applies to a root shelf.
 .PP
 .SS "Derived titles"
 .PP

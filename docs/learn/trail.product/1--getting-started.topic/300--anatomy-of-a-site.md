@@ -47,11 +47,16 @@ learn/                                  the site root
 │   └── 2--tooling.shelf/                a shelf — a heading, not a URL segment
 │       └── 1--pekit.topic/              →  /peios/pekit   (the shelf adds nothing)
 │
-└── pekit.product/                       another product  →  /pekit
+├── pekit.product/                       another product  →  /pekit
+│
+└── 1--tools.shelf/                      a root shelf — a heading over products
+    └── provium.product/                 →  /provium   (the shelf adds nothing)
 ```
 
 A root anthology can replace a product when separate product branding is
 not needed. It uses `<slug>.antho` and requires a title and description.
+A root shelf groups products and root anthologies under a heading in the
+Documentation menu and on the front page.
 
 Everything below the root is optional. A site with one product, one topic, and
 one article is a complete site; this site's `trail.product` is exactly that
@@ -63,9 +68,9 @@ These name shapes appear throughout the tree.
 
 | Shape | Example | Where |
 | ------------------------ | ------------------------- | -------------------------------------------------------------------- |
-| `<slug>.product` | `pekit.product` | Only at the site root. |
-| `<slug>.antho` | `peios.antho` | An anthology at the site root. |
-| `<order>--<slug>.<kind>` | `2--writing.topic` | Anthologies, topics, books, shelves. |
+| `<slug>.product` | `pekit.product` | Only at the site root or on a root shelf. |
+| `<slug>.antho` | `peios.antho` | An anthology at the site root or on a root shelf. |
+| `<order>--<slug>.<kind>` | `2--writing.topic` | Anthologies, topics, books, shelves (root shelves too). |
 | `<order>--<slug>` | `300--tokens`, `2--model` | Topic subfolders and book chapters — no suffix. |
 | `<order>--<slug>.md` | `100--sids.md` | Articles. |
 | `<order>--<slug>.link` | `3--faq.link` | Aliases; see [Link aliases](~trail/structuring-a-site/link-aliases). |
@@ -148,10 +153,11 @@ level tolerates.
 
 | Directory | May contain |
 | ----------------- | ---------------------------------------------------------------------------------- |
-| The site root | `trail.toml`, `*.product/`, `*.antho/`, the output directory, files named by the config |
+| The site root | `trail.toml`, `*.product/`, `*.antho/`, `.shelf/`, the output directory, files named by the config |
 | A product | `trail.toml`, `.antho/`, `.topic/`, `.book/`, `.shelf/` |
 | An anthology | `trail.toml`, `.antho/`, `.topic/`, `.book/`, `.shelf/` |
 | A shelf | `trail.toml`, the same as its parent minus shelves — a shelf never holds a shelf |
+| A root shelf | `trail.toml`, `*.product/`, `*.antho/` |
 | A topic | `trail.toml`, `.md` articles, `<order>--<slug>/` subfolders, `.link` files, images |
 | A topic subfolder | `trail.toml`, `.md` articles, `.link` files, images |
 | A book | `trail.toml`, `.md` articles, `<order>--<slug>/` chapters, `.link` files, images |
@@ -177,7 +183,8 @@ are lettered rather than numbered.
 
 Root collections have no order prefix. They sort by the root
 config's `featured` list first, in that list's order, then everything else by
-title.
+title. Root shelves sort by their prefix, after the collections outside any
+shelf.
 
 ## Where to go next
 

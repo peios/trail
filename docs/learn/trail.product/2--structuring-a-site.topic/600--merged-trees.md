@@ -95,6 +95,12 @@ shelves, topics, topic folders, books, and chapters combine recursively.
 An anthology and a product with the same root slug conflict. A merge does
 not convert one container type into another.
 
+A tree's root can also hold
+[root shelves](~trail/structuring-a-site/anthologies-and-shelves#use-a-shelf-at-the-site-root).
+Shelves with the same slug combine and need the same order and title. A
+collection contributed by several trees must sit on the same shelf in each,
+or outside every shelf in each.
+
 ## Keep source ownership
 
 Articles and images retain their original filesystem locations. Relative

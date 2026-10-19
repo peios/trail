@@ -18,6 +18,9 @@ pub struct Site {
     /// All products in display order: featured first (in `featured` order),
     /// then the rest sorted by title.
     pub products: Vec<Product>,
+    /// Root shelves in `NN--` order. Products stay in the flat list above;
+    /// each names its shelf, and `sections()` groups them for display.
+    pub shelves: Vec<RootShelf>,
     /// Every image file found alongside articles, wherever it sits in the
     /// tree — a flat registry (relative destinations can reach across
     /// containers), kept off the presentation model.
@@ -221,10 +224,24 @@ pub struct Product {
     /// product's page wherever prose states them.
     #[serde(skip)]
     pub inline_refs: Vec<String>,
+    /// The slug of the root shelf holding this collection, if any.
+    #[serde(skip)]
+    pub shelf: Option<String>,
     /// Direct children (anthologies, books, bare topics, shelves) in
     /// `NN--` order. Templates receive display `sections()` instead of this.
     #[serde(skip)]
     pub children: Vec<ProductChild>,
+}
+
+/// A shelf at a tree's root: a heading over some of the root collections
+/// on the front page and in the header menu. Like any shelf it has no page
+/// and adds no URL segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootShelf {
+    pub slug: String,
+    pub order: u32,
+    /// Derived from the slug unless trail.toml overrides it.
+    pub title: String,
 }
 
 impl Product {
@@ -1008,25 +1025,38 @@ impl Site {
         // A tree merged from inside the root is content the scan tolerates.
         let merged_inside = config.merge.iter().map(|merge| &merge.path);
         let mut products = Vec::new();
+        let mut shelves = Vec::new();
         let mut images = Vec::new();
         load_products(
             root,
             out,
             keep_entries(&config, merged_inside),
             &mut products,
+            &mut shelves,
             &mut images,
         )?;
 
         let mut trees = vec![Tree::new(root.to_path_buf(), &config)];
         for merge in &config.merge {
             let mut additions = Vec::new();
-            let tree = load_merged_tree(root, out, merge, &mut additions, &mut images)
-                .with_context(|| format!("merging the tree at '{}'", merge.path))?;
+            let mut shelf_additions = Vec::new();
+            let tree = load_merged_tree(
+                root,
+                out,
+                merge,
+                &mut additions,
+                &mut shelf_additions,
+                &mut images,
+            )
+            .with_context(|| format!("merging the tree at '{}'", merge.path))?;
             merge::collections(&mut products, additions)
+                .and_then(|()| merge::root_shelves(&mut shelves, shelf_additions))
                 .with_context(|| format!("merging the tree at '{}'", tree.root.display()))?;
             trees.push(tree);
         }
         merge::images(&images)?;
+        shelves.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.slug.cmp(&b.slug)));
+        check_duplicates("root shelf", &shelves, |s| s.order, |s| &s.slug)?;
 
         for slug in &config.featured {
             ensure!(
@@ -1051,6 +1081,7 @@ impl Site {
         Ok(Site {
             config,
             products,
+            shelves,
             images,
             custom_css,
             favicon,
@@ -1148,6 +1179,32 @@ impl Site {
             .iter()
             .filter_map(|slug| self.products.iter().find(|p| p.slug == *slug))
             .collect()
+    }
+
+    /// Display sections for a list of root collections, keeping the list's
+    /// order within each: collections outside any shelf first as one
+    /// untitled section, then each root shelf that holds any of them.
+    pub fn sections<'a>(&'a self, products: &[&'a Product]) -> Vec<Section<'a, Product>> {
+        let loose: Vec<_> = products
+            .iter()
+            .copied()
+            .filter(|p| p.shelf.is_none())
+            .collect();
+        let shelved = self.shelves.iter().map(|shelf| Section {
+            title: Some(shelf.title.as_str()),
+            items: products
+                .iter()
+                .copied()
+                .filter(|p| p.shelf.as_deref() == Some(shelf.slug.as_str()))
+                .collect(),
+        });
+        std::iter::once(Section {
+            title: None,
+            items: loose,
+        })
+        .chain(shelved)
+        .filter(|section| !section.items.is_empty())
+        .collect()
     }
 
     /// The served favicon URL: the configured file's own name at the
@@ -1302,6 +1359,7 @@ fn load_product(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<
         reading_minutes: 0,
         updated: None,
         inline_refs: config.inline_ref,
+        shelf: None,
         children,
     };
     check_flat_slugs("grouping", product.items().map(ProductItem::slug))?;
@@ -1355,6 +1413,7 @@ fn load_root_anthology(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> 
         reading_minutes: 0,
         updated: None,
         inline_refs: anthology.inline_refs,
+        shelf: None,
         children,
     })
 }
@@ -2709,17 +2768,19 @@ fn keep_entries<'a>(
         .collect()
 }
 
-/// Load the product and anthology root collections of the tree at `root`.
+/// Load the product and anthology root collections of the tree at `root`,
+/// including those on root shelves.
 ///
-/// The root accepts `trail.toml`, product and anthology directories and
-/// the entries in `keep`; anything else (dot-entries aside) is an error,
-/// so typos surface at build time instead of silently vanishing from the
-/// site.
+/// The root accepts `trail.toml`, product, anthology and shelf directories
+/// and the entries in `keep`; anything else (dot-entries aside) is an
+/// error, so typos surface at build time instead of silently vanishing
+/// from the site.
 fn load_products(
     root: &Path,
     out: &Path,
     keep: Vec<String>,
     products: &mut Vec<Product>,
+    shelves: &mut Vec<RootShelf>,
     images: &mut Vec<ImageAsset>,
 ) -> Result<()> {
     for entry in read_dir_sorted(root)? {
@@ -2729,38 +2790,100 @@ fn load_products(
         }
         let path = entry.path();
         if path.is_dir() {
-            let (slug, kind) = if let Some(slug) = name.strip_suffix(".product") {
-                (slug, CollectionKind::Product)
-            } else if let Some(slug) = name.strip_suffix(".antho") {
-                (slug, CollectionKind::Anthology)
+            if name.ends_with(".shelf") {
+                let shelf = load_root_shelf(&path, &name, products, images)
+                    .with_context(|| format!("loading shelf in '{name}'"))?;
+                shelves.push(shelf);
             } else {
-                bail!(
-                    "unexpected directory '{name}' in site root: \
-                     only *.product and *.antho directories are allowed"
-                );
-            };
-            validate_slug(slug).with_context(|| format!("in directory '{name}'"))?;
-            ensure!(
-                slug != "assets" && slug != "pagefind",
-                "'{slug}' is a reserved product slug (it collides with the \
-                 '/{slug}' output directory)"
-            );
-            ensure!(
-                !products.iter().any(|collection| collection.slug == slug),
-                "duplicate root collection slug '{slug}'"
-            );
-            let collection = match kind {
-                CollectionKind::Product => load_product(&path, slug, images)
-                    .with_context(|| format!("loading product '{slug}'"))?,
-                CollectionKind::Anthology => load_root_anthology(&path, slug, images)
-                    .with_context(|| format!("loading root anthology '{slug}'"))?,
-            };
-            products.push(collection);
+                load_collection(&path, &name, None, products, images)?;
+            }
         } else if name != "trail.toml" {
             bail!("unexpected file '{name}' in site root: only trail.toml is allowed");
         }
     }
     Ok(())
+}
+
+/// Load one `*.product` or `*.antho` root collection into `products`.
+/// `shelf` names the root shelf it sits on, if any.
+fn load_collection(
+    path: &Path,
+    name: &str,
+    shelf: Option<&str>,
+    products: &mut Vec<Product>,
+    images: &mut Vec<ImageAsset>,
+) -> Result<()> {
+    let (slug, kind) = if let Some(slug) = name.strip_suffix(".product") {
+        (slug, CollectionKind::Product)
+    } else if let Some(slug) = name.strip_suffix(".antho") {
+        (slug, CollectionKind::Anthology)
+    } else if shelf.is_some() {
+        bail!(
+            "unexpected directory '{name}' in a root shelf: \
+             only *.product and *.antho directories are allowed"
+        );
+    } else {
+        bail!(
+            "unexpected directory '{name}' in site root: \
+             only *.product, *.antho and *.shelf directories are allowed"
+        );
+    };
+    validate_slug(slug).with_context(|| format!("in directory '{name}'"))?;
+    ensure!(
+        slug != "assets" && slug != "pagefind",
+        "'{slug}' is a reserved product slug (it collides with the \
+         '/{slug}' output directory)"
+    );
+    ensure!(
+        !products.iter().any(|collection| collection.slug == slug),
+        "duplicate root collection slug '{slug}'"
+    );
+    let mut collection = match kind {
+        CollectionKind::Product => {
+            load_product(path, slug, images).with_context(|| format!("loading product '{slug}'"))?
+        }
+        CollectionKind::Anthology => load_root_anthology(path, slug, images)
+            .with_context(|| format!("loading root anthology '{slug}'"))?,
+    };
+    collection.shelf = shelf.map(str::to_string);
+    products.push(collection);
+    Ok(())
+}
+
+/// Load a `<order>--<slug>.shelf` at a tree's root. Its collections join
+/// `products` directly; the shelf itself only records the heading.
+fn load_root_shelf(
+    dir: &Path,
+    name: &str,
+    products: &mut Vec<Product>,
+    images: &mut Vec<ImageAsset>,
+) -> Result<RootShelf> {
+    let grouping = parse_grouping_name(name)?;
+    let config = grouping_config(dir, &grouping.slug)?;
+    ensure!(
+        config.inline_refs.is_empty(),
+        "inline_ref on shelf '{}': a shelf has no page — declare it on \
+         the shelf's collections instead",
+        grouping.slug
+    );
+    for (child_dir, entry_name) in grouping_dirs(dir, "a shelf")? {
+        ensure!(
+            !entry_name.ends_with(".shelf"),
+            "a shelf cannot contain another shelf ('{entry_name}')"
+        );
+        load_collection(
+            &child_dir,
+            &entry_name,
+            Some(&grouping.slug),
+            products,
+            images,
+        )?;
+    }
+    Ok(RootShelf {
+        slug: grouping.slug,
+        order: grouping.order,
+        title: config.title,
+    })
 }
 
 /// Load a `[[merge]]` tree's products and the settings it keeps. Its
@@ -2772,6 +2895,7 @@ fn load_merged_tree(
     out: &Path,
     merge: &MergeConfig,
     products: &mut Vec<Product>,
+    shelves: &mut Vec<RootShelf>,
     images: &mut Vec<ImageAsset>,
 ) -> Result<Tree> {
     ensure!(!merge.path.is_empty(), "a merge path cannot be empty");
@@ -2795,7 +2919,7 @@ fn load_merged_tree(
     }
     // The tree's own build output, from building it as a site of its own.
     keep.push("dist".to_string());
-    load_products(&root, out, keep, products, images)?;
+    load_products(&root, out, keep, products, shelves, images)?;
     Ok(match &config {
         Some(config) => Tree::new(root, config),
         None => Tree {
@@ -3805,6 +3929,122 @@ mod tests {
         let err = load(dir.path()).unwrap_err();
         assert!(format!("{err:#}").contains("duplicate item slug 'wide'"));
         assert!(format!("{err:#}").contains("URL space"));
+    }
+
+    /// Moves the fixture's beta product onto a root shelf.
+    fn shelve_beta(root: &Path, shelf: &str) {
+        fs::create_dir_all(root.join(shelf)).unwrap();
+        fs::rename(
+            root.join("beta.product"),
+            root.join(shelf).join("beta.product"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn root_shelves_group_collections_without_a_url_segment() {
+        let dir = fixture();
+        shelve_beta(dir.path(), "2--tools.shelf");
+        fs::write(
+            dir.path().join("2--tools.shelf/trail.toml"),
+            "title = \"Toolbox\"\n",
+        )
+        .unwrap();
+        let site = load(dir.path()).unwrap();
+
+        let beta = site.products.iter().find(|p| p.slug == "beta").unwrap();
+        assert_eq!(beta.path, "/beta");
+        assert_eq!(beta.shelf.as_deref(), Some("tools"));
+        assert_eq!(alpha(&site).shelf, None);
+        assert_eq!(
+            site.shelves,
+            [RootShelf {
+                slug: "tools".into(),
+                order: 2,
+                title: "Toolbox".into(),
+            }]
+        );
+
+        let titles = |sections: Vec<Section<'_, Product>>| -> Vec<(Option<String>, Vec<String>)> {
+            sections
+                .into_iter()
+                .map(|s| {
+                    (
+                        s.title.map(str::to_string),
+                        s.items.iter().map(|p| p.slug.clone()).collect(),
+                    )
+                })
+                .collect()
+        };
+        let all: Vec<_> = site.products.iter().collect();
+        assert_eq!(
+            titles(site.sections(&all)),
+            [
+                (None, vec!["alpha".to_string()]),
+                (Some("Toolbox".to_string()), vec!["beta".to_string()]),
+            ]
+        );
+        // `featured` finds collections on shelves and keeps their heading;
+        // the loose section, holding nothing featured, is dropped.
+        assert_eq!(
+            titles(site.sections(&site.featured())),
+            [(Some("Toolbox".to_string()), vec!["beta".to_string()])]
+        );
+    }
+
+    /// A root shelf's directory name, a change made inside it, and the
+    /// error that change must produce.
+    type ShelfCase = (&'static str, fn(&Path), &'static str);
+
+    #[test]
+    fn rejects_malformed_root_shelves() {
+        let cases: [ShelfCase; 6] = [
+            ("tools.shelf", |_| {}, "missing its '<order>--' prefix"),
+            (
+                "1--tools.shelf",
+                |shelf| fs::create_dir_all(shelf.join("2--inner.shelf")).unwrap(),
+                "cannot contain another shelf",
+            ),
+            (
+                "1--tools.shelf",
+                |shelf| fs::create_dir_all(shelf.join("1--loose.topic")).unwrap(),
+                "only *.product and *.antho directories are allowed",
+            ),
+            (
+                "1--tools.shelf",
+                |shelf| fs::write(shelf.join("notes.md"), "notes").unwrap(),
+                "only trail.toml is allowed in a shelf",
+            ),
+            (
+                "1--tools.shelf",
+                |shelf| fs::write(shelf.join("trail.toml"), "inline_ref = [\"tools\"]\n").unwrap(),
+                "a shelf has no page",
+            ),
+            (
+                "1--tools.shelf",
+                |shelf| {
+                    fs::create_dir_all(shelf.join("alpha.product")).unwrap();
+                    fs::copy(
+                        shelf.join("beta.product/trail.toml"),
+                        shelf.join("alpha.product/trail.toml"),
+                    )
+                    .unwrap();
+                },
+                "duplicate root collection slug 'alpha'",
+            ),
+        ];
+        for (shelf, mutate, message) in cases {
+            let dir = fixture();
+            shelve_beta(dir.path(), shelf);
+            mutate(&dir.path().join(shelf));
+            let err = format!("{:#}", load(dir.path()).unwrap_err());
+            assert!(err.contains(message), "{shelf}: {err}");
+        }
+        let dir = fixture();
+        shelve_beta(dir.path(), "1--tools.shelf");
+        fs::create_dir_all(dir.path().join("1--other.shelf")).unwrap();
+        let err = format!("{:#}", load(dir.path()).unwrap_err());
+        assert!(err.contains("share order 1"), "{err}");
     }
 
     #[test]

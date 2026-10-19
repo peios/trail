@@ -75,8 +75,27 @@ impl<'a> From<&'a Product> for ProductView<'a> {
     }
 }
 
-fn product_views(site: &Site) -> Vec<ProductView<'_>> {
-    site.products.iter().map(ProductView::from).collect()
+/// Root collections under one root shelf's heading (or none, for the
+/// collections outside every shelf).
+#[derive(serde::Serialize)]
+pub struct ProductSection<'a> {
+    title: Option<&'a str>,
+    products: Vec<ProductView<'a>>,
+}
+
+fn product_sections<'a>(site: &'a Site, products: &[&'a Product]) -> Vec<ProductSection<'a>> {
+    site.sections(products)
+        .into_iter()
+        .map(|section| ProductSection {
+            title: section.title,
+            products: section.items.into_iter().map(ProductView::from).collect(),
+        })
+        .collect()
+}
+
+/// The header menu: every root collection, grouped by root shelf.
+fn menu_sections(site: &Site) -> Vec<ProductSection<'_>> {
+    product_sections(site, &site.products.iter().collect::<Vec<_>>())
 }
 
 pub struct Renderer<'a> {
@@ -148,7 +167,7 @@ impl<'a> Renderer<'a> {
             cache_key: crate::cache::key_json(&(
                 options,
                 &site.config,
-                product_views(site),
+                menu_sections(site),
                 site.favicon_href(),
                 &site.head_html,
             )),
@@ -211,25 +230,31 @@ impl<'a> Renderer<'a> {
     pub fn index(&self, site: &Site) -> Result<String> {
         let _ = self.context_key(site);
         let (head, tail) = split_sitename(&site.config.sitename);
-        self.render_cached("index.html", || self.shared_key("featured", "", &site.featured().into_iter().map(ProductView::from).collect::<Vec<_>>()), || context! {
-                site => site.config,
-                products => product_views(site),
-                featured => site.featured().into_iter().map(ProductView::from).collect::<Vec<_>>(),
-                meta => page_meta(
-                    site,
-                    &site.config.sitename,
-                    Some(&site.config.description),
-                    "",
-                    "website",
-                ),
-                md_path => "/llms.txt",
-                favicon => site.favicon_href(),
-                head_html => site.head_html,
-                wordmark_head => head,
-                wordmark_tail => tail,
-                live_reload => self.live_reload,
-            })
-            .context("rendering index.html")
+        self.render_cached(
+            "index.html",
+            || self.shared_key("featured", "", &product_sections(site, &site.featured())),
+            || {
+                context! {
+                    site => site.config,
+                    menu => menu_sections(site),
+                    featured => product_sections(site, &site.featured()),
+                    meta => page_meta(
+                        site,
+                        &site.config.sitename,
+                        Some(&site.config.description),
+                        "",
+                        "website",
+                    ),
+                    md_path => "/llms.txt",
+                    favicon => site.favicon_href(),
+                    head_html => site.head_html,
+                    wordmark_head => head,
+                    wordmark_tail => tail,
+                    live_reload => self.live_reload,
+                }
+            },
+        )
+        .context("rendering index.html")
     }
 
     pub fn product(&self, site: &Site, product: &Product) -> Result<String> {
@@ -241,7 +266,7 @@ impl<'a> Renderer<'a> {
             || {
                 context! {
                     site => site.config,
-                    products => product_views(site),
+                    menu => menu_sections(site),
                     product => ProductView::from(product),
                     sections => product.sections(),
                     meta => page_meta(
@@ -285,7 +310,7 @@ impl<'a> Renderer<'a> {
             || {
                 context! {
                     site => site.config,
-                    products => product_views(site),
+                    menu => menu_sections(site),
                     product => ProductView::from(product),
                     anthology => anthology,
                     anthologies => parents,
@@ -335,7 +360,7 @@ impl<'a> Renderer<'a> {
             || {
                 context! {
                     site => site.config,
-                    products => product_views(site),
+                    menu => menu_sections(site),
                     product => ProductView::from(product),
                     anthologies => anthologies,
                     book => book,
@@ -405,7 +430,7 @@ impl<'a> Renderer<'a> {
             || {
                 context! {
                     site => site.config,
-                    products => product_views(site),
+                    menu => menu_sections(site),
                     product => ProductView::from(product),
                     anthologies => anthologies,
                     book => book,
@@ -450,7 +475,7 @@ impl<'a> Renderer<'a> {
         self.render_cached("print.html", String::new, || {
             context! {
                 site => site.config,
-                products => product_views(site),
+                menu => menu_sections(site),
                 product => ProductView::from(product),
                 title => title,
                 description => description,
@@ -518,7 +543,7 @@ impl<'a> Renderer<'a> {
             || {
                 context! {
                     site => site.config,
-                    products => product_views(site),
+                    menu => menu_sections(site),
                     product => ProductView::from(product),
                     anthologies => anthologies,
                     topic => topic,
@@ -556,7 +581,7 @@ impl<'a> Renderer<'a> {
         self.render_cached("404.html", String::new, || {
             context! {
                 site => site.config,
-                products => product_views(site),
+                menu => menu_sections(site),
                 favicon => site.favicon_href(),
                 head_html => site.head_html,
                 wordmark_head => head,
@@ -700,6 +725,41 @@ mod tests {
                 .contains("Changed footer")
         );
         assert_eq!(session.hits("pages"), 1);
+    }
+
+    #[test]
+    fn root_shelves_head_the_front_page_and_menu() {
+        let (dir, mut site) = fixture_site();
+        let _session = crate::cache::Session::new(dir.path(), true);
+        site.shelves.push(crate::site::RootShelf {
+            slug: "tools".into(),
+            order: 1,
+            title: "Tools".into(),
+        });
+        let beta = site.products.iter_mut().find(|p| p.slug == "beta").unwrap();
+        beta.shelf = Some("tools".into());
+        let html = Renderer::new(&plain(), &site)
+            .unwrap()
+            .index(&site)
+            .unwrap();
+        // Beta is the only featured product, so the front page shows just
+        // its shelf; the menu lists loose Alpha first, then the shelf.
+        let main = html.split("<main").nth(1).unwrap();
+        assert!(main.contains("<h3 class=\"shelf-title\">Tools</h3>"));
+        assert!(main.contains("<h4>Beta</h4>"));
+        let menu = html.split("class=\"menu\"").nth(1).unwrap();
+        let heading = menu.find("<p class=\"menu-heading\">Tools</p>").unwrap();
+        assert!(menu.find(">Alpha</a>").unwrap() < heading);
+        assert!(heading < menu.find(">Beta</a>").unwrap());
+
+        // Shelf titles are shared chrome: a rename must not serve a cached page.
+        site.shelves[0].title = "Kit".into();
+        let renamed = Renderer::new(&plain(), &site)
+            .unwrap()
+            .index(&site)
+            .unwrap();
+        assert!(renamed.contains("<h3 class=\"shelf-title\">Kit</h3>"));
+        assert!(renamed.contains("<p class=\"menu-heading\">Kit</p>"));
     }
 
     #[test]

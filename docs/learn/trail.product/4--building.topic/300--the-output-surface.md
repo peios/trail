@@ -158,17 +158,22 @@ inside them the full tree of anthologies, topics, folders, books, chapters and
 articles.
 
 The `products` array includes products and root anthologies. Its `kind` field
-is `product` or `anthology`. Both use the same item and URL structure.
+is `product` or `anthology`. Both use the same item and URL structure. A
+collection's `shelf` field names the slug of the root shelf it sits on, or is
+`null`. The `shelves` array lists the root shelves in order, each with its
+`slug` and `title`.
 
 ```json
 {
   "sitename": "Peios Learn",
   "url": "https://learn.peios.org",
   "llms": "/llms.txt",
+  "shelves": [{ "slug": "tools", "title": "Tools" }],
   "products": [
     {
       "kind": "product",
       "slug": "pekit",
+      "shelf": "tools",
       "path": "/pekit",
       "md": "/pekit.md",
       "print": "/pekit/print.md",
