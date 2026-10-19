@@ -23,8 +23,9 @@ chunk of documentation a reader would think of as one subject.
 
 ## The directory
 
-A product is a directory named `<slug>.product` at the site root. It has no
-order prefix.
+A product is a directory named `<slug>.product` at the site root, or on a
+[root shelf](~trail/structuring-a-site/anthologies-and-shelves#use-a-shelf-at-the-site-root).
+It has no order prefix.
 
 ```text
 learn/
@@ -32,6 +33,9 @@ learn/
 ├── pekit.product/          →  /pekit
 └── trail.product/          →  /trail
 ```
+
+A root shelf only adds a heading in the Documentation menu and on the front
+page. Its products keep the URLs they would have at the root.
 
 The slug becomes the URL prefix (`/pekit`) and the first segment of every
 [`~link`](~trail/writing/links-and-references) into that product. It must be
@@ -145,7 +149,9 @@ featured = ["peios", "pekit", "provium", "universal-directory", "trail"]
 
 The front page shows only featured products. An unfeatured product is still
 built, searchable, linkable, and listed in the documentation menu. Naming a
-product that does not exist in `featured` is a build error.
+product that does not exist in `featured` is a build error. A product on a
+root shelf is named by its slug alone, and appears under its shelf's heading
+in both the menu and the front page.
 
 ## Roll-ups
 

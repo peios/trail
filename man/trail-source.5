@@ -1,4 +1,4 @@
-.TH TRAIL-SOURCE 5 2026-10-18 "Peios trail 0.1.0"
+.TH TRAIL-SOURCE 5 2026-10-19 "Peios trail 0.1.0"
 .SH NAME
 trail-source \- Trail source tree names and layout
 .SH SYNOPSIS
@@ -15,11 +15,12 @@ same material as a walkthrough.
 .PP
 .TP
 \fB<slug>.product\fR
-Example: \fBpekit.product\fR; What: A product. Site root only; no order
-prefix.
+Example: \fBpekit.product\fR; What: A product. Site root or a root shelf
+only; no order prefix.
 .TP
 \fB<slug>.antho\fR
-Example: \fBpeios.antho\fR; What: A root anthology. No order prefix.
+Example: \fBpeios.antho\fR; What: A root anthology. Site root or a root
+shelf only; no order prefix.
 .PP
 .TP
 \fB<order>--<slug>.antho\fR
@@ -32,7 +33,7 @@ Example: \fB4--reference.topic\fR; What: A topic.
 Example: \fB2--pgss.book\fR; What: A book.
 .TP
 \fB<order>--<slug>.shelf\fR
-Example: \fB3--tooling.shelf\fR; What: A shelf.
+Example: \fB3--tooling.shelf\fR; What: A shelf, including a root shelf.
 .TP
 \fB<order>--<slug>\fR
 Example: \fB300--tokens\fR; What: A topic subfolder or a book chapter. No
@@ -123,7 +124,7 @@ to trail.
 .PP
 .TP
 \fBSite root\fR
-Subdirectories: \fB*.product\fR, \fB*.antho\fR, the output dir; Files: \fBtrail.toml\fR;
+Subdirectories: \fB*.product\fR, \fB*.antho\fR, \fB.shelf\fR, the output dir; Files: \fBtrail.toml\fR;
 whatever \fBfavicon\fR, \fBcustom_css\fR, \fBhead_html\fR, \fBpassthrough\fR,
 and \fB[[merge]]\fR name
 .TP
@@ -137,6 +138,10 @@ Subdirectories: \fB.antho\fR, \fB.topic\fR, \fB.book\fR, \fB.shelf\fR; Files:
 .TP
 \fBShelf\fR
 Subdirectories: \fB.antho\fR, \fB.topic\fR, \fB.book\fR  -  never another
+\fB.shelf\fR; Files: \fBtrail.toml\fR
+.TP
+\fBRoot shelf\fR
+Subdirectories: \fB*.product\fR, \fB*.antho\fR  -  never another
 \fB.shelf\fR; Files: \fBtrail.toml\fR
 .TP
 \fBTopic\fR
@@ -231,6 +236,9 @@ every numbered entry at the same level, whatever their numbers.
 .PP
 Root collections have no order prefix, so they sort by the root config's
 \fBfeatured\fR list first (in that list's order), then the rest by title.
+Root shelves sort by order. In the header menu and on the front page,
+collections outside any shelf come first, then each root shelf's
+collections under its title. A root shelf adds no URL segment.
 .PP
 .SS "Duplicates"
 .PP

@@ -292,6 +292,22 @@ h3,
     margin: 0;
 }
 
+/* A root shelf's title: it takes a whole row, so its products start on
+   the next one. */
+.menu-heading {
+    grid-column: 1 / -1;
+    margin: 0.5rem 0 0;
+    padding: 0.3rem 0.6rem 0.15rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.menu-heading:first-child {
+    margin-top: 0;
+}
+
 /* ---- Search ------------------------------------------------------------- */
 
 .search {
@@ -697,6 +713,7 @@ body.drawer-open {
     margin: 2.2rem 0 1rem;
 }
 
+.products .card-grid:not(:last-child),
 .anthologies .card-grid:not(:last-child) {
     margin-bottom: 1.5rem;
 }

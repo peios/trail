@@ -8,8 +8,8 @@ use anyhow::{Result, bail, ensure};
 
 use super::{
     Anthology, AnthologyChild, AnthologyItem, Article, Book, BookChild, ImageAsset, LinkStub,
-    Product, ProductChild, ProductItem, Topic, TopicChild, TopicFolder, check_duplicates,
-    check_flat_slugs, sort_book_children,
+    Product, ProductChild, ProductItem, RootShelf, Topic, TopicChild, TopicFolder,
+    check_duplicates, check_flat_slugs, sort_book_children,
 };
 
 macro_rules! same {
@@ -61,10 +61,25 @@ pub(super) fn collections(left: &mut Vec<Product>, right: Vec<Product>) -> Resul
                 monogram,
                 color,
                 description,
-                inline_refs
+                inline_refs,
+                shelf
             );
             product_children(&mut left.children, right.children)?;
             check_flat_slugs("grouping", left.items().map(ProductItem::slug))
+        },
+    )
+}
+
+/// Root shelves only carry a heading, so equal slugs must agree on it.
+/// Which collections sit on each is checked per collection (`shelf`).
+pub(super) fn root_shelves(left: &mut Vec<RootShelf>, right: Vec<RootShelf>) -> Result<()> {
+    combine(
+        left,
+        right,
+        |shelf| &shelf.slug,
+        |left, right| {
+            same!(left, right, order, title);
+            Ok(())
         },
     )
 }
@@ -448,6 +463,44 @@ mod tests {
             &dir.path().join("primary"),
             "demo.antho/trail.toml",
             COLLECTION,
+        );
+        fails(dir.path(), "title differs");
+    }
+
+    #[test]
+    fn merges_root_shelves_and_rejects_shelf_disagreements() {
+        let shelve = |dir: &Path, tree: &str, shelf: &str| {
+            let root = dir.join(tree);
+            fs::create_dir_all(root.join(shelf)).unwrap();
+            fs::rename(root.join("demo.antho"), root.join(shelf).join("demo.antho")).unwrap();
+        };
+        let dir = fixture();
+        shelve(dir.path(), "primary", "1--tools.shelf");
+        shelve(dir.path(), "extra", "1--tools.shelf");
+        let site = load(dir.path()).unwrap();
+        assert_eq!(site.products[0].path, "/demo");
+        assert_eq!(site.products[0].shelf.as_deref(), Some("tools"));
+        assert_eq!(site.shelves.len(), 1);
+        assert_eq!(site.shelves[0].title, "Tools");
+
+        let dir = fixture();
+        shelve(dir.path(), "extra", "1--tools.shelf");
+        fails(dir.path(), "shelf differs");
+        let dir = fixture();
+        shelve(dir.path(), "primary", "1--tools.shelf");
+        shelve(dir.path(), "extra", "1--other.shelf");
+        fails(dir.path(), "shelf differs");
+        let dir = fixture();
+        shelve(dir.path(), "primary", "1--tools.shelf");
+        shelve(dir.path(), "extra", "2--tools.shelf");
+        fails(dir.path(), "order differs");
+        let dir = fixture();
+        shelve(dir.path(), "primary", "1--tools.shelf");
+        shelve(dir.path(), "extra", "1--tools.shelf");
+        write(
+            &dir.path().join("extra"),
+            "1--tools.shelf/trail.toml",
+            "title = 'Kit'\n",
         );
         fails(dir.path(), "title differs");
     }

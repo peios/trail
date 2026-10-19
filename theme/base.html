@@ -81,8 +81,13 @@ try {
     <details class="nav-dropdown">
       <summary>Documentation</summary>
       <div class="menu">
-        {%- for product in products %}
+        {%- for section in menu %}
+        {%- if section.title %}
+        <p class="menu-heading">{{ section.title }}</p>
+        {%- endif %}
+        {%- for product in section.products %}
         <a class="menu-item" href="{{ product.path | url }}" style="--pc: {{ product.color }}"><span class="tile tile-menu">{{ product.monogram }}</span>{{ product.title }}</a>
+        {%- endfor %}
         {%- endfor %}
         {%- if site.nav %}
         <div class="menu-links">
