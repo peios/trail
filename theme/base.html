@@ -86,7 +86,7 @@ try {
         <p class="menu-heading">{{ section.title }}</p>
         {%- endif %}
         {%- for product in section.products %}
-        <a class="menu-item" href="{{ product.path | url }}" style="--pc: {{ product.color }}"><span class="tile tile-menu">{{ product.monogram }}</span>{{ product.title }}</a>
+        <a class="menu-item" href="{{ product.path | url }}" style="--pc: {{ product.color }}; --tile-chars: {{ product.monogram | length }}"><span class="tile tile-menu">{{ product.monogram }}</span>{{ product.title }}</a>
         {%- endfor %}
         {%- endfor %}
         {%- if site.nav %}

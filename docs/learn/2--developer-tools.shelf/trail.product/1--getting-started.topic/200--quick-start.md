@@ -82,8 +82,10 @@ description = "The command-line interface to Acme."
 
 All four keys are required. The directory name gives the URL (`/docs`) and the
 slug you link by; `title` is what readers see. The `monogram` is the two-or-so
-characters shown on the product's tile on the front page, and `color` tints
-the product's cards, sidebar and headings.
+characters shown on the product's tile on the front page and in the products
+menu. A monogram longer than two characters is drawn smaller so that it still
+fits, and up to four stay legible. `color` tints the product's cards, sidebar,
+and headings.
 
 ## Add a topic and an article
 
