@@ -710,12 +710,19 @@ body.drawer-open {
     font-size: 1.15rem;
     font-weight: 650;
     letter-spacing: -0.01em;
-    margin: 2.2rem 0 1rem;
+    margin: 2.75rem 0 1rem;
 }
 
 .products .card-grid:not(:last-child),
 .anthologies .card-grid:not(:last-child) {
     margin-bottom: 1.5rem;
+}
+
+/* A shelf ends with as wide a gap as it starts with, so the cards after
+   it don't read as part of it. */
+.products .shelf-title + .card-grid:not(:last-child),
+.anthologies .shelf-title + .card-grid:not(:last-child) {
+    margin-bottom: 2.75rem;
 }
 
 .card-grid {
