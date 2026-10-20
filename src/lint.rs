@@ -2,8 +2,8 @@
 //! file, line and column.
 //!
 //! Every rule is off until the root trail.toml's `[lint]` table lists it,
-//! and every word list is the site's own, so Trail itself holds no house
-//! style. The lint is a separate command, never part of a build: a site
+//! and every dictionary and word list is the site's own, so Trail itself
+//! holds no house style. The lint is a separate command, never part of a build: a site
 //! that doesn't run it is unaffected.
 //!
 //! It reads sources as written, without running plugins. Prose is what
@@ -12,10 +12,12 @@
 //! Frontmatter and trail.toml `title` and `description` values are prose
 //! too; their keys are not.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use pulldown_cmark::{CodeBlockKind, Event, LinkType, Parser, Tag, TagEnd};
@@ -23,8 +25,9 @@ use serde::Deserialize;
 
 use crate::titlecase;
 
-/// The rules Trail implements. Word-list rules are named by the site.
+/// The rules Trail implements.
 const BUILTIN_RULES: &[&str] = &[
+    "spelling",
     "em-dash",
     "double-hyphen",
     "curly-quotes",
@@ -58,8 +61,7 @@ const CODE_PLACEHOLDER: char = '\u{E000}';
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LintConfig {
-    /// The rules that run: built-in rule names, and the `rule` names of
-    /// `words` entries.
+    /// The rules that run.
     #[serde(default)]
     pub rules: Vec<String>,
     /// Rules that report warnings rather than errors. `serial-comma`
@@ -73,41 +75,49 @@ pub struct LintConfig {
     /// case rules: "Peios", "Registry Editor", "netd".
     #[serde(default)]
     pub proper_nouns: Vec<String>,
+    /// The files the `spelling` rule reads.
     #[serde(default)]
-    pub words: Vec<WordRule>,
+    pub spelling: SpellingConfig,
     #[serde(default)]
     pub ignore: Vec<IgnoreRule>,
+    /// The retired `[[lint.words]]` tables, kept only to say what replaced
+    /// them.
+    #[serde(default, rename = "words")]
+    retired_words: Option<toml::Value>,
+    /// The spelling files, once `run` has read them.
+    #[serde(skip)]
+    lexicon: Option<Arc<Lexicon>>,
 }
 
 fn default_line_length() -> usize {
     78
 }
 
-/// Words or phrases prose must not use.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct WordRule {
-    /// What to find, as whole words. A trailing `*` matches any ending:
-    /// `colour*` finds "colours" and "coloured".
-    #[serde(rename = "match")]
-    pub matches: Vec<String>,
-    /// The rule these words belong to, for turning them on and off and
-    /// for suppressing them. Default `words`.
-    #[serde(default = "default_word_rule")]
-    pub rule: String,
-    /// What to write instead.
-    #[serde(default, rename = "use")]
-    pub replacement: Option<String>,
-    /// Why, if `use` doesn't say it.
+/// The `[lint.spelling]` table. Paths are relative to the site root.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SpellingConfig {
+    /// Words prose may use: a `.dic` file is a Hunspell dictionary, read
+    /// with the `.aff` file beside it; any other file lists words, one a
+    /// line, accepted as written.
     #[serde(default)]
-    pub message: Option<String>,
-    /// Match case exactly: "may" but not the keyword "MAY".
+    pub dictionaries: Vec<String>,
+    /// Words and phrases prose must not use, one entry a line.
     #[serde(default)]
-    pub case_sensitive: bool,
+    pub banned_words: Vec<String>,
 }
 
-fn default_word_rule() -> String {
-    "words".to_string()
+impl SpellingConfig {
+    /// Every file the table names, including each dictionary's `.aff`.
+    pub fn files(&self) -> impl Iterator<Item = String> + '_ {
+        self.dictionaries
+            .iter()
+            .flat_map(|path| {
+                let aff = path.strip_suffix(".dic").map(|stem| format!("{stem}.aff"));
+                std::iter::once(path.clone()).chain(aff)
+            })
+            .chain(self.banned_words.iter().cloned())
+    }
 }
 
 /// Rules that don't apply under a path: a book whose own conventions
@@ -126,7 +136,13 @@ impl LintConfig {
     /// Reject rule names that name nothing, so a typo can't switch a rule
     /// off silently.
     pub fn validate(&self) -> Result<()> {
-        let known = self.known_rules();
+        if self.retired_words.is_some() {
+            bail!(
+                "[[lint.words]] is replaced by the banned-words files of \
+                 [lint.spelling] (see trail-lint(5))"
+            );
+        }
+        let known: BTreeSet<String> = BUILTIN_RULES.iter().map(|rule| rule.to_string()).collect();
         let check = |name: &str, place: &str| -> Result<()> {
             if known.contains(name) {
                 Ok(())
@@ -148,26 +164,13 @@ impl LintConfig {
                 check(rule, "ignore")?;
             }
         }
-        for words in &self.words {
-            if BUILTIN_RULES.contains(&words.rule.as_str()) {
-                bail!(
-                    "[[lint.words]] rule '{}' is a built-in rule's name",
-                    words.rule
-                );
-            }
-            if words.matches.is_empty() || words.matches.iter().any(|m| m.trim().is_empty()) {
-                bail!("[[lint.words]] rule '{}' has an empty match", words.rule);
-            }
+        if self.on("spelling")
+            && self.spelling.dictionaries.is_empty()
+            && self.spelling.banned_words.is_empty()
+        {
+            bail!("rule 'spelling' needs [lint.spelling] dictionaries or banned-words");
         }
         Ok(())
-    }
-
-    fn known_rules(&self) -> BTreeSet<String> {
-        BUILTIN_RULES
-            .iter()
-            .map(|rule| rule.to_string())
-            .chain(self.words.iter().map(|words| words.rule.clone()))
-            .collect()
     }
 
     fn on(&self, rule: &str) -> bool {
@@ -202,8 +205,15 @@ pub fn run(root: &Path) -> Result<bool> {
             config_path.display()
         );
     };
-    let config: LintConfig = lint.clone().try_into().context("reading [lint]")?;
+    let mut config: LintConfig = lint.clone().try_into().context("reading [lint]")?;
     config.validate()?;
+    if config.on("spelling") {
+        config.lexicon = Some(Arc::new(Lexicon::load(
+            root,
+            &config.spelling,
+            &config.proper_nouns,
+        )?));
+    }
 
     let attachments: Vec<crate::attachments::AttachmentConfig> = table
         .get("attachments")
@@ -337,8 +347,8 @@ impl Run {
         source + (at - text)
     }
 
-    /// Blank out URLs, which are not words.
-    fn mask_urls(&mut self) {
+    /// Blank out URLs and `[*name]` citation anchors, which are not words.
+    fn mask_non_words(&mut self) {
         let mut masked = String::with_capacity(self.text.len());
         let mut rest = self.text.as_str();
         while let Some(start) = ["https://", "http://", "www."]
@@ -358,6 +368,18 @@ impl Run {
             rest = &rest[end..];
         }
         masked.push_str(rest);
+        let mut at = 0;
+        while let Some(found) = masked[at..].find("[*") {
+            let start = at + found;
+            at = start + 2;
+            if let Some(name) = crate::markdown::citation_name(&masked[at..])
+                && masked[at + name.len()..].starts_with(']')
+            {
+                let end = at + name.len() + 1;
+                masked.replace_range(start..end, &" ".repeat(end - start));
+                at = end;
+            }
+        }
         self.text = masked;
     }
 }
@@ -403,7 +425,7 @@ fn read_body(body: &str) -> Body {
     let flush = |run: &mut Run, runs: &mut Vec<Run>| {
         if !run.text.trim().is_empty() {
             let mut done = std::mem::take(run);
-            done.mask_urls();
+            done.mask_non_words();
             runs.push(done);
         } else {
             *run = Run::default();
@@ -773,7 +795,7 @@ fn frontmatter_runs(frontmatter: &str, offset: usize) -> Vec<Run> {
     }
     runs.extend(current);
     for run in &mut runs {
-        run.mask_urls();
+        run.mask_non_words();
     }
     runs
 }
@@ -813,7 +835,7 @@ pub fn lint_toml(source: &str, config: &LintConfig) -> Vec<Finding> {
         }
         let mut run = Run::default();
         run.push(value, value_at);
-        run.mask_urls();
+        run.mask_non_words();
         for (offset, rule, message) in prose_findings(&run.text, config) {
             add(run.source_offset(offset), &rule, message);
         }
@@ -831,19 +853,11 @@ fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String
     let mut add =
         |at: usize, rule: &str, message: String| out.push((at, rule.to_string(), message));
 
-    for words in &config.words {
-        if !config.on(&words.rule) {
-            continue;
-        }
-        for phrase in &words.matches {
-            for (at, found) in find_phrase(text, phrase, words.case_sensitive) {
-                let message = match (&words.replacement, &words.message) {
-                    (Some(replacement), _) => format!("\"{found}\": use \"{replacement}\""),
-                    (None, Some(message)) => format!("\"{found}\": {message}"),
-                    (None, None) => format!("don't use \"{found}\""),
-                };
-                add(at, &words.rule, message);
-            }
+    if config.on("spelling")
+        && let Some(lexicon) = &config.lexicon
+    {
+        for (at, message) in lexicon.findings(text) {
+            add(at, "spelling", message);
         }
     }
 
@@ -940,7 +954,12 @@ fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String
 }
 
 /// Whole-word (or whole-phrase) matches of `phrase`: (offset, text found).
-fn find_phrase(text: &str, phrase: &str, case_sensitive: bool) -> Vec<(usize, String)> {
+///
+/// A phrase with a capital letter matches exactly. A lowercase one matches
+/// any capitalization except all capitals, which are acronyms and keywords:
+/// `may` finds "May" but not "MAY", and `us` doesn't find "US".
+fn find_phrase(text: &str, phrase: &str) -> Vec<(usize, String)> {
+    let case_sensitive = phrase.chars().any(char::is_uppercase);
     let (phrase, wildcard) = match phrase.strip_suffix('*') {
         Some(stem) => (stem, true),
         None => (phrase, false),
@@ -1003,11 +1022,292 @@ fn find_phrase(text: &str, phrase: &str, case_sensitive: bool) -> Vec<(usize, St
         let last = parts.last().unwrap_or(first);
         let right_ok =
             !last.ends_with(is_word) || text[end..].chars().next().is_none_or(|c| !is_word(c));
-        if right_ok {
-            found.push((start, text[start..end].to_string()));
+        let matched = &text[start..end];
+        if right_ok && (case_sensitive || !all_capitals(matched)) {
+            found.push((start, matched.to_string()));
         }
     }
     found
+}
+
+/// Whether a word or phrase is written in capitals: two letters or more,
+/// none of them lowercase.
+fn all_capitals(text: &str) -> bool {
+    let mut letters = text.chars().filter(|c| c.is_alphabetic()).peekable();
+    letters.peek().is_some()
+        && text.chars().filter(|c| c.is_alphabetic()).count() >= 2
+        && letters.all(char::is_uppercase)
+}
+
+// --------------------------------------------------------------------------
+// Spelling
+// --------------------------------------------------------------------------
+
+/// One `banned-words` entry: phrases, and what to say when one is found.
+#[derive(Debug, PartialEq)]
+struct BannedWord {
+    phrases: Vec<String>,
+    replacement: Option<String>,
+    message: Option<String>,
+}
+
+impl BannedWord {
+    /// Read one line: `phrases`, `phrases -> replacement` or `phrases:
+    /// message`, with the phrases separated by commas.
+    fn parse(line: &str) -> Option<BannedWord> {
+        let (phrases, replacement, message) = if let Some((phrases, use_)) = line.split_once("->") {
+            (phrases, Some(use_.trim().to_string()), None)
+        } else if let Some((phrases, message)) = line.split_once(": ") {
+            (phrases, None, Some(message.trim().to_string()))
+        } else {
+            (line, None, None)
+        };
+        let phrases: Vec<String> = phrases
+            .split(',')
+            .map(|phrase| phrase.trim().to_string())
+            .collect();
+        let empty = |text: &Option<String>| text.as_ref().is_some_and(String::is_empty);
+        if phrases.iter().any(String::is_empty) || empty(&replacement) || empty(&message) {
+            return None;
+        }
+        Some(BannedWord {
+            phrases,
+            replacement,
+            message,
+        })
+    }
+}
+
+/// What the `spelling` rule knows, read from the `[lint.spelling]` files.
+struct Lexicon {
+    dictionaries: Vec<spellbook::Dictionary>,
+    /// Words from plain lists and the site's proper nouns.
+    words: HashSet<String>,
+    /// Whether any dictionary or list is configured, so that prose words
+    /// are checked at all.
+    checks_words: bool,
+    banned: Vec<BannedWord>,
+    /// Each unknown word's first suggestion, which is slow to find.
+    suggestions: Mutex<HashMap<String, Option<String>>>,
+}
+
+impl fmt::Debug for Lexicon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lexicon")
+            .field("dictionaries", &self.dictionaries.len())
+            .field("words", &self.words.len())
+            .field("banned", &self.banned)
+            .finish()
+    }
+}
+
+/// Lines of a word file that say something: not blank, not a `#` comment.
+fn entries(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.trim()))
+        .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
+}
+
+impl Lexicon {
+    fn load(root: &Path, config: &SpellingConfig, proper_nouns: &[String]) -> Result<Lexicon> {
+        let read = |path: &str| -> Result<String> {
+            let path = root.join(path);
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
+        };
+        let mut lexicon = Lexicon::new(Vec::new(), proper_nouns);
+        lexicon.checks_words = !config.dictionaries.is_empty();
+        for path in &config.dictionaries {
+            let text = read(path)?;
+            match path.strip_suffix(".dic") {
+                Some(stem) => {
+                    let aff = read(&format!("{stem}.aff"))?;
+                    let dictionary = spellbook::Dictionary::new(&aff, &text)
+                        .map_err(|err| anyhow::anyhow!("reading dictionary {path}: {err}"))?;
+                    lexicon.dictionaries.push(dictionary);
+                }
+                None => lexicon.add_words(&text),
+            }
+        }
+        for path in &config.banned_words {
+            let text = read(path)?;
+            lexicon
+                .add_banned(&text)
+                .with_context(|| format!("in {path}"))?;
+        }
+        Ok(lexicon)
+    }
+
+    fn new(dictionaries: Vec<spellbook::Dictionary>, proper_nouns: &[String]) -> Lexicon {
+        Lexicon {
+            dictionaries,
+            words: proper_nouns
+                .iter()
+                .flat_map(|name| name.split_whitespace())
+                .map(str::to_string)
+                .collect(),
+            checks_words: false,
+            banned: Vec::new(),
+            suggestions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn add_words(&mut self, text: &str) {
+        self.words
+            .extend(entries(text).map(|(_, word)| word.to_string()));
+    }
+
+    fn add_banned(&mut self, text: &str) -> Result<()> {
+        for (line, entry) in entries(text) {
+            let Some(banned) = BannedWord::parse(entry) else {
+                bail!(
+                    "line {line}: expected \"phrases\", \"phrases -> replacement\" \
+                     or \"phrases: message\""
+                );
+            };
+            self.banned.push(banned);
+        }
+        Ok(())
+    }
+
+    /// Whether prose may use `word`. A plain list's lowercase word is
+    /// accepted capitalized too, as a dictionary's is.
+    fn knows(&self, word: &str) -> bool {
+        let known = |word: &str| {
+            self.words.contains(word)
+                || self.words.contains(&word.to_lowercase())
+                || self
+                    .dictionaries
+                    .iter()
+                    .any(|dictionary| dictionary.check(word))
+        };
+        known(word)
+            || word
+                .strip_suffix("'s")
+                .is_some_and(|stem| !stem.is_empty() && known(stem))
+    }
+
+    fn suggestion(&self, word: &str) -> Option<String> {
+        let mut cache = self
+            .suggestions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .entry(word.to_string())
+            .or_insert_with(|| {
+                let mut out = Vec::new();
+                // Edit-distance suggestions only: n-gram ones are slower
+                // than everything else the lint does put together.
+                self.dictionaries.iter().find_map(|dictionary| {
+                    dictionary
+                        .suggester()
+                        .with_ngram_suggestions(false)
+                        .suggest(word, &mut out);
+                    out.first().cloned()
+                })
+            })
+            .clone()
+    }
+
+    /// Banned phrases, then words no dictionary or list knows:
+    /// (offset in `text`, message).
+    fn findings(&self, text: &str) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        let mut banned_spans = Vec::new();
+        for banned in &self.banned {
+            for phrase in &banned.phrases {
+                for (at, found) in find_phrase(text, phrase) {
+                    let message = match (&banned.replacement, &banned.message) {
+                        (Some(replacement), _) => format!("\"{found}\": use \"{replacement}\""),
+                        (None, Some(message)) => format!("\"{found}\": {message}"),
+                        (None, None) => format!("don't use \"{found}\""),
+                    };
+                    banned_spans.push(at..at + found.len());
+                    out.push((at, message));
+                }
+            }
+        }
+        let words = if self.checks_words {
+            prose_words(text)
+        } else {
+            Vec::new()
+        };
+        for (at, word) in words {
+            if banned_spans.iter().any(|span| span.contains(&at)) || self.knows(&word) {
+                continue;
+            }
+            // A compound is fine when each of its parts is.
+            let mut offset = 0;
+            for part in word.split('-') {
+                let part_at = at + offset;
+                offset += part.len() + 1;
+                if part.chars().count() < 2 || skipped(part) || self.knows(part) {
+                    continue;
+                }
+                if self.dictionaries.is_empty() {
+                    out.push((part_at, format!("\"{part}\": not in the word list")));
+                    continue;
+                }
+                let message = match self.suggestion(part) {
+                    Some(suggestion) => {
+                        format!(
+                            "\"{part}\": not in the dictionary (did you mean \"{suggestion}\"?)"
+                        )
+                    }
+                    None => format!("\"{part}\": not in the dictionary"),
+                };
+                out.push((part_at, message));
+            }
+        }
+        out.sort_by_key(|&(at, _)| at);
+        out
+    }
+}
+
+/// The words of a run of prose to check against the dictionaries:
+/// (offset, word), with typographic apostrophes made straight. A word
+/// may hold apostrophes and hyphens, but not begin or end with them.
+fn prose_words(text: &str) -> Vec<(usize, String)> {
+    let mut words = Vec::new();
+    let inside =
+        |c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == '\'' || c == '\u{2019}';
+    let mut chars = text.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        if !inside(c) {
+            continue;
+        }
+        let mut end = start + c.len_utf8();
+        while let Some(&(at, next)) = chars.peek() {
+            if !inside(next) {
+                break;
+            }
+            end = at + next.len_utf8();
+            chars.next();
+        }
+        let raw = &text[start..end];
+        let trimmed = raw.trim_start_matches(['-', '\'', '\u{2019}']);
+        let at = start + (raw.len() - trimmed.len());
+        let word = trimmed
+            .trim_end_matches(['-', '\'', '\u{2019}'])
+            .replace('\u{2019}', "'");
+        if word.chars().count() >= 2 && !skipped(&word) {
+            words.push((at, word));
+        }
+    }
+    words
+}
+
+/// Words the dictionary check leaves alone: identifiers, which hold digits
+/// or underscores, and acronyms, written in capitals ("KACS", "SIDs").
+fn skipped(word: &str) -> bool {
+    if word.chars().any(|c| c.is_ascii_digit() || c == '_') {
+        return true;
+    }
+    let core = word
+        .strip_suffix("'s")
+        .or_else(|| word.strip_suffix('s'))
+        .unwrap_or(word);
+    all_capitals(core)
 }
 
 /// Sentences of a run: (offset, text). A sentence ends at ". ", "? ", "! "
@@ -1447,26 +1747,52 @@ mod tests {
         assert!(run(dir.path()).unwrap());
     }
 
+    /// A Hunspell dictionary small enough to read: a plural suffix and a
+    /// handful of words.
+    const AFF: &str = "SET UTF-8\nTRY esianrtolcdugmphbyfvkwz\nSFX S Y 1\nSFX S 0 s .\n";
+    const DIC: &str =
+        "13\nsee\nthe\nkernel/S\nreads\nkey/S\nwell\nknown\nit\nnow\nrun/S\npage\nabout\nthing/S\n";
+
+    const BANNED: &str = "# Comments and blank lines are skipped.\n\n\
+                          simply, of course, e.g., and/or\n\
+                          may, us: write \"can\" or \"might\"\n\
+                          colour*, behaviour -> the US spelling\n";
+
     fn config(rules: &[&str]) -> LintConfig {
         let mut config: LintConfig = toml::from_str(
             r#"
             proper_nouns = ["Peios", "Registry Editor", "netd", "regman"]
-            [[words]]
-            match = ["simply", "of course", "e.g.", "and/or"]
-            [[words]]
-            match = ["may", "us"]
-            case_sensitive = true
-            message = "write \"can\" or \"might\""
-            [[words]]
-            rule = "spelling"
-            match = ["colour*", "behaviour"]
-            use = "the US spelling"
+            [spelling]
+            banned-words = ["banned.txt"]
             "#,
         )
         .unwrap();
         config.rules = rules.iter().map(|rule| rule.to_string()).collect();
         config.validate().unwrap();
+        let mut lexicon = Lexicon::new(Vec::new(), &config.proper_nouns);
+        lexicon.add_banned(BANNED).unwrap();
+        config.lexicon = Some(Arc::new(lexicon));
         config
+    }
+
+    /// `config`, with the small dictionary and a word list as well.
+    fn dictionary_config() -> LintConfig {
+        let mut config = config(&["spelling"]);
+        let dictionary = spellbook::Dictionary::new(AFF, DIC).unwrap();
+        let mut lexicon = Lexicon::new(vec![dictionary], &config.proper_nouns);
+        lexicon.checks_words = true;
+        lexicon.add_banned(BANNED).unwrap();
+        lexicon.add_words("# Words the dictionary lacks.\nlogon\nGitHub\n");
+        config.lexicon = Some(Arc::new(lexicon));
+        config
+    }
+
+    /// (line, message) of each finding against `dictionary_config`.
+    fn misspelled(body: &str) -> Vec<(usize, String)> {
+        lint_markdown(&page(body), &dictionary_config())
+            .into_iter()
+            .map(|finding| (finding.line, finding.message))
+            .collect()
     }
 
     fn page(body: &str) -> String {
@@ -1482,43 +1808,157 @@ mod tests {
     }
 
     #[test]
-    fn words_match_whole_words_outside_code_and_urls() {
+    fn banned_words_match_whole_words_outside_code_and_urls() {
         let body = "Simply run it, e.g. now.\nThe MAY keyword and may.\n\
                     Not mayhem, `simply`, or https://simply.example/may.\n\n```text\nsimply\n```\n";
         assert_eq!(
-            found(body, &["words"]),
+            found(body, &["spelling"]),
             vec![
-                (6, "words".into()),
-                (6, "words".into()),
-                (7, "words".into())
+                (6, "spelling".into()),
+                (6, "spelling".into()),
+                (7, "spelling".into())
             ]
         );
         // Phrases match across a line break; wildcards take any ending.
+        assert_eq!(found("Of\ncourse, the colours.", &["spelling"]).len(), 2);
+        // A lowercase entry finds any capitalization but all capitals.
+        assert_eq!(found("May it run?", &["spelling"]).len(), 1);
+        assert!(found("US English.", &["spelling"]).is_empty());
+        let messages: Vec<String> =
+            lint_markdown(&page("Colours and simply."), &config(&["spelling"]))
+                .into_iter()
+                .map(|finding| finding.message)
+                .collect();
         assert_eq!(
-            found("Of\ncourse, the colours.", &["words", "spelling"]).len(),
-            2
+            messages,
+            vec![
+                "\"Colours\": use \"the US spelling\"",
+                "don't use \"simply\""
+            ]
         );
-        // "US" is not "us" when the match is case-sensitive.
-        assert!(found("US English.", &["words"]).is_empty());
     }
 
     #[test]
-    fn word_rules_are_off_until_listed() {
+    fn spelling_is_off_until_listed() {
         assert!(found("Simply the colour.", &[]).is_empty());
         assert_eq!(
             found("Simply the colour.", &["spelling"]),
-            vec![(6, "spelling".into())]
+            vec![(6, "spelling".into()), (6, "spelling".into())]
         );
+    }
+
+    #[test]
+    fn banned_word_lines() {
+        assert_eq!(
+            BannedWord::parse("via -> through, or by using"),
+            Some(BannedWord {
+                phrases: vec!["via".into()],
+                replacement: Some("through, or by using".into()),
+                message: None,
+            })
+        );
+        assert_eq!(
+            BannedWord::parse("we, our: speak for the project").map(|banned| banned.phrases),
+            Some(vec!["we".to_string(), "our".to_string()])
+        );
+        for bad in ["a,, b", "a ->", "a: "] {
+            assert_eq!(BannedWord::parse(bad), None, "{bad}");
+        }
+        let mut lexicon = Lexicon::new(Vec::new(), &[]);
+        let err = lexicon.add_banned("fine\n\nbad ->\n").unwrap_err();
+        assert!(err.to_string().starts_with("line 3:"), "{err}");
+    }
+
+    #[test]
+    fn dictionaries_check_prose_words() {
+        assert_eq!(misspelled("The kernel reads keys now."), vec![]);
+        assert_eq!(
+            misspelled("The kernle reads it."),
+            vec![(
+                6,
+                "\"kernle\": not in the dictionary (did you mean \"kernel\"?)".into()
+            )]
+        );
+        // Not words: code, URLs, citation anchors, identifiers, acronyms,
+        // and single letters.
+        assert_eq!(misspelled("The key. [*kernle.reads-qwzx]"), vec![]);
+        assert_eq!(
+            misspelled("Run `qwzx`, see https://qwzx.example, x86_64, KACS, SIDs, GXWI's, a."),
+            vec![]
+        );
+        // Word lists, proper nouns, possessives, compounds and capitals.
+        assert!(misspelled("GitHub, Logon, the logon's key, Peios, netd, well-known.").is_empty());
+        assert_eq!(misspelled("The well-knwn key.").len(), 1);
+        // Banned words are reported once, by their own message.
+        assert_eq!(
+            misspelled("The colour."),
+            vec![(6, "\"colour\": use \"the US spelling\"".into())]
+        );
+        // Frontmatter titles and descriptions are prose too.
+        let findings = lint_markdown(
+            "---\ntitle: Teh Kernel\ndescription: It runs.\n---\n",
+            &dictionary_config(),
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 2);
+    }
+
+    #[test]
+    fn spelling_needs_files_and_lint_words_is_retired() {
+        let config: LintConfig = toml::from_str("rules = [\"spelling\"]").unwrap();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("needs [lint.spelling]")
+        );
+        let config: LintConfig =
+            toml::from_str("rules = []\n[[words]]\nmatch = [\"simply\"]\n").unwrap();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("replaced by the banned-words files")
+        );
+    }
+
+    #[test]
+    fn lint_reads_spelling_files_and_builds_keep_them() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::attachments::tests::fixture(dir.path());
+        fs::create_dir(dir.path().join("spelling")).unwrap();
+        fs::write(dir.path().join("spelling/en.aff"), AFF).unwrap();
+        fs::write(dir.path().join("spelling/en.dic"), DIC).unwrap();
+        fs::write(dir.path().join("banned.txt"), BANNED).unwrap();
+        let config = dir.path().join("trail.toml");
+        fs::write(
+            &config,
+            fs::read_to_string(&config).unwrap()
+                + "\n[lint]\nrules = ['spelling']\n\n[lint.spelling]\n\
+                   dictionaries = ['spelling/en.dic']\nbanned-words = ['banned.txt']\n",
+        )
+        .unwrap();
+        // The fixture's own prose is not all in the small dictionary.
+        assert!(run(dir.path()).unwrap());
+        // The files sit in the root without upsetting a build.
+        let out = dir.path().join("dist");
+        crate::site::Site::load(dir.path(), &out).unwrap();
+        // A missing file is an error naming it.
+        fs::remove_file(dir.path().join("spelling/en.aff")).unwrap();
+        let err = format!("{:#}", run(dir.path()).unwrap_err());
+        assert!(err.contains("en.aff"), "{err}");
     }
 
     #[test]
     fn frontmatter_values_are_prose_and_titles_are_cased() {
         let source =
             "---\ntitle: Developing For Peios\ndescription: Simply\n  everything.\n---\n\nBody.\n";
-        let findings = lint_markdown(source, &config(&["words", "title-case"]));
+        let findings = lint_markdown(source, &config(&["spelling", "title-case"]));
         let rules: Vec<(usize, &str)> =
             findings.iter().map(|f| (f.line, f.rule.as_str())).collect();
-        assert_eq!(rules, vec![(2, "title-case"), (3, "words")]);
+        assert_eq!(rules, vec![(2, "title-case"), (3, "spelling")]);
         assert!(findings[0].message.contains("\"Developing for Peios\""));
     }
 
@@ -1675,12 +2115,12 @@ mod tests {
 
     #[test]
     fn comments_suppress_lines_and_stretches() {
-        let body = "<!-- lint-disable-next-line words -->\nSimply.\nSimply.\n\n\
+        let body = "<!-- lint-disable-next-line spelling -->\nSimply.\nSimply.\n\n\
                     <!-- lint-disable -->\nSimply!\n<!-- lint-enable -->\nSimply.\n\n\
-                    > <!-- lint-disable-next-line words -->\n> Simply quoted.\n";
+                    > <!-- lint-disable-next-line spelling -->\n> Simply quoted.\n";
         assert_eq!(
-            found(body, &["words", "exclamation"]),
-            vec![(8, "words".into()), (13, "words".into())]
+            found(body, &["spelling", "exclamation"]),
+            vec![(8, "spelling".into()), (13, "spelling".into())]
         );
     }
 
