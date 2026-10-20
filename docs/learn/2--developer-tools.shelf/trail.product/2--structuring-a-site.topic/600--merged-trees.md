@@ -35,6 +35,8 @@ components' pages in the published site.
    ```
 
    The path is relative to the primary root, not the working directory.
+   To fetch the tree from its repository instead, see
+   [Fetch trees from their repositories](#fetch-trees-from-their-repositories).
 
 3. Repeat the ancestor directories in each contributing tree. For example,
    two repositories can each contain this structure:
@@ -123,6 +125,43 @@ The primary controls site presentation, navigation, and featured
 collections. A merged tree's own `[[merge]]` entries are not followed. List
 every required tree in the primary configuration.
 
+## Fetch trees from their repositories
+
+Name a tree's Git repository with `repo`, and its directory inside the
+repository with `dir`. Trail then fetches the tree itself, so a build
+machine needs only the primary tree:
+
+```toml
+[[merge]]
+repo = "https://github.com/peios/authd"
+dir = "docs/learn"
+path = "../../authd/docs/learn"
+```
+
+When `path` names an existing directory, Trail uses that local checkout.
+Otherwise it fetches the tip of the repository's default branch. Set
+`branch` to fetch another branch. `path` is optional; without it, every
+build fetches the tree.
+
+Trail runs `git` with the credentials it already has, so private
+repositories work wherever `git` can read them. Trail turns off
+`git`'s terminal prompt, so a repository it cannot read fails the build
+instead of waiting for a password. A fetch keeps only
+`dir` and the repository's root files, checked out under
+`.trail-cache/repos/` in the primary root. A later build fetches again only
+when the branch has moved, and transfers only what changed. `trail serve`
+fetches once when it starts and does not watch fetched trees.
+
+A tree whose [plugins](~trail/writing/plugin-blocks) read files outside
+`dir` needs the whole repository. Set `sparse = false` to check out all of
+it. The first fetch of a large repository can take several minutes; keep
+`.trail-cache/` between builds so later fetches stay small.
+
+A tree from a GitHub repository gets edit links to that repository unless
+its own `trail.toml` sets `edit_url`. For a local checkout, the branch in
+those links is `branch`, or the default branch the checkout's `origin`
+reports.
+
 ## Build a component's docs separately
 
 Add a valid root `trail.toml` to build a component's tree on its own. A tree
@@ -134,6 +173,6 @@ Use the combined strict build to validate those references before publishing.
 
 ## Serve the combined site
 
-Run `trail serve` from the primary root. It watches all merged trees and
-rebuilds when their content changes. Dot-entries and each tree's `dist/`
+Run `trail serve` from the primary root. It watches all local merged trees
+and rebuilds when their content changes. Dot-entries and each tree's `dist/`
 directory are excluded from the content scan.

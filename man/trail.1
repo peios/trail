@@ -39,7 +39,8 @@ Output defaults to root/dist. The page count counts HTML pages only.
 .TP
 .B serve
 Build the site and serve it over local HTTP.
-Watch source trees and declared plugin dependencies, including merged trees.
+Watch source trees and declared plugin dependencies, including local merged
+trees. Trees fetched from a repository are fetched once and not watched.
 Debounce change bursts for 200 milliseconds, with a one-second limit.
 Reconcile source contents every 30 seconds to detect missed events.
 Ignore output paths and hidden path components.

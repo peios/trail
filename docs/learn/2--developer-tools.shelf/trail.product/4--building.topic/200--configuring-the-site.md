@@ -156,7 +156,8 @@ the _original's_ source file, since that is the file to edit.
 Pages from a [merged tree](~trail/structuring-a-site/merged-trees) use that
 tree's own `edit_url`, with `{path}` relative to that tree's root, because the
 tree usually lives in a different repository. A merged tree without `edit_url`
-gets no edit links.
+gets no edit links, unless it is
+[fetched from a GitHub repository](~trail/structuring-a-site/merged-trees#fetch-trees-from-their-repositories).
 
 ## Injecting your own head HTML
 

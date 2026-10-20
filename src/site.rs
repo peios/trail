@@ -10,6 +10,8 @@ use crate::plugins::PluginConfig;
 
 #[path = "merge.rs"]
 mod merge;
+#[path = "remote.rs"]
+mod remote;
 
 /// The site model: everything the renderer needs, loaded and validated.
 #[derive(Debug, Clone)]
@@ -43,8 +45,9 @@ pub struct Site {
 /// belong to its files rather than to the site.
 #[derive(Debug, Clone)]
 pub struct Tree {
-    /// The site root, or the site root joined with a `[[merge]]` path, so
-    /// it prefixes every source file loaded from the tree.
+    /// The site root, a `[[merge]]` path joined to it, or a fetched
+    /// checkout's directory, so it prefixes every source file loaded from
+    /// the tree.
     pub root: PathBuf,
     pub edit_url: Option<String>,
     pub passthrough: Vec<String>,
@@ -75,9 +78,9 @@ pub fn deepest_root<'a>(roots: impl IntoIterator<Item = &'a Path>, file: &Path) 
         .map(|(index, _)| index)
 }
 
-/// The directories the site at `root` merges, read from its trail.toml
-/// without validating anything else, so `serve` keeps watching them while
-/// the site fails to load.
+/// The local directories the site at `root` merges, read from its
+/// trail.toml without validating anything else, so `serve` keeps watching
+/// them while the site fails to load. Fetched trees are not watched.
 pub fn merged_roots(root: &Path) -> Vec<PathBuf> {
     #[derive(Deserialize, Clone)]
     struct Merges {
@@ -93,7 +96,8 @@ pub fn merged_roots(root: &Path) -> Vec<PathBuf> {
     merges
         .merge
         .iter()
-        .map(|merge| root.join(&merge.path))
+        .filter_map(|merge| merge.path.as_ref())
+        .map(|path| root.join(path))
         .filter(|tree| tree.is_dir())
         .collect()
 }
@@ -175,12 +179,27 @@ pub struct SiteConfig {
     pub lint: Option<crate::lint::LintConfig>,
 }
 
-/// One `[[merge]]` table in the root trail.toml.
+/// One `[[merge]]` table in the root trail.toml. A local `path` that
+/// exists is used as it is; otherwise the tree is fetched from `repo`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MergeConfig {
-    /// The tree's directory, relative to the site root.
-    pub path: String,
+    /// A local checkout of the tree, relative to the site root.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// A Git repository holding the tree.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// The tree's directory inside `repo`; the repository root if unset.
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// The branch of `repo` to fetch; its default branch if unset.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Whether a fetch checks out only `dir`; true if unset. Turn it off
+    /// for a tree whose plugins read elsewhere in the repository.
+    #[serde(default)]
+    pub sparse: Option<bool>,
 }
 
 /// One header navigation link. The url may be external, or a `~` page
@@ -1053,7 +1072,7 @@ impl Site {
         };
         validate_tree_config(&config, root, out)?;
         // A tree merged from inside the root is content the scan tolerates.
-        let merged_inside = config.merge.iter().map(|merge| &merge.path);
+        let merged_inside = config.merge.iter().filter_map(|merge| merge.path.as_ref());
         let mut products = Vec::new();
         let mut shelves = Vec::new();
         let mut images = Vec::new();
@@ -1078,7 +1097,7 @@ impl Site {
                 &mut shelf_additions,
                 &mut images,
             )
-            .with_context(|| format!("merging the tree at '{}'", merge.path))?;
+            .with_context(|| format!("merging the tree at '{}'", merge.label()))?;
             merge::collections(&mut products, additions)
                 .and_then(|()| merge::root_shelves(&mut shelves, shelf_additions))
                 .with_context(|| format!("merging the tree at '{}'", tree.root.display()))?;
@@ -3016,7 +3035,8 @@ fn load_root_shelf(
 /// Load a `[[merge]]` tree's products and the settings it keeps. Its
 /// trail.toml is optional; when present it must be valid, but only its
 /// edit link, attachments, passthrough entries and plugins apply — the site root's
-/// trail.toml settles everything else, including what is merged.
+/// trail.toml settles everything else, including what is merged. A tree
+/// from a GitHub repository that sets no edit link gets one pointing there.
 fn load_merged_tree(
     site_root: &Path,
     out: &Path,
@@ -3025,17 +3045,11 @@ fn load_merged_tree(
     shelves: &mut Vec<RootShelf>,
     images: &mut Vec<ImageAsset>,
 ) -> Result<Tree> {
-    ensure!(!merge.path.is_empty(), "a merge path cannot be empty");
-    let root = site_root.join(&merge.path);
-    ensure!(
-        root.is_dir(),
-        "merge path '{}' is not a directory (paths are relative to the site root)",
-        merge.path
-    );
+    let remote::Source { root, edit_url } = remote::resolve(site_root, merge)?;
     ensure!(
         !is_same_path(&root, site_root),
         "merge path '{}' is the site root itself",
-        merge.path
+        merge.label()
     );
     let file = root.join("trail.toml");
     let config: Option<SiteConfig> = file.exists().then(|| read_toml(&file)).transpose()?;
@@ -3048,10 +3062,14 @@ fn load_merged_tree(
     keep.push("dist".to_string());
     load_products(&root, out, keep, products, shelves, images)?;
     Ok(match &config {
-        Some(config) => Tree::new(root, config),
+        Some(config) => {
+            let mut tree = Tree::new(root, config);
+            tree.edit_url = tree.edit_url.or(edit_url);
+            tree
+        }
         None => Tree {
             root,
-            edit_url: None,
+            edit_url,
             passthrough: Vec::new(),
             attachments: Vec::new(),
             plugins: BTreeMap::new(),

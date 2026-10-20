@@ -279,13 +279,44 @@ order its plugins and passthrough entries yield to one another.
 .PP
 .TP
 \fBpath\fR
-Type: string; \fBrequired.\fR The tree's directory, relative to the site root.
+Type: string; Default: none; A local checkout of the tree, relative to the
+site root. Used whenever it is a directory.
+.TP
+\fBrepo\fR
+Type: string; Default: none; A Git repository holding the tree, fetched when
+\fBpath\fR is unset or not a directory.
+.TP
+\fBdir\fR
+Type: string; Default: the repository root; The tree's directory inside
+\fBrepo\fR. A plain relative path.
+.TP
+\fBbranch\fR
+Type: string; Default: the repository's default branch; The branch of
+\fBrepo\fR to fetch.
+.TP
+\fBsparse\fR
+Type: bool; Default: \fBtrue\fR; Whether a fetch checks out only \fBdir\fR and
+the repository's root files. Set it to \fBfalse\fR for a tree whose plugins
+read elsewhere in the repository.
 .PP
+A table needs \fBpath\fR, \fBrepo\fR, or both.
 .PP
 .nf
 [[merge]]
+repo = "https://github.com/peios/kernel"
+dir = "docs"
 path = "../kernel/docs"
 .fi
+.PP
+A fetch runs the system \fBgit\fR with its existing credentials and
+\fBGIT_TERMINAL_PROMPT=0\fR. It checks out \fBdir\fR and the
+repository's root files, or the whole repository without \fBsparse\fR, under
+\fB.trail-cache/repos/\fR in the site root. It fetches again only when the
+branch has moved, and then transfers only what changed. A process fetches each
+tree at most once. A tree fetched from a \fBhttps://github.com/\fR
+repository, or whose local checkout names one in \fBrepo\fR, gets edit links
+to it unless its \fBtrail.toml\fR sets \fBedit_url\fR. A local checkout's
+links use \fBbranch\fR, or the default branch its \fBorigin\fR reports.
 .PP
 Every \fB*.product\fR and \fB*.antho\fR at the tree root or on a root shelf joins the site. A merged tree's
 \fBtrail.toml\fR is
@@ -296,7 +327,15 @@ optional; when present it must be valid, and only its \fBedit_url\fR,
 Errors:
 .PP
 .IP \(bu 2
-an empty \fBpath\fR, or one that is not a directory;
+neither \fBpath\fR nor \fBrepo\fR, or an empty one;
+.IP \(bu 2
+a \fBpath\fR that is not a directory, without a \fBrepo\fR;
+.IP \(bu 2
+\fBdir\fR, \fBbranch\fR or \fBsparse\fR without a \fBrepo\fR, or a \fBdir\fR that leaves the
+repository;
+.IP \(bu 2
+a repository that cannot be fetched, or has no such \fBbranch\fR or
+\fBdir\fR;
 .IP \(bu 2
 a \fBpath\fR that is the site root itself;
 .IP \(bu 2
