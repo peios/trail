@@ -1,7 +1,7 @@
 ---
 title: Checking Style
 type: how-to
-description: How trail lint checks a site's sources against the writing rules the site turns on, covering configuring rules and word lists, what counts as prose, each built-in rule, warnings, and suppressing a rule for a line, a stretch, a page, or a book.
+description: How trail lint checks a site's sources against the writing rules the site turns on, covering configuring rules, dictionaries and banned words, what counts as prose, each built-in rule, warnings, and suppressing a rule for a line, a stretch, a page, or a book.
 related:
   - trail/reference/cli
   - trail/reference/trail-toml
@@ -10,8 +10,8 @@ related:
 
 `trail lint` reads a site's sources and reports each breach of its writing
 rules, with the file, line, and column. Every rule is off until the site turns
-it on, and every word list is the site's own, so Trail holds no house style of
-its own.
+it on, and every dictionary and word list is the site's own, so Trail holds no
+house style of its own.
 
 The lint is a separate command. A build never runs it, so a site that doesn't
 use it is unaffected.
@@ -23,7 +23,7 @@ trail lint path/to/site
 Findings and totals go to stderr:
 
 ```text
-trail: guide.product/1--basics.topic/100--intro.md:12:41: "e.g.": use "for example" [words]
+trail: guide.product/1--basics.topic/100--intro.md:12:41: "e.g.": use "for example" [spelling]
 trail: warning: guide.product/1--basics.topic/100--intro.md:30:18: add a serial comma before the last item [serial-comma]
 trail: 1 error, 1 warning
 ```
@@ -33,7 +33,7 @@ The exit status is `1` if any breach is an error, and `0` otherwise. The
 
 ## Complete the task
 
-1. Choose the writing rules and word lists for the site.
+1. Choose the writing rules, dictionaries, and banned words for the site.
 
 2. Add the `[lint]` configuration shown below to its root `trail.toml`.
 
@@ -51,22 +51,13 @@ plain key:
 
 ```toml
 [lint]
-rules = ["words", "spelling", "em-dash", "heading-levels", "line-length"]
+rules = ["spelling", "em-dash", "heading-levels", "line-length"]
 line_length = 78
 proper_nouns = ["Peios", "Registry Editor", "netd"]
 
-[[lint.words]]
-match = ["e.g."]
-use = "for example"
-
-[[lint.words]]
-match = ["simply", "just", "of course"]
-message = "don't condescend; cut it"
-
-[[lint.words]]
-rule = "spelling"
-match = ["colour*", "behaviour*", "catalogue"]
-message = "use the US spelling"
+[lint.spelling]
+dictionaries = ["spelling/en_US.dic", "spelling/project-words.txt"]
+banned-words = ["spelling/banned-words.txt"]
 ```
 
 The field and rule reference is in `trail-lint(5)`.
@@ -74,9 +65,58 @@ The field and rule reference is in `trail-lint(5)`.
 A malformed `[lint]` table fails `trail build` too, so a typo can't hide until
 someone runs the lint.
 
-## Word lists
+## Spelling
 
-Each `[[lint.words]]` table bans some words or phrases:
+The `spelling` rule checks prose against the files in `[lint.spelling]`.
+Trail doesn't include a dictionary, so the site chooses its language and
+supplies the files. Paths are relative to the site root, and a build accepts
+them there.
+
+`dictionaries` lists the words prose can use. A file ending in `.dic` is a
+Hunspell dictionary, read with the `.aff` file beside it, so one entry covers
+a word's other forms: `en_US.dic` accepts "recognized" as well as
+"recognize".
+Any other file is a word list with one word on each line, for the names and
+terms a general dictionary lacks. A lowercase word in a list is accepted
+capitalized too. Lines starting with `#` are comments.
+
+The rule reports a word that no dictionary, word list, or `proper_nouns` entry
+accepts, with a suggested correction where the dictionary has one:
+
+```text
+trail: guide.product/1--basics.topic/100--intro.md:4:9: "kernle": not in the dictionary (did you mean "kernel"?) [spelling]
+```
+
+It leaves alone words that hold a digit or an underscore, which are
+identifiers, and words written in capitals, which are acronyms ("KACS",
+"SIDs"). A hyphenated compound passes when each of its parts does.
+
+`banned-words` lists words and phrases prose must not use, one entry on each
+line:
+
+```text
+# What to write instead:
+e.g. -> for example
+utilize*, leverage* -> use
+
+# Why, when the replacement isn't one phrase:
+simply, just, of course: don't condescend; cut it
+
+# Banned with no advice:
+whilst
+```
+
+<!-- lint-disable spelling -->
+Entries match whole words, and a phrase matches across a line break. A
+trailing `*` matches any ending, so `utilize*` finds "utilizes". An entry with
+a capital letter matches exactly. In a lowercase entry, each word matches in
+lowercase or with only its first letter capitalized, as in a sentence or a
+title: `logging in` finds "Logging In", but `may` doesn't find the
+specification keyword "MAY". A banned word is reported with its own message,
+not as a dictionary miss.
+<!-- lint-enable spelling -->
+
+Without `dictionaries`, the rule checks only banned words.
 
 The field and rule reference is in `trail-lint(5)`.
 
@@ -89,6 +129,7 @@ checked as words:
 - Code spans and code blocks;
 - Raw HTML;
 - Link destinations and URLs;
+- Citation anchors such as `[*name]`;
 - Frontmatter keys.
 
 An article's frontmatter `title` and `description`, and every `trail.toml` and
@@ -130,16 +171,16 @@ it bans, suppress the rule rather than turning it off for the whole site.
 For one line, put a comment on the line before it:
 
 ```markdown
-<!-- lint-disable-next-line words -->
+<!-- lint-disable-next-line spelling -->
 - Don't: "In this article, we will discuss logon sessions."
 ```
 
 For a stretch of a page, put comments around it:
 
 ```markdown
-<!-- lint-disable words -->
+<!-- lint-disable spelling -->
 Never write a lowercase "may" in prose.
-<!-- lint-enable words -->
+<!-- lint-enable spelling -->
 ```
 
 Name one or more rules, or none for every rule. A comment can sit in a

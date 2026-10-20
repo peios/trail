@@ -1,4 +1,4 @@
-.TH TRAIL-LINT 5 2026-10-17 "Peios trail 0.1.0"
+.TH TRAIL-LINT 5 2026-10-20 "Peios trail 0.1.0"
 .SH NAME
 trail-lint \- Trail writing-rule configuration
 .SH SYNOPSIS
@@ -8,8 +8,8 @@ trail.toml
 .SH DESCRIPTION
 \fBtrail lint\fR reads a site's sources and reports each breach of its writing
 rules, with the file, line, and column. Every rule is off until the site turns
-it on, and every word list is the site's own, so Trail holds no house style of
-its own.
+it on, and every dictionary and word list is the site's own, so Trail holds no
+house style of its own.
 .PP
 The lint is a separate command. A build never runs it, so a site that doesn't
 use it is unaffected.
@@ -23,7 +23,7 @@ Findings and totals go to stderr:
 .PP
 .PP
 .nf
-trail: guide.product/1--basics.topic/100--intro.md:12:41: "e.g.": use "for example" [words]
+trail: guide.product/1--basics.topic/100--intro.md:12:41: "e.g.": use "for example" [spelling]
 trail: warning: guide.product/1--basics.topic/100--intro.md:30:18: add a serial comma before the last item [serial-comma]
 trail: 1 error, 1 warning
 .fi
@@ -41,28 +41,19 @@ plain key:
 .PP
 .nf
 [lint]
-rules = ["words", "spelling", "em-dash", "heading-levels", "line-length"]
+rules = ["spelling", "em-dash", "heading-levels", "line-length"]
 line_length = 78
 proper_nouns = ["Peios", "Registry Editor", "netd"]
 
-[[lint.words]]
-match = ["e.g."]
-use = "for example"
-
-[[lint.words]]
-match = ["simply", "just", "of course"]
-message = "don't condescend; cut it"
-
-[[lint.words]]
-rule = "spelling"
-match = ["colour*", "behaviour*", "catalogue"]
-message = "use the US spelling"
+[lint.spelling]
+dictionaries = ["spelling/en_US.dic"]
+banned-words = ["spelling/banned-words.txt"]
 .fi
 .PP
 .TP
 \fBrules\fR
-Type: array of strings; The rules that run: built-in rules, and the \fBrule\fR
-names of word lists. A name that matches no rule is an error.
+Type: array of strings; The rules that run. A name that matches no rule is an
+error.
 .TP
 \fBwarnings\fR
 Type: array of strings; Rules that report warnings, not errors.
@@ -73,10 +64,11 @@ Type: integer; The longest a prose line can be, in characters. Default 78.
 .TP
 \fBproper_nouns\fR
 Type: array of strings; Names whose casing is fixed, for the title and heading
-case rules. A name can be several words.
+case rules, and words the \fBspelling\fR rule accepts. A name can be several
+words.
 .TP
-\fBwords\fR
-Type: array of tables; Word lists.
+\fBspelling\fR
+Type: table; The dictionaries and banned words of the \fBspelling\fR rule.
 .TP
 \fBignore\fR
 Type: array of tables; Rules that don't apply under a path.
@@ -85,29 +77,71 @@ A malformed \fB[lint]\fR table fails \fBtrail build\fR too, so a typo can't
 hide until
 someone runs the lint.
 .PP
-.SS "Word lists"
+.SS "Spelling"
 .PP
-Each \fB[[lint.words]]\fR table bans some words or phrases:
+The \fBspelling\fR rule checks prose against the files in a
+\fB[lint.spelling]\fR table. Trail includes no dictionary. Paths are relative
+to the site root, and a build accepts the files there.
+.PP
+.PP
+.nf
+[lint.spelling]
+dictionaries = ["spelling/en_US.dic", "spelling/project-words.txt"]
+banned-words = ["spelling/banned-words.txt"]
+.fi
 .PP
 .TP
-\fBmatch\fR
-Required. The words or phrases to find. They match whole words, ignoring case,
-and a phrase matches across a line break. A trailing \fB*\fR matches any
-ending: \fBcolour*\fR finds "colors" and "colored".
+\fBdictionaries\fR
+Type: array of strings; The words prose can use. A file ending in \fB.dic\fR
+is a Hunspell dictionary, read with the \fB.aff\fR file of the same name beside
+it. Any other file is a word list: one word on each line, accepted as written,
+and capitalized too when it is lowercase.
 .TP
-\fBrule\fR
-The rule the list belongs to. Default \fBwords\fR. Give lists that should be
-turned on and off separately their own rule names, such as \fBspelling\fR.
-.TP
-\fBuse\fR
-What to write instead. The message says \fB"colour": use "color"\fR.
-.TP
-\fBmessage\fR
-Why, when \fBuse\fR doesn't say it.
-.TP
-\fBcase_sensitive\fR
-Match case exactly. With it, \fBmay\fR doesn't match the specification keyword
-\fBMAY\fR, and \fBus\fR doesn't match "US".
+\fBbanned-words\fR
+Type: array of strings; Files of words and phrases prose must not use.
+.PP
+Turning on \fBspelling\fR without either key is an error, and so is a file
+that can't be read or parsed. In both kinds of file, blank lines and lines
+starting with \fB#\fR are skipped.
+.PP
+With \fBdictionaries\fR, the rule reports a prose word that no dictionary,
+word list, or \fBproper_nouns\fR entry accepts, with the dictionary's first
+edit-distance suggestion when it has one:
+.PP
+.PP
+.nf
+trail: a.product/1--x.topic/100--y.md:4:9: "kernle": not in the dictionary (did you mean "kernel"?) [spelling]
+.fi
+.PP
+It skips words that hold a digit or an underscore, and words in capitals
+(two letters or more, with an optional plural \fBs\fR or \fB's\fR), such as
+"KACS" and "SIDs". A word ending in \fB's\fR is accepted when its stem is. A
+hyphenated compound is accepted when each part is; otherwise each unknown part
+of two letters or more is reported.
+.PP
+Each line of a \fBbanned-words\fR file is one entry: phrases separated by
+commas, then optionally \fB->\fR and what to write instead, or \fB:\fR and a
+message.
+.PP
+.PP
+.nf
+e.g. -> for example
+utilize*, leverage* -> use
+simply, just, of course: don't condescend; cut it
+whilst
+.fi
+.PP
+An entry matches whole words, ignoring line breaks inside a phrase. A
+trailing \fB*\fR matches any ending: \fButilize*\fR finds "utilizes". An entry
+with a capital letter matches exactly. In a lowercase entry, each word matches
+in lowercase or with only its first letter capitalized, as in a sentence or a
+title: \fBlogging in\fR finds "Logging In", but \fBmay\fR doesn't find the
+keyword "MAY", and \fBus\fR doesn't find "US". The reports say \fB"e.g.": use "for example"\fR,
+\fB"just": don't condescend; cut it\fR, or \fBdon't use "whilst"\fR. A banned
+word is not also reported as a dictionary miss.
+.PP
+The \fB[[lint.words]]\fR tables of earlier versions are an error; move their
+entries to a \fBbanned-words\fR file.
 .PP
 .SS "What counts as prose"
 .PP
@@ -122,6 +156,8 @@ raw HTML;
 .IP \(bu 2
 link destinations and URLs;
 .IP \(bu 2
+citation anchors such as \fB[*name]\fR;
+.IP \(bu 2
 frontmatter keys.
 .PP
 An article's frontmatter \fBtitle\fR and \fBdescription\fR, and every
@@ -135,6 +171,10 @@ checked.
 Each rule's name is what turns it on, appears in its reports, and suppresses
 it.
 .PP
+.TP
+\fBspelling\fR
+Reports: A word no dictionary accepts, and a banned word or phrase. See
+\fBSpelling\fR.
 .TP
 \fBem-dash\fR
 Reports: An em dash without a space on each side, and more than one pair of em
@@ -233,7 +273,7 @@ For one line, put a comment on the line before it:
 .PP
 .PP
 .nf
-<!-- lint-disable-next-line words -->
+<!-- lint-disable-next-line spelling -->
 - Don't: "In this article, we will discuss logon sessions."
 .fi
 .PP
@@ -241,9 +281,9 @@ For a stretch of a page, put comments around it:
 .PP
 .PP
 .nf
-<!-- lint-disable words -->
+<!-- lint-disable spelling -->
 Never write a lowercase "may" in prose.
-<!-- lint-enable words -->
+<!-- lint-enable spelling -->
 .fi
 .PP
 Name one or more rules, or none for every rule. A comment can sit in a

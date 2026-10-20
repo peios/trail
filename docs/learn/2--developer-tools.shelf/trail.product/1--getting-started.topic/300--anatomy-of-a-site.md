@@ -151,7 +151,7 @@ when the container needs `inline_ref` phrases.
 Trail rejects anything it does not recognize, so it is worth knowing what each
 level tolerates.
 
-| Directory | May contain |
+| Directory | Can contain |
 | ----------------- | ---------------------------------------------------------------------------------- |
 | The site root | `trail.toml`, `*.product/`, `*.antho/`, `.shelf/`, the output directory, files named by the config |
 | A product | `trail.toml`, `.antho/`, `.topic/`, `.book/`, `.shelf/` |

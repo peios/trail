@@ -2745,26 +2745,34 @@ fn keep_entries<'a>(
     config: &'a SiteConfig,
     extra: impl Iterator<Item = &'a String>,
 ) -> Vec<String> {
+    let lint_files = config.lint.iter().flat_map(|lint| lint.spelling.files());
     [&config.custom_css, &config.favicon, &config.head_html]
         .into_iter()
         .flatten()
-        .chain(&config.passthrough)
+        .cloned()
+        .chain(config.passthrough.iter().cloned())
+        .chain(lint_files)
         .chain(
             config
                 .attachments
                 .iter()
-                .map(|attachment| &attachment.source),
+                .map(|attachment| attachment.source.clone()),
         )
         .chain(
             config
                 .plugins
                 .values()
                 .filter_map(|plugin| plugin.command.first())
-                .filter(|program| program.contains('/')),
+                .filter(|program| program.contains('/'))
+                .cloned(),
         )
-        .chain(extra)
-        .filter_map(|path| Path::new(path).components().next())
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .chain(extra.cloned())
+        .filter_map(|path| {
+            Path::new(&path)
+                .components()
+                .next()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        })
         .collect()
 }
 
