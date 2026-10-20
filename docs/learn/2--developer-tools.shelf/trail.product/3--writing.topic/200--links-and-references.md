@@ -17,7 +17,7 @@ and enough of the page's slugs to be unambiguous:
 See [Commands and targets](~pekit/running/commands-and-targets) first.
 ```
 
-Reorganise the tree — move that topic into an anthology, wrap it in a shelf,
+Reorganize the tree — move that topic into an anthology, wrap it in a shelf,
 renumber it — and the link still resolves. Delete the target, and the build
 fails and tells you every page that pointed at it.
 
