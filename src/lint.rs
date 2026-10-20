@@ -955,9 +955,10 @@ fn prose_findings(text: &str, config: &LintConfig) -> Vec<(usize, String, String
 
 /// Whole-word (or whole-phrase) matches of `phrase`: (offset, text found).
 ///
-/// A phrase with a capital letter matches exactly. A lowercase one matches
-/// any capitalization except all capitals, which are acronyms and keywords:
-/// `may` finds "May" but not "MAY", and `us` doesn't find "US".
+/// A phrase with a capital letter matches exactly. In a lowercase one, each
+/// word matches in lowercase or with only its first letter capitalized, as
+/// in a sentence or a title: `logging in` finds "Logging In", but `may`
+/// doesn't find the keyword "MAY", nor `us` "US", nor `tap*` "TAPs".
 fn find_phrase(text: &str, phrase: &str) -> Vec<(usize, String)> {
     let case_sensitive = phrase.chars().any(char::is_uppercase);
     let (phrase, wildcard) = match phrase.strip_suffix('*') {
@@ -1023,11 +1024,19 @@ fn find_phrase(text: &str, phrase: &str) -> Vec<(usize, String)> {
         let right_ok =
             !last.ends_with(is_word) || text[end..].chars().next().is_none_or(|c| !is_word(c));
         let matched = &text[start..end];
-        if right_ok && (case_sensitive || !all_capitals(matched)) {
+        if right_ok && (case_sensitive || lowercase_match(matched)) {
             found.push((start, matched.to_string()));
         }
     }
     found
+}
+
+/// Whether `found`, matched without regard to case, has no capital but
+/// the first letter of a word.
+fn lowercase_match(found: &str) -> bool {
+    found
+        .split_whitespace()
+        .all(|word| word.chars().skip(1).all(|c| !c.is_uppercase()))
 }
 
 /// Whether a word or phrase is written in capitals: two letters or more,
@@ -1821,9 +1830,20 @@ mod tests {
         );
         // Phrases match across a line break; wildcards take any ending.
         assert_eq!(found("Of\ncourse, the colours.", &["spelling"]).len(), 2);
-        // A lowercase entry finds any capitalization but all capitals.
-        assert_eq!(found("May it run?", &["spelling"]).len(), 1);
-        assert!(found("US English.", &["spelling"]).is_empty());
+        // A lowercase entry finds its words capitalized as in a sentence
+        // or a title, but not in capitals.
+        assert_eq!(
+            found("May it run? It may. Of Course.", &["spelling"]).len(),
+            3
+        );
+        // Title case is checked too.
+        assert_eq!(
+            lint_toml("title = \"Simply Of Course\"\n", &config(&["spelling"])).len(),
+            2
+        );
+        for fine in ["US English.", "Two TAPs.", "It MAY.", "OF COURSE."] {
+            assert!(found(fine, &["spelling"]).is_empty(), "{fine}");
+        }
         let messages: Vec<String> =
             lint_markdown(&page("Colours and simply."), &config(&["spelling"]))
                 .into_iter()
