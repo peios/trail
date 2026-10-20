@@ -19,7 +19,7 @@
   {%- set card_heading_level = 4 if section.title else 3 %}
   <ul class="card-grid">
     {%- for product in section.products %}
-    <li><a class="card" href="{{ product.path | url }}" style="--pc: {{ product.color }}">
+    <li><a class="card" href="{{ product.path | url }}" style="--pc: {{ product.color }}; --tile-chars: {{ product.monogram | length }}">
       <span class="tile">{{ product.monogram }}</span>
       <h{{ card_heading_level }}>{{ product.title }}</h{{ card_heading_level }}>
       <p>{{ product.description }}</p>

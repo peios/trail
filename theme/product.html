@@ -4,7 +4,7 @@
 {% block title %}{{ product.title }} — {{ site.sitename }}{% endblock %}
 
 {% block content %}
-<section class="hero product-hero" style="--pc: {{ product.color }}" data-pagefind-body>
+<section class="hero product-hero" style="--pc: {{ product.color }}; --tile-chars: {{ product.monogram | length }}" data-pagefind-body>
   <span class="tile tile-hero" data-pagefind-ignore>{{ product.monogram }}</span>
   <h1>{{ product.title }}</h1>
   <p class="lede">{{ product.description }}</p>
