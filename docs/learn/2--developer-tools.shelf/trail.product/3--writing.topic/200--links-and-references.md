@@ -147,7 +147,7 @@ target = "~pekit/running/signing-and-provenance"
 # the root trail.toml's nav — with the ~, or an external URL
 [[nav]]
 label = "Specs"
-url = "~peios/pgss"
+url = "~specifications/pgss"
 ```
 
 The `related:` list is the odd one out in dropping the `~`; everything else

@@ -107,7 +107,7 @@ front page.
 ```toml
 [[nav]]
 label = "Specs"
-url = "~peios/pgss"
+url = "~specifications/pgss"
 
 [[nav]]
 label = "Source"
