@@ -20,7 +20,11 @@
   <ul class="card-grid">
     {%- for product in section.products %}
     <li><a class="card" href="{{ product.path | url }}" style="--pc: {{ product.color }}; --tile-chars: {{ product.monogram | length }}">
+      {%- if product.icon %}
+      <svg class="tile tile-icon" aria-hidden="true"><use href="{{ product.icon | url }}#trail-icon" width="100%" height="100%"/></svg>
+      {%- else %}
       <span class="tile">{{ product.monogram }}</span>
+      {%- endif %}
       <h{{ card_heading_level }}>{{ product.title }}</h{{ card_heading_level }}>
       <p>{{ product.description }}</p>
     </a></li>

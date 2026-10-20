@@ -214,6 +214,10 @@ pub struct Product {
     pub path: String,
     pub title: String,
     pub monogram: String,
+    /// The product's icon (`icon` in trail.toml), shown in place of the
+    /// monogram tile. Trees that repeat a product can leave it out.
+    #[serde(skip)]
+    pub icon: Option<ProductIcon>,
     pub color: String,
     pub description: String,
     /// Everything under this product, added up; see `Article`.
@@ -233,6 +237,22 @@ pub struct Product {
     pub children: Vec<ProductChild>,
 }
 
+/// An SVG icon a product shows in place of its monogram tile. The build
+/// writes it once to `/assets/icons/<slug>.svg`, and pages draw it with
+/// `<use>`, so one file serves every page and `currentColor` in it takes
+/// the product's tile color.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductIcon {
+    /// Where the icon was read from, for diagnostics.
+    pub source: PathBuf,
+    /// The file as published: the author's SVG with `id="trail-icon"` on
+    /// its root element, which `<use>` references.
+    pub svg: String,
+}
+
+/// The `id` Trail gives an icon's root `<svg>`; `<use>` points at it.
+pub const ICON_ID: &str = "trail-icon";
+
 /// A shelf at a tree's root: a heading over some of the root collections
 /// on the front page and in the header menu. Like any shelf it has no page
 /// and adds no URL segment.
@@ -245,6 +265,13 @@ pub struct RootShelf {
 }
 
 impl Product {
+    /// Where the build publishes the product's icon, if it has one.
+    pub fn icon_href(&self) -> Option<String> {
+        self.icon
+            .as_ref()
+            .map(|_| format!("/assets/icons/{}.svg", self.slug))
+    }
+
     /// The product's anthologies, books and topics in display order, with
     /// shelf contents flattened in place (a shelf is presentation only).
     pub fn items(&self) -> impl Iterator<Item = &ProductItem> {
@@ -391,6 +418,9 @@ pub struct Section<'a, T> {
 struct ProductConfig {
     title: String,
     monogram: String,
+    /// An SVG file beside this trail.toml, shown in place of the monogram.
+    #[serde(default)]
+    icon: Option<String>,
     color: String,
     description: String,
     #[serde(default)]
@@ -1308,9 +1338,15 @@ fn load_product(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<
     let config: ProductConfig = read_toml(&dir.join("trail.toml"))?;
     validate_color(&config.color)?;
     let path = format!("/{slug}");
+    let icon = config
+        .icon
+        .as_deref()
+        .map(|name| load_icon(dir, name))
+        .transpose()?;
 
     let mut children = Vec::new();
-    for (child_dir, name) in grouping_dirs(dir, "a product")? {
+    let allowed = config.icon.as_deref();
+    for (child_dir, name) in grouping_dirs_allowing(dir, "a product", allowed)? {
         let grouping = parse_grouping_name(&name)?;
         let child = match grouping.kind.as_str() {
             "antho" => ProductChild::Item(ProductItem::Anthology {
@@ -1354,6 +1390,7 @@ fn load_product(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> Result<
         path,
         title: config.title,
         monogram: config.monogram,
+        icon,
         color: config.color,
         description: config.description,
         reading_minutes: 0,
@@ -1407,6 +1444,7 @@ fn load_root_anthology(dir: &Path, slug: &str, images: &mut Vec<ImageAsset>) -> 
             .filter(|c| c.is_alphanumeric())
             .take(2)
             .collect(),
+        icon: None,
         color: "#635bff".to_string(),
         title: anthology.title,
         description: anthology.description,
@@ -2560,6 +2598,16 @@ fn title_from_slug(slug: &str) -> String {
 
 /// The subdirectories of a grouping, with files other than trail.toml rejected.
 fn grouping_dirs(dir: &Path, what: &str) -> Result<Vec<(std::path::PathBuf, String)>> {
+    grouping_dirs_allowing(dir, what, None)
+}
+
+/// `grouping_dirs`, also accepting the one file `also` names (a product's
+/// icon) beside trail.toml.
+fn grouping_dirs_allowing(
+    dir: &Path,
+    what: &str,
+    also: Option<&str>,
+) -> Result<Vec<(std::path::PathBuf, String)>> {
     let mut dirs = Vec::new();
     for entry in read_dir_sorted(dir)? {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -2568,11 +2616,82 @@ fn grouping_dirs(dir: &Path, what: &str) -> Result<Vec<(std::path::PathBuf, Stri
         }
         if entry.path().is_dir() {
             dirs.push((entry.path(), name));
-        } else if name != "trail.toml" {
+        } else if name != "trail.toml" && Some(name.as_str()) != also {
             bail!("unexpected file '{name}': only trail.toml is allowed in {what}");
         }
     }
     Ok(dirs)
+}
+
+/// Read a product's `icon`: an SVG file named beside its trail.toml. The
+/// root element must be `<svg>` in the SVG namespace, so the published
+/// file renders on its own, and must have no `id`, because Trail gives it
+/// `ICON_ID` for `<use>` to reference.
+fn load_icon(dir: &Path, name: &str) -> Result<ProductIcon> {
+    ensure!(
+        !name.contains(['/', '\\']) && !name.starts_with('.') && name.ends_with(".svg"),
+        "icon '{name}' must be the name of an .svg file beside the product's trail.toml"
+    );
+    let source = dir.join(name);
+    ensure!(
+        source.is_file(),
+        "icon names '{name}', which does not exist beside the product's trail.toml"
+    );
+    let text = fs::read_to_string(&source)
+        .with_context(|| format!("reading icon {}", source.display()))?;
+    let start = root_element_start(&text)
+        .with_context(|| format!("icon {}: no root element", source.display()))?;
+    let rest = &text[start..];
+    let end = rest
+        .find('>')
+        .with_context(|| format!("icon {}: unterminated root element", source.display()))?;
+    let tag = &rest[..end];
+    ensure!(
+        tag.starts_with("<svg") && tag[4..].starts_with(|c: char| c.is_ascii_whitespace()),
+        "icon {}: the root element must be <svg>",
+        source.display()
+    );
+    ensure!(
+        tag.contains("xmlns=\"http://www.w3.org/2000/svg\"")
+            || tag.contains("xmlns='http://www.w3.org/2000/svg'"),
+        "icon {}: the root <svg> needs xmlns=\"http://www.w3.org/2000/svg\"",
+        source.display()
+    );
+    ensure!(
+        !tag.split_ascii_whitespace()
+            .any(|attr| attr.starts_with("id=")),
+        "icon {}: the root <svg> must not have an id; Trail gives it \"{ICON_ID}\"",
+        source.display()
+    );
+    let svg = format!(
+        "{}<svg id=\"{ICON_ID}\"{}",
+        &text[..start],
+        &text[start + 4..]
+    );
+    Ok(ProductIcon { source, svg })
+}
+
+/// Where the root element begins: past an XML declaration, comments,
+/// a doctype and whitespace.
+fn root_element_start(text: &str) -> Option<usize> {
+    let mut at = 0;
+    loop {
+        let rest = &text[at..];
+        let trimmed = rest.trim_start();
+        at += rest.len() - trimmed.len();
+        let skip = if trimmed.starts_with("<?") {
+            trimmed.find("?>").map(|end| end + 2)
+        } else if trimmed.starts_with("<!--") {
+            trimmed.find("-->").map(|end| end + 3)
+        } else if trimmed.starts_with("<!") {
+            trimmed.find('>').map(|end| end + 1)
+        } else if trimmed.starts_with('<') {
+            return Some(at);
+        } else {
+            return None;
+        };
+        at += skip?;
+    }
 }
 
 /// Parse a grouping directory name: `<order>--<slug>.<kind>`.
@@ -3262,6 +3381,88 @@ mod tests {
             .anthologies()
             .find(|d| d.slug == "acorn")
             .unwrap()
+    }
+
+    const ICON: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0h24v24H0z\"/></svg>\n";
+
+    fn set_icon(root: &Path, name: &str, svg: Option<&str>) {
+        let dir = root.join("alpha.product");
+        let config = fs::read_to_string(dir.join("trail.toml")).unwrap();
+        fs::write(
+            dir.join("trail.toml"),
+            format!("{config}icon = \"{name}\"\n"),
+        )
+        .unwrap();
+        if let Some(svg) = svg {
+            fs::write(dir.join(name), svg).unwrap();
+        }
+    }
+
+    #[test]
+    fn loads_a_product_icon_and_gives_its_root_the_use_id() {
+        let dir = fixture();
+        set_icon(
+            dir.path(),
+            "mark.svg",
+            Some(&format!(
+                "<?xml version=\"1.0\"?>\n<!-- the mark -->\n{ICON}"
+            )),
+        );
+        let site = load(dir.path()).unwrap();
+        let icon = alpha(&site).icon.as_ref().unwrap();
+        assert!(
+            icon.svg.starts_with(
+                "<?xml version=\"1.0\"?>\n<!-- the mark -->\n<svg id=\"trail-icon\" xmlns="
+            ),
+            "{}",
+            icon.svg
+        );
+        assert_eq!(
+            alpha(&site).icon_href().as_deref(),
+            Some("/assets/icons/alpha.svg")
+        );
+        let beta = site.products.iter().find(|p| p.slug == "beta").unwrap();
+        assert!(beta.icon.is_none() && beta.icon_href().is_none());
+    }
+
+    #[test]
+    fn rejects_icons_that_cannot_be_published() {
+        let cases = [
+            (
+                "../mark.svg",
+                Some(ICON),
+                "must be the name of an .svg file",
+            ),
+            ("mark.png", Some(ICON), "must be the name of an .svg file"),
+            ("mark.svg", None, "does not exist beside"),
+            (
+                "mark.svg",
+                Some("<html></html>"),
+                "root element must be <svg>",
+            ),
+            (
+                "mark.svg",
+                Some("<svg viewBox=\"0 0 1 1\"/>"),
+                "needs xmlns",
+            ),
+            (
+                "mark.svg",
+                Some("<svg id=\"x\" xmlns=\"http://www.w3.org/2000/svg\"/>"),
+                "must not have an id",
+            ),
+        ];
+        for (name, svg, message) in cases {
+            let dir = fixture();
+            set_icon(dir.path(), name, svg);
+            let error = format!("{:#}", load(dir.path()).unwrap_err());
+            assert!(error.contains(message), "{name}: {error}");
+        }
+        // Only the configured icon is exempt: another file is still an error.
+        let dir = fixture();
+        set_icon(dir.path(), "mark.svg", Some(ICON));
+        fs::write(dir.path().join("alpha.product/other.svg"), ICON).unwrap();
+        let error = format!("{:#}", load(dir.path()).unwrap_err());
+        assert!(error.contains("unexpected file 'other.svg'"), "{error}");
     }
 
     #[test]

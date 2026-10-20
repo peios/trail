@@ -50,7 +50,9 @@ components' pages in the published site.
    the anthology, shelf, and topic into one collection at `/peios`. The
    shelf adds a heading without adding a URL segment.
 
-4. Give repeated containers identical metadata. A root anthology needs
+4. Give repeated containers identical metadata. The one exception is a
+   product's `icon`, which only one tree needs to set; see
+   [Products](~trail/structuring-a-site/products). A root anthology needs
    `title` and `description` in its `trail.toml`. For example:
 
    ```toml

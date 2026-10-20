@@ -774,6 +774,16 @@ body.drawer-open {
     margin-bottom: 0.75rem;
 }
 
+/* An icon takes the tile's place: the same size and spacing, but no
+   tinted background, so a mark brings its own box if it wants one.
+   currentColor in the icon is the tile's foreground. */
+.tile.tile-icon {
+    display: inline-block;
+    vertical-align: top;
+    background: none;
+    border-radius: 0;
+}
+
 .card :is(h3, h4) {
     font-size: 1rem;
     font-weight: 620;

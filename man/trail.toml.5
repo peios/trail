@@ -1,4 +1,4 @@
-.TH TRAIL.TOML 5 2026-10-19 "Peios trail 0.1.0"
+.TH TRAIL.TOML 5 2026-10-20 "Peios trail 0.1.0"
 .SH NAME
 trail.toml \- trail configuration files
 .SH SYNOPSIS
@@ -345,6 +345,12 @@ Type: string; \fBrequired.\fR The product's display name.
 .TP
 \fBmonogram\fR
 Type: string; \fBrequired.\fR The short string on the product's tile.
+.TP
+\fBicon\fR
+Type: string; An SVG file beside this \fBtrail.toml\fR, shown in place of
+the monogram tile. Its root \fB<svg>\fR needs the SVG namespace and no
+\fBid\fR. It is published at \fB/assets/icons/<slug>.svg\fR. Merged trees
+need not repeat it; those that set it must have identical SVGs.
 .TP
 \fBcolor\fR
 Type: \fB#rrggbb\fR; \fBrequired.\fR The product accent.

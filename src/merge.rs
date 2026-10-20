@@ -64,6 +64,21 @@ pub(super) fn collections(left: &mut Vec<Product>, right: Vec<Product>) -> Resul
                 inline_refs,
                 shelf
             );
+            // An icon is a file, so trees that repeat a product needn't
+            // each carry a copy: any tree may set it, and those that do
+            // must agree on the SVG itself.
+            if let Some(theirs) = right.icon {
+                match &left.icon {
+                    Some(ours) => ensure!(
+                        ours.svg == theirs.svg,
+                        "merge conflict at '{}': icon differs ({} and {})",
+                        left.slug,
+                        ours.source.display(),
+                        theirs.source.display(),
+                    ),
+                    None => left.icon = Some(theirs),
+                }
+            }
             product_children(&mut left.children, right.children)?;
             check_flat_slugs("grouping", left.items().map(ProductItem::slug))
         },
@@ -465,6 +480,46 @@ mod tests {
             COLLECTION,
         );
         fails(dir.path(), "title differs");
+    }
+
+    #[test]
+    fn merges_an_icon_from_any_tree_and_rejects_different_ones() {
+        const SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg'><path d='M0 0h1v1z'/></svg>";
+        let dir = fixture();
+        for tree in ["primary", "extra"] {
+            let root = dir.path().join(tree);
+            fs::rename(root.join("demo.antho"), root.join("demo.product")).unwrap();
+            write(
+                &root,
+                "demo.product/trail.toml",
+                &format!("{COLLECTION}monogram = 'D'\ncolor = '#123456'\n"),
+            );
+        }
+        // Only the merged tree has it: the site still shows it.
+        let extra = dir.path().join("extra");
+        write(
+            &extra,
+            "demo.product/trail.toml",
+            &format!("{COLLECTION}monogram = 'D'\ncolor = '#123456'\nicon = 'mark.svg'\n"),
+        );
+        write(&extra, "demo.product/mark.svg", SVG);
+        assert!(load(dir.path()).unwrap().products[0].icon.is_some());
+        // Both have it, as the same SVG under another name.
+        let primary = dir.path().join("primary");
+        write(
+            &primary,
+            "demo.product/trail.toml",
+            &format!("{COLLECTION}monogram = 'D'\ncolor = '#123456'\nicon = 'icon.svg'\n"),
+        );
+        write(&primary, "demo.product/icon.svg", SVG);
+        assert!(load(dir.path()).unwrap().products[0].icon.is_some());
+        // Both have it, and the SVGs differ.
+        write(
+            &primary,
+            "demo.product/icon.svg",
+            &SVG.replace("1v1", "2v2"),
+        );
+        fails(dir.path(), "icon differs");
     }
 
     #[test]

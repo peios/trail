@@ -481,6 +481,14 @@ fn build_prepared(
             .with_context(|| format!("reading custom stylesheet {}", source.display()))?;
         out.write(&out.dir().join("assets/custom.css"), &contents)?;
     }
+    for product in &site.products {
+        if let (Some(icon), Some(href)) = (&product.icon, product.icon_href()) {
+            out.write(
+                &out.dir().join(href.trim_start_matches('/')),
+                icon.svg.as_bytes(),
+            )?;
+        }
+    }
     if let (Some(source), Some(href)) = (&site.favicon, site.favicon_href()) {
         let contents =
             fs::read(source).with_context(|| format!("reading favicon {}", source.display()))?;
@@ -1256,6 +1264,46 @@ mod tests {
         let error = run(true, &options).unwrap_err();
         assert!(error.contains("ambiguous"));
         assert_eq!(error, run(false, &options).unwrap_err());
+    }
+
+    #[test]
+    fn build_publishes_product_icons_and_draws_them_in_place_of_monograms() {
+        let dir = tempfile::tempdir().unwrap();
+        site::write_fixture(dir.path());
+        let product = dir.path().join("alpha.product");
+        let config = fs::read_to_string(product.join("trail.toml")).unwrap();
+        fs::write(
+            product.join("trail.toml"),
+            format!("{config}icon = \"mark.svg\"\n"),
+        )
+        .unwrap();
+        fs::write(
+            product.join("mark.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0h1v1z\"/></svg>",
+        )
+        .unwrap();
+        let out = dir.path().join("dist");
+        let site = Site::load(dir.path(), &out).unwrap();
+        build_site(&site, &out, &BuildOptions::default()).unwrap();
+
+        let icon = fs::read_to_string(out.join("assets/icons/alpha.svg")).unwrap();
+        assert!(icon.starts_with("<svg id=\"trail-icon\" xmlns="), "{icon}");
+        let used = "<use href=\"/assets/icons/alpha.svg#trail-icon\"";
+        for page in ["index.html", "alpha/index.html", "beta/index.html"] {
+            let html = fs::read_to_string(out.join(page)).unwrap();
+            assert!(html.contains(used), "{page} draws the icon");
+        }
+        // The product hero uses it too, and the featured product, which has
+        // no icon, keeps its monogram tile on its front-page card.
+        let front = fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(front.contains("<span class=\"tile\">Xx</span>"));
+        let hero = fs::read_to_string(out.join("alpha/index.html")).unwrap();
+        assert!(hero.contains("tile tile-hero tile-icon"));
+        let json = fs::read_to_string(out.join("site.json")).unwrap();
+        assert!(
+            json.contains("\"icon\": \"/assets/icons/alpha.svg\""),
+            "{json}"
+        );
     }
 
     #[test]
