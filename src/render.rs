@@ -57,6 +57,9 @@ pub struct ProductView<'a> {
     path: &'a str,
     title: &'a str,
     monogram: &'a str,
+    /// The published icon's URL, which pages draw in place of the
+    /// monogram tile.
+    icon: Option<String>,
     color: &'a str,
     description: &'a str,
 }
@@ -69,6 +72,7 @@ impl<'a> From<&'a Product> for ProductView<'a> {
             path: &product.path,
             title: &product.title,
             monogram: &product.monogram,
+            icon: product.icon_href(),
             color: &product.color,
             description: &product.description,
         }

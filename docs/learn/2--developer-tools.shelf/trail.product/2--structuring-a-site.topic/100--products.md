@@ -66,6 +66,32 @@ One optional key, `inline_ref`, claims phrases that auto-link to the product
 page wherever they appear in prose; see
 [Inline references](~trail/writing/inline-references).
 
+## An icon
+
+Another optional key, `icon`, names an SVG file beside the product's
+`trail.toml`. The icon takes the place of the monogram tile on the front-page
+card, in the products menu and at the top of the product page:
+
+```toml
+# pekit.product/trail.toml
+icon = "pekit.svg"
+```
+
+The icon is drawn at the tile's size with no tile behind it, so a mark that
+wants a box draws its own. Where the SVG uses `currentColor`, it takes the
+tile's color, which follows the product's `color` and the reader's theme. A
+multi-colored icon keeps its own colors. The `monogram` is still required: it
+is what a tree without the icon shows.
+
+The file's root element must be `<svg>` with
+`xmlns="http://www.w3.org/2000/svg"`, and it must not have an `id`: trail
+gives it one so that pages can draw it with `<use>`. The build publishes the
+file once, at `/assets/icons/<slug>.svg`, and every page refers to it there.
+
+When trees merge, any of them can set a product's `icon`, and trees that set
+it must have identical SVGs. A component tree can leave the icon to the site
+that merges it, and its own standalone build shows the monogram instead.
+
 ## What the color does
 
 `color` is the product's accent, and by default it displaces the site accent
@@ -128,7 +154,7 @@ has grown long enough that readers have to hunt through it.
 Every product gets a landing page at `/<slug>`, built from the config and its
 children:
 
-- A hero with the monogram tile, the title and the description.
+- A hero with the monogram tile or icon, the title and the description.
 - A "Documentation" section listing every child as a card. Anthologies and
   books get a card with their description; topics get a card listing their
   articles — all of them when there are four or fewer, otherwise the first

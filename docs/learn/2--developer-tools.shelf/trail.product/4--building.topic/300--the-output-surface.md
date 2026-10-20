@@ -160,7 +160,9 @@ articles.
 The `products` array includes products and root anthologies. Its `kind` field
 is `product` or `anthology`. Both use the same item and URL structure. A
 collection's `shelf` field names the slug of the root shelf it sits on, or is
-`null`. The `shelves` array lists the root shelves in order, each with its
+`null`. Its `icon` field is the URL of the collection's published
+[icon](~trail/structuring-a-site/products#an-icon), or `null` when it shows its
+monogram. The `shelves` array lists the root shelves in order, each with its
 `slug` and `title`.
 
 ```json
@@ -179,6 +181,7 @@ collection's `shelf` field names the slug of the root shelf it sits on, or is
       "print": "/pekit/print.md",
       "title": "pekit",
       "monogram": "pk",
+      "icon": null,
       "color": "#22c55e",
       "description": "…",
       "items": [

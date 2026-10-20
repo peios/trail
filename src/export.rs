@@ -970,6 +970,7 @@ fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
             "print": format!("{}/print.md", product.path),
             "title": product.title,
             "monogram": product.monogram,
+            "icon": product.icon_href(),
             "color": product.color,
             "description": product.description,
             "items": product.items().map(|item| match item {
@@ -986,7 +987,7 @@ fn site_json(site: &Site, links: &LinkIndex) -> serde_json::Value {
 /// titles and descriptions alongside the paths, and only these carry URLs.
 fn prefix_paths(value: &mut serde_json::Value, base: &str) {
     const PATH_KEYS: &[&str] = &[
-        "path", "md", "print", "entry", "original", "llms", "related",
+        "path", "md", "print", "entry", "original", "llms", "related", "icon",
     ];
     if base.is_empty() {
         return;
