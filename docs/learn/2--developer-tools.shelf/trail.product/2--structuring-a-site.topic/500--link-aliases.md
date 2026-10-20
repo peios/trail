@@ -61,7 +61,7 @@ shelf.
 
 What each can target:
 
-| In a | May target |
+| In a | Can target |
 | --------------- | ------------------------------------------ |
 | Topic | an article, **or a whole topic subfolder** |
 | Topic subfolder | an article |
