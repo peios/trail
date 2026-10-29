@@ -1,0 +1,4 @@
+# The SHA-256 of each package tarball package-lock.json names, which
+# pekit fetches it by. Written by gcslib/node's pin_packages: review a
+# change as a change to package-lock.json is reviewed.
+https://registry.npmjs.org/prettier/-/prettier-3.9.6.tgz 997da95cf2ae81053cafc79ef122a6e8dc12e3f2c619d57eb1f2e19525fb212f
