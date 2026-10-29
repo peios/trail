@@ -1,7 +1,0 @@
-exports_files(["build.bzl"])
-
-filegroup(
-    name = "sources",
-    srcs = glob(["*"]),
-    visibility = ["//visibility:public"],
-)
