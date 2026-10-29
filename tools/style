@@ -18,16 +18,19 @@ if [[ $(rustc --version | cut -d' ' -f2) != "$expected" ]]; then
     echo "tools/style: Rust $expected is required for formatting" >&2
     exit 1
 fi
+cd "$(dirname "$0")/.."
 rustfmt "${rustfmt_args[@]}" --config-path rustfmt.toml src/*.rs tests/*.rs
 rustfmt "${rustfmt_args[@]}" --config-path rustfmt.toml --config skip_children=true \
     vendor/pagefind/src/lib.rs vendor/pagefind/src/service/api.rs \
     vendor/pagefind/src/output/mod.rs vendor/pagefind/src/fossick/mod.rs \
     vendor/pagefind/src/fragments/mod.rs
-node tools/format.mjs "${prettier_args[@]}"
-"${TRAIL_BUILDIFIER:?Run the Bazel style or format target}" -mode="$mode" \
-    BUILD.bazel MODULE.bazel tools/BUILD.bazel tools/build.bzl
+# Prettier and the Node.js it runs on are the pinned ones pekit lays out.
+node=$(tools/pekit-output node_dist)/bin/node
+TRAIL_PRETTIER=$(tools/pekit-output style_modules)/prettier/index.mjs
+export TRAIL_PRETTIER
+"$node" tools/format.mjs "${prettier_args[@]}"
 if [[ $mode == check ]]; then
-    python3 tools/check-text.py --tree
+    python3 tools/check-text.py
     python3 tools/check-build.py
-    shellcheck tools/bazel tools/check tools/style tools/check-man tools/install
+    shellcheck tools/check tools/style tools/check-man tools/install tools/pekit-output tools/ci-install-pekit
 fi

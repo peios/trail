@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
+# The contributor check: pekit's tests, then the style of maintained sources
+# and the manuals' rendering, which use host tools.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# The wildcard also builds //:clippy, whose marker outputs fail on warnings.
-tools/bazel test "$@" //...
+pekit test "$@"
+tools/style
+tools/check-man

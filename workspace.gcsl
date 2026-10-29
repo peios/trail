@@ -1,0 +1,21 @@
+# The Trail workspace: pekit builds it with the rust library's pinned Rust
+# on the gcc library's Bootlin C toolchains, runs the theme's tests and
+# Prettier with the node library's pinned Node.js, and gives the tests that
+# run shell commands and plugins the buildenv library's busybox and the
+# python library's pinned Python.
+import Toolchain::* from "github.com/gcslib/buildenv"
+import Toolchain::* from "github.com/gcslib/gcc"
+import Toolchain::* from "github.com/gcslib/node"
+import Toolchain::* from "github.com/gcslib/python"
+import Toolchain::* from "github.com/gcslib/rust"
+import Toolchain from toolchain
+
+pekitconf = {
+    toolchains = [
+        Toolchain::C gcc_x86_64,
+        Toolchain::Rust rust_1_98,
+        Toolchain::Node node_22,
+        Toolchain::Python python_3_14,
+        Toolchain::BuildEnv busybox_x86_64,
+    ]
+}

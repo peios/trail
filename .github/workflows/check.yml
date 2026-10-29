@@ -9,27 +9,21 @@ on:
 permissions:
     contents: read
 
+env:
+    # The pekit Trail is built with: a commit of github.com/peios/pekit.
+    PEKIT_REV: c8fd9a56486fe0968d5a17acb6a24bc8c17972d2
+
 jobs:
     check:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
+        timeout-minutes: 60
         steps:
             - uses: actions/checkout@v4
-            - uses: dtolnay/rust-toolchain@master
               with:
-                  toolchain: "1.96.0"
-                  components: rustfmt
-            - uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.cache/trail/bazel-disk
-                      ~/.cache/trail/bazel-repository
-                      ~/.cache/peios/bazel
-                  key: ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-${{ github.sha }}
-                  restore-keys: |
-                      ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-
-                      ${{ runner.os }}-trail-bazel-
-            - uses: actions/setup-node@v4
-              with:
-                  node-version: "22"
-            - run: sudo apt-get update && sudo apt-get install -y groff shellcheck
-            - run: tools/check --disk_cache="$HOME/.cache/trail/bazel-disk" --repository_cache="$HOME/.cache/trail/bazel-repository"
+                  persist-credentials: false
+            - name: Install pekit and the sandbox it runs steps in
+              run: tools/ci-install-pekit
+            - name: Install the style and manual tools
+              run: sudo apt-get install -y --no-install-recommends groff shellcheck
+            - name: Check
+              run: tools/check --strict

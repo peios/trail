@@ -1,0 +1,125 @@
+# Trail's tests, as Bazel ran them: the unit tests and each integration
+# test, Clippy's checks, the theme's JavaScript tests, a build of Trail's
+# own documentation with the program, and the C library the program needs.
+#
+# A test's own code runs in a hermetic step of its own, so what it plans,
+# builds or fetches is in its parameters' defaults. The style check and the
+# manuals' check run with host tools: `tools/check` runs them.
+import fs
+import toolchain
+import Toolchain from toolchain
+import BuildEnv from "github.com/gcslib/buildenv"
+import "github.com/gcslib/node"
+import PythonToolchain from "github.com/gcslib/python"
+import NodeToolchain from "github.com/gcslib/node"
+import "github.com/gcslib/rust"
+
+# The newest glibc symbol version the program may need: Ubuntu 24.04's,
+# which GitHub's runners have, where Learn's deployment runs it.
+let GLIBC_MAX = "2.39"
+
+# Where the tests have the pinned Node.js, Git, and the pinned Python.
+let OPT_NODE = "/opt/node"
+
+let OPT_GIT = "/opt/git"
+
+let OPT_PYTHON = "/opt/python"
+
+# The unit tests and each integration test. The unit tests run the theme's
+# slash-command test with Node.js, from the theme where their compile was
+# told the package is, and skip it without Node.js, so they are given both;
+# the plugins' tests run shell scripts and Python, given busybox's `sh` and
+# tools and the pinned Python, and the repository merges' tests run Git.
+def test units(
+    tests: List<rust.RustTest> = rust.tests(crates(), "trail"),
+    theme: Dir = dir("theme"),
+    git_install: Dir = build git(),
+    node_tool: NodeToolchain = toolchain.get(Toolchain::Node),
+    py: PythonToolchain = toolchain.get(Toolchain::Python),
+    env: BuildEnv = toolchain.get(Toolchain::BuildEnv),
+) {
+    let given: List<{at: String, place: Dir | File}> = [
+        {at = "/bin"; place = env.root.dir("bin")},
+        {at = "/usr/bin"; place = env.root.dir("bin")},
+        {at = OPT_NODE; place = node_tool.root},
+        {at = OPT_GIT; place = git_install},
+        {at = OPT_PYTHON; place = py.root},
+        {at = "/work/src/theme"; place = theme},
+    ]
+    let path = "{OPT_NODE}/bin:{OPT_GIT}/bin:{OPT_PYTHON}/bin:/usr/bin:/bin"
+    let ran = for each in tests {
+        = rust.run_test(each, given = given, env = [{key = "PATH"; value = path}, {key = "HOME"; value = "/tmp"}])
+    }
+}
+
+# Clippy's checks of every target, with every warning denied, as Bazel's
+# `rust_clippy` checked them.
+def test clippy(checked: List<{}> = rust.clippy(crates(), "trail", flags = ["-Dwarnings"])) {}
+
+# The theme's JavaScript tests: the search box's commands, its search, and
+# its citations, against a stub document.
+def test theme(
+    commands: {} = node.check(dir("theme"), empty(), ["tests/commands.mjs"], at = "theme"),
+    search: {} = node.check(dir("theme"), empty(), ["tests/search.mjs"], at = "theme"),
+    citations: {} = node.check(dir("theme"), empty(), ["tests/citations.mjs"], at = "theme"),
+) {}
+
+# Trail's own documentation, linted and built strictly by the program.
+def test docs(
+    program: File = build trail(),
+    docs: Dir = dir("docs/learn"),
+    runtime: Dir = rust_runtime(),
+) {
+    let home = working_dir().path
+    let made = fs.mkdir("{home}/tmp")
+    let placed: List<{at: String, place: Dir | File | FileSet}> = [
+        {at = "/"; place = runtime},
+        {at = "/opt/trail/trail"; place = program},
+        {at = "/work/docs/learn"; place = docs},
+        {at = "/tmp"; place = dir("{home}/tmp")},
+    ]
+    let box = fs.compose(placed).sandbox(cwd = "/work", env = {HOME = "/tmp"; TMPDIR = "/tmp"})
+    let linted = box.exec("/opt/trail/trail", "lint", "docs/learn")
+    let built = box.exec("/opt/trail/trail", "build", "docs/learn", "--strict", "--no-cache", "--out", "/tmp/docs")
+}
+
+# The program needs no glibc symbol newer than `GLIBC_MAX`, read by the C
+# toolchain's `objdump`.
+def test glibc(
+    program: File = build trail(),
+    c: toolchain.CToolchain = toolchain.get(Toolchain::C),
+    env: BuildEnv = toolchain.get(Toolchain::BuildEnv),
+) {
+    let compiler = c.cc.path.strip_prefix(c.root.path).strip_prefix("/")
+    let objdump = "/opt/cc/{compiler.strip_suffix("gcc")}objdump"
+    let placed: List<{at: String, place: Dir | File | FileSet}> = [
+        {at = "/"; place = c.runtime},
+        {at = "/opt/cc"; place = c.root},
+        {at = "/bin"; place = env.root.dir("bin")},
+        {at = "/work/trail"; place = program},
+    ]
+    let box = fs.compose(placed).sandbox(cwd = "/work")
+    let ran = box.exec(
+        "/bin/sh",
+        "-c",
+        "\"$1\" -T /work/trail | grep -o 'GLIBC_[0-9.]*' | sort -u | awk -v max=\"$2\" '\
+         {{ split(substr($0, 7), v, \".\"); split(max, m, \".\"); \
+            if (v[1] + 0 > m[1] + 0 || (v[1] + 0 == m[1] + 0 && v[2] + 0 > m[2] + 0)) {{ print \"needs \" $0 \", newer than GLIBC_\" max; bad = 1 }} }} \
+         END {{ exit bad }}' >&2",
+        "sh",
+        objdump,
+        GLIBC_MAX,
+    )
+}
+
+# The runtime the program runs on: the C toolchain's glibc.
+def rust_runtime(c: toolchain.CToolchain = toolchain.get(Toolchain::C)) -> Dir {
+    = c.runtime
+}
+
+# An empty directory, for the theme's tests, which need no packages.
+#[hermetic]
+fn empty() -> Dir {
+    let made = fs.mkdir("{working_dir().path}/empty")
+    = dir("{working_dir().path}/empty")
+}

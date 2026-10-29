@@ -1,0 +1,37 @@
+# Trail, each crate compiled on its own (see the rust library's
+# `workspace`), for glibc, as Bazel built it. The `glibc` test keeps the
+# program to the glibc of GitHub's Ubuntu runners, where Learn's deployment
+# runs it.
+import toolchain
+import Toolchain from toolchain
+import "github.com/gcslib/node"
+import NodeToolchain from "github.com/gcslib/node"
+import "github.com/gcslib/rust"
+
+# The Trail workspace, planned.
+def crates() -> rust.RustWorkspace {
+    = rust.workspace(dir("."), rust.vendored(file("Cargo.lock")))
+}
+
+# The `trail` program.
+def build trail() {
+    = rust.bin(crates(), "trail")
+}
+
+# The packages the repository's development lock installs, Prettier, as
+# `node_modules`, which `tools/style` formats with.
+def build style_modules() {
+    = node.node_modules(file("package-lock.json"), file("npm.pins"))
+}
+
+# The pinned Node.js distribution, which `tools/style` runs Prettier with.
+def build node_dist(node_tool: NodeToolchain = toolchain.get(Toolchain::Node)) {
+    = node_tool.root
+}
+
+# Writes `npm.pins` again from `package-lock.json`, with the network: run
+# it after a change to the lock, and review the change to the pins as the
+# lock's.
+def script pin_packages() {
+    let count = node.pin_packages(file("package-lock.json"), "{dir(".").path}/npm.pins")
+}

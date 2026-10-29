@@ -7,6 +7,10 @@ on:
 permissions:
     contents: write
 
+env:
+    # The pekit Trail is built with: a commit of github.com/peios/pekit.
+    PEKIT_REV: c8fd9a56486fe0968d5a17acb6a24bc8c17972d2
+
 jobs:
     check:
         uses: ./.github/workflows/check.yml
@@ -14,29 +18,18 @@ jobs:
             contents: read
     build:
         needs: check
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         steps:
             - uses: actions/checkout@v4
 
-            - uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.cache/trail/bazel-disk
-                      ~/.cache/trail/bazel-repository
-                      ~/.cache/peios/bazel
-                  key: ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-${{ github.sha }}
-                  restore-keys: |
-                      ${{ runner.os }}-trail-bazel-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'Cargo.lock') }}-
-                      ${{ runner.os }}-trail-bazel-
+            - name: Install pekit and the sandbox it runs steps in
+              run: tools/ci-install-pekit
 
             # The binary is consumed by peios/learn's Pages workflow, which runs
-            # on the same runner image, so a plain glibc build is enough. A fully
-            # static one would require a separately qualified musl toolchain.
+            # on GitHub's Ubuntu image: the `glibc` test, which the check job
+            # ran, keeps it to that image's glibc.
             - name: Build
-              run: ./tools/bazel build --disk_cache="$HOME/.cache/trail/bazel-disk" --repository_cache="$HOME/.cache/trail/bazel-repository" //:trail
-
-            - name: Stage the artifact
-              run: cp bazel-bin/trail trail-linux-amd64
+              run: cp "$(tools/pekit-output trail)" trail-linux-amd64
 
             - name: Update latest release
               env:

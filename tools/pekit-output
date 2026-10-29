@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Builds the pekit target named by the argument and prints the absolute path
+# of its output.
+set -euo pipefail
+if [[ $# != 1 ]]; then
+    echo 'usage: tools/pekit-output <target>' >&2
+    exit 2
+fi
+cd "$(dirname "$0")/.."
+output=$(pekit build "$1" | awk -v t="built /$1" '$0 == t || index($0, t ":") == 1 { found = 1; next } found { sub(/^  /, ""); print; exit }')
+if [[ -z $output || ! -e $output ]]; then
+    echo "tools/pekit-output: pekit printed no output for $1" >&2
+    exit 1
+fi
+realpath "$output"
