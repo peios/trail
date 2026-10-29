@@ -3,8 +3,9 @@
 /out
 .trail-cache/
 /node_modules/
-/bazel-*
-# crate_universe records the absolute path to the maintained Pagefind snapshot.
-/MODULE.bazel.lock
-# crate_universe also generates this package for the local path dependency.
-/vendor/pagefind/BUILD.bazel
+
+# pekit build output.
+/pekit-out/
+
+# Libraries pekit fetches for the pins in `pekit.lock`.
+/.gcsl/

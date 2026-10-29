@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Installs, on a GitHub Ubuntu runner, pekit at PEKIT_REV and the
+# bubblewrap 0.11.1 it runs each step's sandbox with: Ubuntu 24.04's
+# bubblewrap predates `--overlay`, which pekit composes a sandbox's files
+# with.
+set -euo pipefail
+: "${PEKIT_REV:?Set PEKIT_REV to the pekit commit to install}"
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends meson ninja-build libcap-dev pkg-config
+work=$(mktemp -d)
+trap 'rm -r "$work"' EXIT
+curl -fsSL --retry 3 -o "$work/bubblewrap.tar.xz" \
+    https://github.com/containers/bubblewrap/releases/download/v0.11.1/bubblewrap-0.11.1.tar.xz
+echo "c1b7455a1283b1295879a46d5f001dfd088c0bb0f238abb5e128b3583a246f71  $work/bubblewrap.tar.xz" | sha256sum -c -
+tar -xJf "$work/bubblewrap.tar.xz" -C "$work"
+meson setup "$work/build" "$work/bubblewrap-0.11.1" --prefix=/usr/local -Dman=disabled -Dselinux=disabled -Dtests=false
+meson compile -C "$work/build"
+sudo meson install -C "$work/build"
+# Ubuntu restricts unprivileged user namespaces, which bubblewrap makes
+# each step's sandbox with.
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+cargo +1.98.1 install --locked --git https://github.com/peios/pekit --rev "$PEKIT_REV" pekit
+bwrap --version
+pekit --version

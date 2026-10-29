@@ -5,25 +5,23 @@ shell, and other-format profiles in
 [PSC](https://learn.peios.org/psc/). Public documentation follows Core
 Style, Learn, Man Pages, and Command-Line Help and Errors.
 
-Run `tools/check` from a checkout. It runs the Bazel tests and Clippy target.
-The checks require the selected host Rust formatter, Node.js 22, Python 3.11
-or later, ShellCheck, and groff. Bazel downloads its own pinned Rust compiler,
-Prettier, and buildifier; Cargo does not compile the Bazel targets.
+Run `tools/check` from a checkout. It runs pekit's tests, including Clippy,
+then the style and manual checks. The style and manual checks require the
+selected host Rust formatter, Python 3.11 or later, ShellCheck, and groff.
+pekit downloads its own pinned Rust compiler, Node.js, and Prettier.
 
-Use `./tools/bazel run //:format` for Rust, JavaScript, embedded scripts,
-CSS, JSON, workflow files, and Starlark. Rust's toolchain and formatter
-edition are selected in the repository; Prettier and buildifier have exact
-versions and verified download integrity. The npm commands remain available
-after `npm ci --ignore-scripts`. Do not format imported dependencies with
+Use `tools/style --write` for Rust, JavaScript, embedded scripts, CSS,
+JSON, and workflow files. Rust's toolchain and formatter edition are
+selected in the repository; Prettier has an exact version, and `npm.pins`
+records its tarball's hash. The npm commands remain available after
+`npm ci --ignore-scripts`. Do not format imported dependencies with
 `cargo fmt --all`.
 
 `Cargo.toml` and `Cargo.lock` remain the Rust dependency authority. Exclude
 Pagefind from workspace membership so metadata resolution does not enable
-its optional server and tokenizer features. Its maintained path dependency
-is mirrored by crate_universe, including its embedded assets. The generated
-`MODULE.bazel.lock` contains that checkout's absolute path, so it stays local;
-Bazel and Rust module versions and download checksums are pinned separately.
-Host C/C++ tools and local style tools are not fully hermetic toolchains.
+its optional server and tokenizer features. pekit plans its maintained path
+dependency from the manifests, with its embedded assets. The style and
+manual checks use host tools, so they are not hermetic.
 
 ## Scoped format decisions
 

@@ -20,8 +20,6 @@ def main():
         if not name:
             continue
         path = pathlib.Path(name.decode())
-        if path.name == "MODULE.bazel.lock":
-            continue
         if path.parts[0] == "vendor" or "fonts" in path.parts or "vendor" in path.parts:
             continue
         if path.suffix in {".png", ".woff2", ".ttf", ".patch"} or not path.is_file():

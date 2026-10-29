@@ -28,7 +28,8 @@ a second page while it is running.
 ## Prerequisites
 
 - **A `trail` binary.** Follow [Building Trail](~trail/getting-started/building-trail)
-  to build and install it with Bazel. The build output is `bazel-bin/trail`.
+  to build and install it with pekit. `tools/install` installs it under
+  `$HOME/.local/bin`.
   Put it on your `PATH`, or call it by path — the examples below assume
   `trail` is on your `PATH`.
 - **Nothing else.** The templates, stylesheet, fonts, syntax highlighter,

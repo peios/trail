@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -gt 1 ]]; then
-    echo 'usage: bazel run //:install -- [<absolute-prefix>]' >&2
+    echo 'usage: tools/install [<absolute-prefix>]' >&2
     exit 2
 fi
 prefix=${1:-${HOME:?}/.local}
@@ -10,7 +10,9 @@ if [[ $prefix != /* ]]; then
     exit 2
 fi
 install -d "$prefix/bin" "$prefix/share/man/man1" "$prefix/share/man/man5"
-install -m 0755 "${TRAIL_BINARY:?Run the Bazel install target}" "$prefix/bin/trail"
+cd "$(dirname "$0")/.."
+binary=$(tools/pekit-output trail)
+install -m 0755 "$binary" "$prefix/bin/trail"
 install -m 0644 man/*.1 "$prefix/share/man/man1/"
 install -m 0644 man/*.5 "$prefix/share/man/man5/"
 printf 'Installed Trail and manuals under %s\n' "$prefix"
