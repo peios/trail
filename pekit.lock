@@ -36,8 +36,8 @@
       "path": "github.com/gcslib/buildenv",
       "git": "https://github.com/gcslib/buildenv",
       "dir": "",
-      "commit": "e051ed14669da2bafb71fe422d2e01cc45b61206",
-      "tree": "c717ab29e7c5d81880dda3e9d9976ef76ed94598f1fbb74019b236df62aa4af4"
+      "commit": "79dad06c0f89458f405695ef05f20956c633f7be",
+      "tree": "5c98902139af8ae9477077eb39b7f2c423f7587385b0ccd17a663666cf8f330f"
     },
     {
       "path": "github.com/gcslib/gcc",
@@ -64,8 +64,8 @@
       "path": "github.com/gcslib/rust",
       "git": "https://github.com/gcslib/rust",
       "dir": "",
-      "commit": "5fb29f3c556ef7bfbc75d2b96c3c1208e673338e",
-      "tree": "0a4c7c356d6d850240d2d19b81b7dcbd73e699836bd44f3f488daf2e7b1e98bd"
+      "commit": "a6428e662ddbf0dc59a381c82f41648c7e08df10",
+      "tree": "7c08d3ff3627e8f9197c56c2ec2f557ebf9053699e780e6b5a3b3d87f1f576de"
     }
   ]
 }
