@@ -26,13 +26,11 @@ let OPT_GIT = "/opt/git"
 let OPT_PYTHON = "/opt/python"
 
 # The unit tests and each integration test. The unit tests run the theme's
-# slash-command test with Node.js, from the theme where their compile was
-# told the package is, and skip it without Node.js, so they are given both;
-# the plugins' tests run shell scripts and Python, given busybox's `sh` and
+# slash-command test with Node.js from the theme in the package's directory,
+# and skip it without Node.js, so they are given it; the plugins' tests run shell scripts and Python, given busybox's `sh` and
 # tools and the pinned Python, and the repository merges' tests run Git.
 def test units(
     tests: List<rust.RustTest> = rust.tests(crates(), "trail"),
-    theme: Dir = dir("theme"),
     git_install: Dir = build git(),
     node_tool: NodeToolchain = toolchain.get(Toolchain::Node),
     py: PythonToolchain = toolchain.get(Toolchain::Python),
@@ -44,7 +42,6 @@ def test units(
         {at = OPT_NODE; place = node_tool.root},
         {at = OPT_GIT; place = git_install},
         {at = OPT_PYTHON; place = py.root},
-        {at = "/work/src/theme"; place = theme},
     ]
     let path = "{OPT_NODE}/bin:{OPT_GIT}/bin:{OPT_PYTHON}/bin:/usr/bin:/bin"
     let ran = for each in tests {
